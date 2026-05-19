@@ -166,33 +166,35 @@
 
         // ── DOM builders ────────────────────────────────────────────────────
 
-        function createGexDiv(symbol) {
-            const div = document.createElement('div');
+        function createGexDiv(symbol, slot) {
+            const id    = `${symbol}-${slot}`;
+            const label = slot === 'zero' ? '0DTE' : 'ALL EXPIRATIONS';
+            const div   = document.createElement('div');
             div.className = 'chart-div';
-            div.id = `gex-div-${symbol}`;
+            div.id = `gex-div-${id}`;
             div.innerHTML = `
                 <div class="chart-div-header">
                     <div>
-                        <div class="chart-title">GAMMA EXPOSURE</div>
+                        <div class="chart-title">GEX · ${label}</div>
                         <div class="symbol">${symbol}</div>
-                        <div class="spot" id="spot-${symbol}">Loading...</div>
+                        <div class="spot" id="spot-${id}">Loading...</div>
                     </div>
                     <div style="text-align:right">
-                        <div class="regime" id="regime-${symbol}">—</div>
-                        <div class="total-gex">GEX: <span id="gex-${symbol}">—</span></div>
+                        <div class="regime" id="regime-${id}">—</div>
+                        <div class="total-gex">GEX: <span id="gex-${id}">—</span></div>
                     </div>
                 </div>
                 <div class="levels">
-                    <div class="level-item">Flip: <span id="flip-${symbol}">—</span></div>
-                    <div class="level-item">Put Wall: <span id="put-${symbol}">—</span></div>
-                    <div class="level-item">Call Wall: <span id="call-${symbol}">—</span></div>
-                    <div class="level-item">Pin: <span id="pin-${symbol}">—</span></div>
+                    <div class="level-item">Flip: <span id="flip-${id}">—</span></div>
+                    <div class="level-item">Put Wall: <span id="put-${id}">—</span></div>
+                    <div class="level-item">Call Wall: <span id="call-${id}">—</span></div>
+                    <div class="level-item">Pin: <span id="pin-${id}">—</span></div>
                 </div>
                 <div class="chart-container">
-                    <canvas id="gex-canvas-${symbol}"></canvas>
+                    <canvas id="gex-canvas-${id}"></canvas>
                 </div>
             `;
-            div.addEventListener('dblclick', () => expandGex(symbol));
+            div.addEventListener('dblclick', () => expandGex(symbol, slot));
             return div;
         }
 
@@ -281,26 +283,47 @@
             };
         }
 
-        function renderGexChart(symbol, data) {
-            const canvas = document.getElementById(`gex-canvas-${symbol}`);
-            if (!canvas) return;
-            if (gexCharts[symbol]) gexCharts[symbol].destroy();
-            const { config } = gexChartConfig(data);
-            gexCharts[symbol] = new Chart(canvas.getContext('2d'), config);
-            gexCharts[symbol]._gexData = data; // store for modal
+        function renderGexChart(symbol, slot, chartData, spot) {
+            const key    = `${symbol}-${slot}`;
+            const canvas = document.getElementById(`gex-canvas-${key}`);
+            if (!canvas || !chartData.strikes.length) return;
+            if (gexCharts[key]) gexCharts[key].destroy();
+            const d = { strikes: chartData.strikes, net_gex: chartData.net_gex, spot };
+            const { config } = gexChartConfig(d);
+            gexCharts[key] = new Chart(canvas.getContext('2d'), config);
+            gexCharts[key]._gexData = d;
+        }
+
+        function updateGexSlot(symbol, slot, chartData, levels, spot, totalGex, regime) {
+            const id = `${symbol}-${slot}`;
+            document.getElementById(`spot-${id}`).textContent  = fmt(spot);
+            document.getElementById(`gex-${id}`).textContent   = fmtGex(totalGex);
+            document.getElementById(`flip-${id}`).textContent  = fmt(levels.flip_level);
+            document.getElementById(`put-${id}`).textContent   = fmt(levels.put_wall);
+            document.getElementById(`call-${id}`).textContent  = fmt(levels.call_wall);
+            document.getElementById(`pin-${id}`).textContent   = fmt(levels.pin);
+            const r = document.getElementById(`regime-${id}`);
+            r.textContent = regime;
+            r.className   = `regime ${regime}`;
+            renderGexChart(symbol, slot, chartData, spot);
         }
 
         function updateGexDiv(symbol, data) {
-            document.getElementById(`spot-${symbol}`).textContent  = fmt(data.spot);
-            document.getElementById(`gex-${symbol}`).textContent   = fmtGex(data.total_gex);
-            document.getElementById(`flip-${symbol}`).textContent  = fmt(data.levels.flip_level);
-            document.getElementById(`put-${symbol}`).textContent   = fmt(data.levels.put_wall);
-            document.getElementById(`call-${symbol}`).textContent  = fmt(data.levels.call_wall);
-            document.getElementById(`pin-${symbol}`).textContent   = fmt(data.levels.pin);
-            const regime = document.getElementById(`regime-${symbol}`);
-            regime.textContent = data.regime;
-            regime.className   = `regime ${data.regime}`;
-            renderGexChart(symbol, data);
+            const multiTotal = data.multi.net_gex.reduce((a, b) => a + b, 0);
+            const zeroTotal  = data.zero.net_gex.reduce((a, b) => a + b, 0);
+
+            updateGexSlot(symbol, 'multi', data.multi, data.levels_multi, data.spot,
+                          multiTotal, multiTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
+
+            // 0DTE div — show/hide based on availability
+            const zeroDiv = document.getElementById(`gex-div-${symbol}-zero`);
+            if (data.has_0dte) {
+                if (zeroDiv) zeroDiv.style.display = '';
+                updateGexSlot(symbol, 'zero', data.zero, data.levels_0dte, data.spot,
+                              zeroTotal, zeroTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
+            } else {
+                if (zeroDiv) zeroDiv.style.display = 'none';
+            }
         }
 
         // ── Price chart ─────────────────────────────────────────────────────
@@ -384,14 +407,16 @@
             if (modalChart) { modalChart.destroy(); modalChart = null; }
         }
 
-        function expandGex(symbol) {
-            const chart = gexCharts[symbol];
+        function expandGex(symbol, slot = 'multi') {
+            const key   = `${symbol}-${slot}`;
+            const chart = gexCharts[key];
             if (!chart || !chart._gexData) return;
+            const label = slot === 'zero' ? '0DTE' : 'ALL EXPIRATIONS';
             openModal(`
                 <div style="margin-bottom:8px">
-                    <div style="font-size:0.65rem;color:#444;letter-spacing:2px">GAMMA EXPOSURE</div>
+                    <div style="font-size:0.65rem;color:#444;letter-spacing:2px">GAMMA EXPOSURE · ${label}</div>
                     <div style="font-size:1.4rem;color:#fff;font-weight:bold">${symbol}</div>
-                    <div style="font-size:0.8rem;color:#555">Double-click to expand · Press ESC to close</div>
+                    <div style="font-size:0.8rem;color:#555">Press ESC to close</div>
                 </div>
             `);
             const { config } = gexChartConfig(chart._gexData, true);
@@ -454,7 +479,10 @@
 
         const gexGrid   = document.getElementById('gex-grid');
         const priceGrid = document.getElementById('price-grid');
-        GEX_SYMBOLS.forEach(s   => gexGrid.appendChild(createGexDiv(s)));
+        GEX_SYMBOLS.forEach(s => {
+            gexGrid.appendChild(createGexDiv(s, 'multi'));
+            gexGrid.appendChild(createGexDiv(s, 'zero'));
+        });
         PRICE_SYMBOLS.forEach(s => priceGrid.appendChild(createPriceDiv(s)));
 
         fetchAll();

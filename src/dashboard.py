@@ -22,22 +22,43 @@ cache_lock = threading.Lock()
 
 # ── GEX ────────────────────────────────────────────────────────────────────────
 
+def gex_to_dict(gex_df, spot):
+    """Filter to significant strikes and serialize to lists."""
+    if gex_df.empty:
+        return {'strikes': [], 'net_gex': []}
+    max_abs = gex_df['net_gex'].abs().max()
+    if max_abs > 0:
+        threshold = max_abs * 0.02   # keep strikes with >= 2% of peak gamma
+        gex_df = gex_df[gex_df['net_gex'].abs() >= threshold]
+    return {
+        'strikes': gex_df['strike'].tolist(),
+        'net_gex': gex_df['net_gex'].tolist(),
+    }
+
 def refresh_gex(symbol: str):
     try:
         token = get_access_token()
         chain = fetch_option_chain(symbol, token)
-        gex_by_strike, spot, raw_df = parse_gex(chain)
-        levels = find_key_levels(gex_by_strike, spot)
-        total_gex = float(gex_by_strike['net_gex'].sum())
+        gex_all, gex_0dte, gex_multi, spot, raw_df = parse_gex(chain)
+        levels = find_key_levels(gex_all, spot)
+        total_gex = float(gex_all['net_gex'].sum())
+
+        levels_multi = find_key_levels(gex_multi, spot) if not gex_multi.empty else levels
+        levels_0dte  = find_key_levels(gex_0dte,  spot) if not gex_0dte.empty  else {}
+
+        def serialize_levels(lvl):
+            return {k: (float(v) if v is not None else None) for k, v in lvl.items()}
 
         data = {
             'symbol': symbol.replace('$', '').replace('/', ''),
             'spot': spot,
             'total_gex': total_gex,
             'regime': 'POSITIVE' if total_gex > 0 else 'NEGATIVE',
-            'levels': {k: (float(v) if v is not None else None) for k, v in levels.items()},
-            'strikes': gex_by_strike['strike'].tolist(),
-            'net_gex': gex_by_strike['net_gex'].tolist(),
+            'levels_multi': serialize_levels(levels_multi),
+            'levels_0dte':  serialize_levels(levels_0dte),
+            'multi': gex_to_dict(gex_multi, spot),
+            'zero':  gex_to_dict(gex_0dte,  spot),
+            'has_0dte': not gex_0dte.empty,
             'updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
@@ -107,8 +128,9 @@ def api_gex(symbol):
 def api_price(symbol):
     from zoneinfo import ZoneInfo
     ET = ZoneInfo('America/New_York')
+    key = f'${symbol}' if symbol in ['SPX', 'NDX'] else f'/{symbol}' if symbol == 'ES' else symbol
     with cache_lock:
-        candles = candle_cache.get(symbol, [])
+        candles = candle_cache.get(key, [])
     recent = candles[-390:]
     return jsonify([{
         'time': datetime.fromtimestamp(c['datetime'] / 1000, tz=ET).strftime('%H:%M'),

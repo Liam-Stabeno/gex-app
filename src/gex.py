@@ -57,22 +57,33 @@ def get_access_token() -> str:
 def fetch_option_chain(symbol: str, access_token: str) -> dict:
     """Fetch option chain for a symbol, limited to 60 DTE and 100 strikes ATM."""
     from datetime import timedelta
-    today = datetime.now().strftime("%Y-%m-%d")
-    to_date = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
+    today    = datetime.now().strftime("%Y-%m-%d")
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    to_date  = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
+
+    params = {
+        "symbol": symbol,
+        "contractType": "ALL",
+        "includeUnderlyingQuote": "true",
+        "strikeCount": 100,
+        "fromDate": today,
+        "toDate": to_date,
+    }
 
     response = requests.get(
         "https://api.schwabapi.com/marketdata/v1/chains",
         headers={"Authorization": f"Bearer {access_token}"},
-        params={
-            "symbol": symbol,
-            "contractType": "ALL",
-            "includeUnderlyingQuote": True,
-            "optionType": "S",       # Standard options only
-            "strikeCount": 100,      # 100 strikes above and below ATM
-            "fromDate": today,
-            "toDate": to_date,
-        }
+        params=params
     )
+
+    # After market close Schwab rejects today as fromDate — retry with tomorrow
+    if response.status_code == 400:
+        params["fromDate"] = tomorrow
+        response = requests.get(
+            "https://api.schwabapi.com/marketdata/v1/chains",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params=params
+        )
 
     if not response.ok:
         print(f"Option chain fetch failed: {response.text}")
@@ -98,16 +109,18 @@ def fetch_option_chain(symbol: str, access_token: str) -> dict:
 
 def parse_gex(chain: dict) -> pd.DataFrame:
     """
-    Parse option chain JSON into a GEX dataframe by strike.
+    Parse option chain JSON into GEX dataframes split by 0DTE vs multi-expiry.
     GEX = Gamma * Open Interest * Contract Multiplier * Spot Price
     Calls add positive GEX, puts add negative GEX.
+    Returns: (gex_all, gex_0dte, gex_multi, spot, raw_df)
     """
     spot = chain['underlyingPrice']
-    multiplier = 100  # SPX options
+    multiplier = 100
 
     rows = []
 
     for exp_date, strikes in chain.get('callExpDateMap', {}).items():
+        is_0dte = exp_date.endswith(':0')
         for strike_str, options in strikes.items():
             strike = float(strike_str)
             for opt in options:
@@ -116,6 +129,7 @@ def parse_gex(chain: dict) -> pd.DataFrame:
                 gex = gamma * oi * multiplier * spot
                 rows.append({
                     'expiration': exp_date.split(':')[0],
+                    'is_0dte': is_0dte,
                     'strike': strike,
                     'type': 'call',
                     'gamma': gamma,
@@ -124,14 +138,16 @@ def parse_gex(chain: dict) -> pd.DataFrame:
                 })
 
     for exp_date, strikes in chain.get('putExpDateMap', {}).items():
+        is_0dte = exp_date.endswith(':0')
         for strike_str, options in strikes.items():
             strike = float(strike_str)
             for opt in options:
                 gamma = opt.get('gamma', 0) or 0
                 oi = opt.get('openInterest', 0) or 0
-                gex = gamma * oi * multiplier * spot * -1  # puts flip sign
+                gex = gamma * oi * multiplier * spot * -1
                 rows.append({
                     'expiration': exp_date.split(':')[0],
+                    'is_0dte': is_0dte,
                     'strike': strike,
                     'type': 'put',
                     'gamma': gamma,
@@ -141,16 +157,22 @@ def parse_gex(chain: dict) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
 
-    # Aggregate GEX by strike across all expirations
-    gex_by_strike = (
-        df.groupby('strike')['gex']
-        .sum()
-        .reset_index()
-        .rename(columns={'gex': 'net_gex'})
-        .sort_values('strike')
-    )
+    def aggregate(subset):
+        if subset.empty:
+            return pd.DataFrame(columns=['strike', 'net_gex'])
+        return (
+            subset.groupby('strike')['gex']
+            .sum()
+            .reset_index()
+            .rename(columns={'gex': 'net_gex'})
+            .sort_values('strike')
+        )
 
-    return gex_by_strike, spot, df
+    gex_all   = aggregate(df)
+    gex_0dte  = aggregate(df[df['is_0dte']])
+    gex_multi = aggregate(df[~df['is_0dte']])
+
+    return gex_all, gex_0dte, gex_multi, spot, df
 
 
 def find_key_levels(gex_by_strike: pd.DataFrame, spot: float) -> dict:
@@ -226,12 +248,13 @@ if __name__ == "__main__":
     print(f"Fetching {symbol} options chain...")
     token = get_access_token()
     chain = fetch_option_chain(symbol, token)
-    gex_by_strike, spot, raw_df = parse_gex(chain)
-    levels = find_key_levels(gex_by_strike, spot)
-    print_summary(levels, gex_by_strike, symbol)
+    gex_all, gex_0dte, gex_multi, spot, raw_df = parse_gex(chain)
+    levels = find_key_levels(gex_all, spot)
+    print_summary(levels, gex_all, symbol)
+    print(f"\n0DTE strikes: {len(gex_0dte)}  |  Multi-expiry strikes: {len(gex_multi)}")
 
     # Save data
     safe_symbol = symbol.replace("$", "")
-    gex_by_strike.to_csv(f'data/gex_by_strike_{safe_symbol}.csv', index=False)
+    gex_all.to_csv(f'data/gex_by_strike_{safe_symbol}.csv', index=False)
     raw_df.to_csv(f'data/gex_raw_{safe_symbol}.csv', index=False)
     print(f"\nData saved to data/gex_by_strike_{safe_symbol}.csv")
