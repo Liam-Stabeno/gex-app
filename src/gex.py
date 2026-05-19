@@ -154,6 +154,9 @@ def parse_gex(chain: dict) -> pd.DataFrame:
 
 
 def find_key_levels(gex_by_strike: pd.DataFrame, spot: float) -> dict:
+    # If total GEX is effectively zero, no meaningful levels exist
+    if gex_by_strike['net_gex'].abs().sum() < 1000:
+        return {'spot': spot, 'flip_level': None, 'put_wall': None, 'call_wall': None, 'pin': None}
     """Identify GEX flip point, put wall, and largest gamma strike."""
 
     # GEX flip: where cumulative GEX crosses zero near spot
@@ -187,13 +190,13 @@ def find_key_levels(gex_by_strike: pd.DataFrame, spot: float) -> dict:
     }
 
 
-def print_summary(levels: dict, gex_by_strike: pd.DataFrame):
+def print_summary(levels: dict, gex_by_strike: pd.DataFrame, symbol: str = "SPX"):
     spot = levels['spot']
     total_gex = gex_by_strike['net_gex'].sum()
     regime = "POSITIVE (stable)" if total_gex > 0 else "NEGATIVE (volatile)"
 
     print("\n" + "="*50)
-    print(f"  GEX SUMMARY — SPX @ {spot:,.2f}")
+    print(f"  GEX SUMMARY — {symbol} @ {spot:,.2f}")
     print("="*50)
     print(f"  Total GEX:    ${total_gex/1e9:.2f}B  [{regime}]")
     print(f"  GEX Flip:     {levels['flip_level']}")
@@ -217,14 +220,18 @@ def print_summary(levels: dict, gex_by_strike: pd.DataFrame):
 
 
 if __name__ == "__main__":
-    print("Fetching SPX options chain...")
+    import sys
+    symbol = sys.argv[1] if len(sys.argv) > 1 else "$SPX"
+
+    print(f"Fetching {symbol} options chain...")
     token = get_access_token()
-    chain = fetch_option_chain("$SPX", token)
+    chain = fetch_option_chain(symbol, token)
     gex_by_strike, spot, raw_df = parse_gex(chain)
     levels = find_key_levels(gex_by_strike, spot)
-    print_summary(levels, gex_by_strike)
+    print_summary(levels, gex_by_strike, symbol)
 
     # Save data
-    gex_by_strike.to_csv('data/gex_by_strike.csv', index=False)
-    raw_df.to_csv('data/gex_raw.csv', index=False)
-    print(f"\nData saved to data/gex_by_strike.csv")
+    safe_symbol = symbol.replace("$", "")
+    gex_by_strike.to_csv(f'data/gex_by_strike_{safe_symbol}.csv', index=False)
+    raw_df.to_csv(f'data/gex_raw_{safe_symbol}.csv', index=False)
+    print(f"\nData saved to data/gex_by_strike_{safe_symbol}.csv")

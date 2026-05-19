@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GEX Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #0a0a0f;
+            color: #e0e0e0;
+            font-family: 'Courier New', monospace;
+            padding: 16px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #00d4ff;
+            font-size: 1.4rem;
+            letter-spacing: 4px;
+            margin-bottom: 4px;
+        }
+
+        #last-update {
+            text-align: center;
+            color: #555;
+            font-size: 0.75rem;
+            margin-bottom: 20px;
+        }
+
+        .section-label {
+            color: #333;
+            font-size: 0.65rem;
+            letter-spacing: 3px;
+            margin: 20px 0 10px;
+            border-bottom: 1px solid #1a1a2a;
+            padding-bottom: 6px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 14px;
+        }
+
+        .chart-div {
+            background: #12121a;
+            border: 1px solid #1e1e2e;
+            border-radius: 8px;
+            padding: 14px;
+            cursor: pointer;
+            transition: border-color 0.15s;
+        }
+
+        .chart-div:hover { border-color: #333355; }
+
+        .chart-div-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 8px;
+        }
+
+        .chart-title { font-size: 0.6rem; color: #444; letter-spacing: 2px; margin-bottom: 2px; }
+        .symbol      { font-size: 1.1rem; font-weight: bold; color: #fff; letter-spacing: 2px; }
+        .spot        { font-size: 0.95rem; color: #00d4ff; }
+
+        .regime { font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; font-weight: bold; letter-spacing: 1px; }
+        .regime.POSITIVE { background: #0d2b1a; color: #00ff88; border: 1px solid #00ff88; }
+        .regime.NEGATIVE { background: #2b0d0d; color: #ff4444; border: 1px solid #ff4444; }
+
+        .total-gex { font-size: 0.7rem; color: #888; margin-top: 4px; }
+        .total-gex span { color: #00d4ff; }
+
+        .levels { display: flex; gap: 10px; margin-bottom: 8px; font-size: 0.68rem; flex-wrap: wrap; }
+        .level-item { color: #555; }
+        .level-item span { color: #bbb; font-weight: bold; }
+
+        .timeframe-label {
+            font-size: 0.6rem;
+            color: #333;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+
+        .chart-container { position: relative; height: 260px; width: 100%; }
+
+        /* ── Modal ── */
+        #modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        #modal-overlay.open { display: flex; }
+
+        #modal-box {
+            background: #12121a;
+            border: 1px solid #2a2a3a;
+            border-radius: 10px;
+            padding: 20px;
+            width: 100%;
+            max-width: 1100px;
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        #modal-close {
+            position: absolute;
+            top: 12px; right: 16px;
+            color: #555;
+            font-size: 1.2rem;
+            cursor: pointer;
+            background: none;
+            border: none;
+            font-family: 'Courier New', monospace;
+        }
+
+        #modal-close:hover { color: #fff; }
+
+        #modal-chart-container { position: relative; height: 520px; width: 100%; margin-top: 12px; }
+    </style>
+</head>
+<body>
+    <h1>⬡ GEX DASHBOARD</h1>
+    <div id="last-update">Initializing...</div>
+
+    <div class="section-label">GAMMA EXPOSURE</div>
+    <div class="grid" id="gex-grid"></div>
+
+    <div class="section-label">PRICE — 1 MIN · ET</div>
+    <div class="grid" id="price-grid"></div>
+
+    <!-- Expand modal -->
+    <div id="modal-overlay">
+        <div id="modal-box">
+            <button id="modal-close">✕ close</button>
+            <div id="modal-header"></div>
+            <div id="modal-chart-container">
+                <canvas id="modal-canvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const GEX_SYMBOLS   = ['SPX', 'SPY', 'QQQ', 'NDX'];
+        const PRICE_SYMBOLS = ['SPY', 'QQQ', 'SPX', 'NDX', 'ES'];
+        const REFRESH_MS    = 30000;
+
+        const gexCharts   = {};
+        const priceCharts = {};
+        let   modalChart  = null;
+
+        // ── Formatters ──────────────────────────────────────────────────────
+
+        const fmt    = n => (n == null) ? '—' : n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+        const fmtGex = n => (n == null) ? '—' : ((n / 1e9 >= 0 ? '+' : '') + (n / 1e9).toFixed(2) + 'B');
+
+        // ── DOM builders ────────────────────────────────────────────────────
+
+        function createGexDiv(symbol) {
+            const div = document.createElement('div');
+            div.className = 'chart-div';
+            div.id = `gex-div-${symbol}`;
+            div.innerHTML = `
+                <div class="chart-div-header">
+                    <div>
+                        <div class="chart-title">GAMMA EXPOSURE</div>
+                        <div class="symbol">${symbol}</div>
+                        <div class="spot" id="spot-${symbol}">Loading...</div>
+                    </div>
+                    <div style="text-align:right">
+                        <div class="regime" id="regime-${symbol}">—</div>
+                        <div class="total-gex">GEX: <span id="gex-${symbol}">—</span></div>
+                    </div>
+                </div>
+                <div class="levels">
+                    <div class="level-item">Flip: <span id="flip-${symbol}">—</span></div>
+                    <div class="level-item">Put Wall: <span id="put-${symbol}">—</span></div>
+                    <div class="level-item">Call Wall: <span id="call-${symbol}">—</span></div>
+                    <div class="level-item">Pin: <span id="pin-${symbol}">—</span></div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="gex-canvas-${symbol}"></canvas>
+                </div>
+            `;
+            div.addEventListener('dblclick', () => expandGex(symbol));
+            return div;
+        }
+
+        function createPriceDiv(symbol) {
+            const div = document.createElement('div');
+            div.className = 'chart-div';
+            div.id = `price-div-${symbol}`;
+            div.innerHTML = `
+                <div class="chart-div-header">
+                    <div>
+                        <div class="chart-title">PRICE</div>
+                        <div class="symbol">${symbol}</div>
+                        <div class="spot" id="price-spot-${symbol}">—</div>
+                    </div>
+                    <div style="text-align:right; color:#444; font-size:0.65rem;">
+                        1 MIN · ET
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="price-canvas-${symbol}"></canvas>
+                </div>
+            `;
+            div.addEventListener('dblclick', () => expandPrice(symbol));
+            return div;
+        }
+
+        // ── GEX chart ───────────────────────────────────────────────────────
+
+        function gexChartConfig(data, forModal = false) {
+            const strikes = data.strikes;
+            const gex     = data.net_gex;
+            const spot    = data.spot;
+            const colors  = gex.map(v => v >= 0 ? 'rgba(0,255,136,0.7)' : 'rgba(255,68,68,0.7)');
+
+            const spotLinePlugin = {
+                id: 'spotLine',
+                afterDraw(chart) {
+                    const { ctx, scales } = chart;
+                    const spotY = scales.y.getPixelForValue(spot);
+                    if (spotY < scales.y.top || spotY > scales.y.bottom) return;
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.moveTo(scales.x.left, spotY);
+                    ctx.lineTo(scales.x.right, spotY);
+                    ctx.strokeStyle = '#00d4ff';
+                    ctx.lineWidth   = forModal ? 2 : 1.5;
+                    ctx.setLineDash([4, 4]);
+                    ctx.stroke();
+                    ctx.fillStyle = '#00d4ff';
+                    ctx.font = `${forModal ? 12 : 10}px Courier New`;
+                    ctx.fillText(spot.toLocaleString(), scales.x.right - 70, spotY - 5);
+                    ctx.restore();
+                }
+            };
+
+            return {
+                config: {
+                    type: 'bar',
+                    data: {
+                        labels: strikes,
+                        datasets: [{ data: gex, backgroundColor: colors, borderWidth: 0, barThickness: 'flex' }]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: { callbacks: { label: c => `GEX: ${fmtGex(c.raw)}` } }
+                        },
+                        scales: {
+                            x: { grid: { color: '#1e1e2e' }, ticks: { color: '#555', font: { size: forModal ? 11 : 9 } } },
+                            y: {
+                                reverse: true,
+                                grid: { color: '#1e1e2e' },
+                                ticks: {
+                                    color: '#888',
+                                    font: { size: forModal ? 11 : 9, family: 'Courier New' },
+                                    callback: (v, i) => strikes[i]
+                                }
+                            }
+                        }
+                    },
+                    plugins: [spotLinePlugin]
+                }
+            };
+        }
+
+        function renderGexChart(symbol, data) {
+            const canvas = document.getElementById(`gex-canvas-${symbol}`);
+            if (!canvas) return;
+            if (gexCharts[symbol]) gexCharts[symbol].destroy();
+            const { config } = gexChartConfig(data);
+            gexCharts[symbol] = new Chart(canvas.getContext('2d'), config);
+            gexCharts[symbol]._gexData = data; // store for modal
+        }
+
+        function updateGexDiv(symbol, data) {
+            document.getElementById(`spot-${symbol}`).textContent  = fmt(data.spot);
+            document.getElementById(`gex-${symbol}`).textContent   = fmtGex(data.total_gex);
+            document.getElementById(`flip-${symbol}`).textContent  = fmt(data.levels.flip_level);
+            document.getElementById(`put-${symbol}`).textContent   = fmt(data.levels.put_wall);
+            document.getElementById(`call-${symbol}`).textContent  = fmt(data.levels.call_wall);
+            document.getElementById(`pin-${symbol}`).textContent   = fmt(data.levels.pin);
+            const regime = document.getElementById(`regime-${symbol}`);
+            regime.textContent = data.regime;
+            regime.className   = `regime ${data.regime}`;
+            renderGexChart(symbol, data);
+        }
+
+        // ── Price chart ─────────────────────────────────────────────────────
+
+        function priceChartConfig(candles, forModal = false) {
+            const labels = candles.map(c => c.time);
+            const closes = candles.map(c => c.close);
+            const up     = closes[closes.length - 1] >= closes[0];
+            const color  = up ? '#00ff88' : '#ff4444';
+            const fill   = up ? 'rgba(0,255,136,0.07)' : 'rgba(255,68,68,0.07)';
+            const step   = Math.max(1, Math.floor(labels.length / (forModal ? 14 : 8)));
+
+            return {
+                labels,
+                closes,
+                config: {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [{
+                            data: closes,
+                            borderColor: color,
+                            borderWidth: forModal ? 2 : 1.5,
+                            pointRadius: 0,
+                            fill: true,
+                            backgroundColor: fill,
+                            tension: 0.1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                mode: 'index',
+                                intersect: false,
+                                callbacks: { label: c => c.parsed.y.toFixed(2) }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: '#1a1a2a' },
+                                ticks: {
+                                    color: '#444',
+                                    font: { size: forModal ? 11 : 8 },
+                                    maxTicksLimit: forModal ? 14 : 8,
+                                    callback: (v, i) => i % step === 0 ? labels[i] : ''
+                                }
+                            },
+                            y: {
+                                grid: { color: '#1a1a2a' },
+                                ticks: { color: '#666', font: { size: forModal ? 11 : 8 } }
+                            }
+                        }
+                    }
+                }
+            };
+        }
+
+        function renderPriceChart(symbol, candles) {
+            const canvas = document.getElementById(`price-canvas-${symbol}`);
+            if (!canvas || !candles.length) return;
+            if (priceCharts[symbol]) priceCharts[symbol].destroy();
+            const { closes, config } = priceChartConfig(candles);
+            priceCharts[symbol] = new Chart(canvas.getContext('2d'), config);
+            priceCharts[symbol]._candles = candles; // store for modal
+            document.getElementById(`price-spot-${symbol}`).textContent = closes[closes.length - 1].toFixed(2);
+        }
+
+        // ── Modal expand ────────────────────────────────────────────────────
+
+        function openModal(headerHTML) {
+            if (modalChart) { modalChart.destroy(); modalChart = null; }
+            document.getElementById('modal-header').innerHTML = headerHTML;
+            document.getElementById('modal-overlay').classList.add('open');
+        }
+
+        function closeModal() {
+            document.getElementById('modal-overlay').classList.remove('open');
+            if (modalChart) { modalChart.destroy(); modalChart = null; }
+        }
+
+        function expandGex(symbol) {
+            const chart = gexCharts[symbol];
+            if (!chart || !chart._gexData) return;
+            openModal(`
+                <div style="margin-bottom:8px">
+                    <div style="font-size:0.65rem;color:#444;letter-spacing:2px">GAMMA EXPOSURE</div>
+                    <div style="font-size:1.4rem;color:#fff;font-weight:bold">${symbol}</div>
+                    <div style="font-size:0.8rem;color:#555">Double-click to expand · Press ESC to close</div>
+                </div>
+            `);
+            const { config } = gexChartConfig(chart._gexData, true);
+            modalChart = new Chart(document.getElementById('modal-canvas').getContext('2d'), config);
+        }
+
+        function expandPrice(symbol) {
+            const chart = priceCharts[symbol];
+            if (!chart || !chart._candles) return;
+            const last = chart._candles[chart._candles.length - 1];
+            openModal(`
+                <div style="margin-bottom:8px">
+                    <div style="font-size:0.65rem;color:#444;letter-spacing:2px">PRICE · 1 MIN · ET</div>
+                    <div style="font-size:1.4rem;color:#fff;font-weight:bold">${symbol}
+                        <span style="font-size:1rem;color:#00d4ff">${last ? last.close.toFixed(2) : ''}</span>
+                    </div>
+                    <div style="font-size:0.8rem;color:#555">Double-click to expand · Press ESC to close</div>
+                </div>
+            `);
+            const { config } = priceChartConfig(chart._candles, true);
+            modalChart = new Chart(document.getElementById('modal-canvas').getContext('2d'), config);
+        }
+
+        document.getElementById('modal-close').addEventListener('click', closeModal);
+        document.getElementById('modal-overlay').addEventListener('click', e => {
+            if (e.target === document.getElementById('modal-overlay')) closeModal();
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+        // ── Fetch & update ───────────────────────────────────────────────────
+
+        async function fetchGex(symbol) {
+            try {
+                const res = await fetch(`/api/gex/${symbol}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                if (!data.error) updateGexDiv(symbol, data);
+            } catch (e) { console.error(`GEX ${symbol}:`, e); }
+        }
+
+        async function fetchPrice(symbol) {
+            try {
+                const res = await fetch(`/api/price/${symbol}`);
+                if (!res.ok) return;
+                const candles = await res.json();
+                renderPriceChart(symbol, candles);
+            } catch (e) { console.error(`Price ${symbol}:`, e); }
+        }
+
+        async function fetchAll() {
+            await Promise.all([
+                ...GEX_SYMBOLS.map(fetchGex),
+                ...PRICE_SYMBOLS.map(fetchPrice)
+            ]);
+            document.getElementById('last-update').textContent =
+                `Last updated: ${new Date().toLocaleTimeString()} · 1 min candles · Eastern Time`;
+        }
+
+        // ── Init ─────────────────────────────────────────────────────────────
+
+        const gexGrid   = document.getElementById('gex-grid');
+        const priceGrid = document.getElementById('price-grid');
+        GEX_SYMBOLS.forEach(s   => gexGrid.appendChild(createGexDiv(s)));
+        PRICE_SYMBOLS.forEach(s => priceGrid.appendChild(createPriceDiv(s)));
+
+        fetchAll();
+        setInterval(fetchAll, REFRESH_MS);
+    </script>
+</body>
+</html>
