@@ -3,9 +3,11 @@ import json
 import threading
 import time
 from datetime import datetime
-from flask import Flask, jsonify, render_template
-from gex import get_access_token, fetch_option_chain, parse_gex, find_key_levels
+from queue import Queue, Empty
+from flask import Flask, jsonify, render_template, Response, stream_with_context
+from gex import get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts
 from price_history import sync_symbol, load_candles, fetch_candles, append_candles, backfill
+from streamer import SchwabStreamer
 
 app = Flask(__name__, template_folder='../templates')
 
@@ -19,6 +21,25 @@ cache = {}
 candle_cache = {}   # symbol -> list of candles
 cache_lock = threading.Lock()
 
+# Global streamer reference so GEX refresh can update the watch list
+_streamer = None
+
+# ── Server-Sent Events ──────────────────────────────────────────────────────────
+
+sse_clients = []        # list of Queue objects, one per connected browser tab
+sse_lock    = threading.Lock()
+
+
+def sse_push(data: dict):
+    """Push a JSON message to all connected SSE clients."""
+    msg = f"data: {json.dumps(data)}\n\n"
+    with sse_lock:
+        for q in list(sse_clients):
+            try:
+                q.put_nowait(msg)
+            except Exception:
+                pass  # full queue — client is too slow, skip
+
 
 # ── GEX ────────────────────────────────────────────────────────────────────────
 
@@ -30,6 +51,7 @@ def gex_to_dict(gex_df, spot):
     if max_abs > 0:
         threshold = max_abs * 0.02   # keep strikes with >= 2% of peak gamma
         gex_df = gex_df[gex_df['net_gex'].abs() >= threshold]
+    gex_df = gex_df.sort_values('strike')   # LW Charts requires ascending time order
     return {
         'strikes': gex_df['strike'].tolist(),
         'net_gex': gex_df['net_gex'].tolist(),
@@ -62,10 +84,20 @@ def refresh_gex(symbol: str):
             'updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
+        # Extract option contracts to watch for flow monitoring
+        call_wall  = levels_multi.get('call_wall')
+        display_sym = symbol.replace('$', '').replace('/', '')  # SPX, SPY etc.
+        watch      = get_watch_contracts(chain, call_wall, underlying=display_sym)
+
         with cache_lock:
             cache[symbol] = data
 
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] GEX updated: {symbol} @ {spot}")
+        # Update streamer watch list (streamer may not exist yet on first GEX run)
+        if watch and _streamer:
+            _streamer.update_options_watch(watch)
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] GEX updated: {symbol} @ {spot}"
+              f"  |  watching {len(watch)} option contracts")
 
     except Exception as e:
         print(f"[ERROR] GEX {symbol}: {e}")
@@ -133,11 +165,11 @@ def api_price(symbol):
         candles = candle_cache.get(key, [])
     recent = candles[-390:]
     return jsonify([{
-        'time': datetime.fromtimestamp(c['datetime'] / 1000, tz=ET).strftime('%H:%M'),
-        'open':  c['open'],
-        'high':  c['high'],
-        'low':   c['low'],
-        'close': c['close'],
+        'time':   int(c['datetime'] / 1000),   # Unix timestamp in seconds for LW Charts
+        'open':   c['open'],
+        'high':   c['high'],
+        'low':    c['low'],
+        'close':  c['close'],
         'volume': c['volume']
     } for c in recent])
 
@@ -146,6 +178,89 @@ def api_price(symbol):
 def api_all():
     with cache_lock:
         return jsonify(list(cache.values()))
+
+
+@app.route('/api/stream')
+def api_stream():
+    """Server-Sent Events endpoint — pushes real-time candle updates to the browser."""
+    q = Queue(maxsize=200)
+    with sse_lock:
+        sse_clients.append(q)
+
+    def generate():
+        try:
+            # Handshake so the browser knows we're connected
+            yield "data: {\"type\":\"connected\"}\n\n"
+            while True:
+                try:
+                    msg = q.get(timeout=25)
+                    yield msg
+                except Empty:
+                    yield ": keepalive\n\n"   # prevents proxy/browser timeout
+        finally:
+            with sse_lock:
+                if q in sse_clients:
+                    sse_clients.remove(q)
+
+    return Response(
+        stream_with_context(generate()),
+        content_type='text/event-stream',
+        headers={
+            'Cache-Control':    'no-cache',
+            'X-Accel-Buffering': 'no',     # disable nginx buffering if behind a proxy
+        }
+    )
+
+
+# ── Streamer candle callback ────────────────────────────────────────────────────
+
+def on_streamer_candle(candle: dict):
+    """
+    Called by SchwabStreamer for each incoming 1-min candle update.
+    Updates candle_cache and pushes to SSE clients.
+    candle: { symbol, datetime (ms), open, high, low, close, volume }
+    """
+    raw_symbol = candle['symbol']
+    # Map streamed symbol back to cache key (e.g. 'SPY' -> 'SPY', '/ES' -> '/ES')
+    cache_key = raw_symbol
+
+    # Update candle cache — append or replace last candle
+    with cache_lock:
+        existing = candle_cache.get(cache_key, [])
+        if existing and existing[-1]['datetime'] == candle['datetime']:
+            existing[-1] = candle   # update in-progress candle
+        else:
+            existing.append(candle)
+        candle_cache[cache_key] = existing
+
+    # Push to all SSE clients — time in seconds for JS (LW Charts needs seconds)
+    sse_push({
+        'type':    'candle',
+        'symbol':  raw_symbol,
+        'time':    candle['datetime'] // 1000,  # ms → seconds
+        'open':    candle['open'],
+        'high':    candle['high'],
+        'low':     candle['low'],
+        'close':   candle['close'],
+        'volume':  candle['volume'],
+    })
+
+    ts = datetime.now().strftime('%H:%M:%S')
+    print(f'[{ts}] Streamer candle: {raw_symbol} {candle["close"]:.2f}')
+
+
+def on_flow_alert(alert: dict):
+    """
+    Called by SchwabStreamer when a weighted options volume spike is detected.
+    alert: { symbol, underlying, strike, side, expiry_label, is_0dte,
+              volume_delta, weighted_delta, last, bid, ask, direction }
+    """
+    sse_push({'type': 'flow_alert', **alert})
+    ts = datetime.now().strftime('%H:%M:%S')
+    direction = alert.get('direction', '?')
+    print(f"[{ts}] FLOW  {alert['underlying']} {alert['strike']} "
+          f"{alert['side'].upper()} {alert['expiry_label']}  "
+          f"+{alert['volume_delta']:,} contracts  {direction}")
 
 
 # ── Startup ─────────────────────────────────────────────────────────────────────
@@ -173,5 +288,9 @@ if __name__ == '__main__':
     threading.Thread(target=gex_loop, daemon=True).start()
     threading.Thread(target=price_loop, daemon=True).start()
 
+    # Start WebSocket streamer (real-time candle updates + options flow via SSE)
+    _streamer = SchwabStreamer(on_candle=on_streamer_candle, on_flow_alert=on_flow_alert)
+    _streamer.start()
+
     print("\nDashboard running at http://127.0.0.1:5000")
-    app.run(debug=False, port=5000)
+    app.run(debug=False, port=5000, threaded=True)

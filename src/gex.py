@@ -1,5 +1,7 @@
 import os
 import json
+import time
+import threading
 import requests
 import pandas as pd
 import numpy as np
@@ -12,6 +14,13 @@ CLIENT_ID = os.environ['SCHWAB_CLIENT_ID']
 CLIENT_SECRET = os.environ['SCHWAB_CLIENT_SECRET']
 
 TOKENS_FILE = 'data/tokens.json'
+
+# ── Token cache — shared across all threads ────────────────────────────────────
+# Schwab access tokens last 30 min; refresh proactively at 25 min so a fresh
+# token is always ready when the streamer or GEX loop asks for one.
+_token_lock   = threading.Lock()
+_cached_token = {'access_token': None, 'expires_at': 0.0}
+TOKEN_TTL     = 25 * 60   # seconds before we refresh (25 of 30 min)
 
 
 def load_tokens() -> dict:
@@ -48,10 +57,20 @@ def refresh_access_token(refresh_token: str) -> dict:
 
 
 def get_access_token() -> str:
-    tokens = load_tokens()
-    # Always try to refresh — simplest approach for now
-    tokens = refresh_access_token(tokens['refresh_token'])
-    return tokens['access_token']
+    """
+    Return a valid Schwab access token, refreshing at most once per TOKEN_TTL seconds.
+    Thread-safe — multiple threads share a single cached token.
+    """
+    with _token_lock:
+        now = time.time()
+        if _cached_token['access_token'] and now < _cached_token['expires_at']:
+            return _cached_token['access_token']
+        # Token missing or expired — refresh once
+        tokens = load_tokens()
+        tokens = refresh_access_token(tokens['refresh_token'])
+        _cached_token['access_token'] = tokens['access_token']
+        _cached_token['expires_at']   = now + TOKEN_TTL
+        return tokens['access_token']
 
 
 def fetch_option_chain(symbol: str, access_token: str) -> dict:
@@ -210,6 +229,84 @@ def find_key_levels(gex_by_strike: pd.DataFrame, spot: float) -> dict:
         'call_wall': call_wall,
         'pin': pin
     }
+
+
+def get_watch_contracts(chain: dict, call_wall: float, n_strikes: int = 3,
+                        underlying: str = '') -> list:
+    """
+    Extract option contract symbols to watch for flow monitoring.
+
+    Selects calls AND puts at the n_strikes nearest strikes at/below call_wall,
+    for both the 0DTE expiry and the nearest multi-expiry.
+    Symbols are taken directly from the chain JSON so no format construction needed.
+
+    Returns list of dicts:
+        { symbol, strike, side ('call'|'put'), expiry_label ('0DTE'|'MULTI'),
+          weight (1.0 for 0DTE, 0.15 for multi), is_0dte (bool) }
+    """
+    if call_wall is None:
+        return []
+
+    call_map = chain.get('callExpDateMap', {})
+    put_map  = chain.get('putExpDateMap',  {})
+
+    # Separate 0DTE and multi-expiry keys; pick nearest multi
+    dte0_key  = None
+    multi_key = None
+    for exp_key in sorted(call_map.keys()):
+        if exp_key.endswith(':0'):
+            if dte0_key is None:
+                dte0_key = exp_key
+        else:
+            if multi_key is None:
+                multi_key = exp_key
+
+    def contracts_for_expiry(exp_key: str, is_0dte: bool) -> list:
+        weight = 1.0 if is_0dte else 0.15
+        label  = '0DTE' if is_0dte else 'MULTI'
+        result = []
+
+        all_strikes = sorted(float(s) for s in call_map.get(exp_key, {}).keys())
+        # n_strikes nearest strikes at or below the call wall
+        below   = [s for s in all_strikes if s <= call_wall]
+        targets = below[-n_strikes:] if below else []
+
+        for strike in targets:
+            strike_str = f"{strike:.1f}"
+
+            calls = call_map.get(exp_key, {}).get(strike_str, [])
+            if calls and calls[0].get('symbol'):
+                result.append({
+                    'symbol':       calls[0]['symbol'],
+                    'strike':       strike,
+                    'side':         'call',
+                    'expiry_label': label,
+                    'weight':       weight,
+                    'is_0dte':      is_0dte,
+                    'underlying':   underlying,
+                })
+
+            puts = put_map.get(exp_key, {}).get(strike_str, [])
+            if puts and puts[0].get('symbol'):
+                result.append({
+                    'symbol':       puts[0]['symbol'],
+                    'strike':       strike,
+                    'side':         'put',
+                    'expiry_label': label,
+                    'weight':       weight,
+                    'is_0dte':      is_0dte,
+                    'underlying':   underlying,
+                })
+
+        return result
+
+    contracts = []
+    if dte0_key:
+        contracts.extend(contracts_for_expiry(dte0_key,  is_0dte=True))
+    if multi_key:
+        contracts.extend(contracts_for_expiry(multi_key, is_0dte=False))
+
+    return contracts
 
 
 def print_summary(levels: dict, gex_by_strike: pd.DataFrame, symbol: str = "SPX"):
