@@ -8,11 +8,12 @@ from flask import Flask, jsonify, render_template, Response, stream_with_context
 from gex import get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts
 from price_history import sync_symbol, load_candles, fetch_candles, append_candles, backfill
 from streamer import SchwabStreamer
+from log_setup import setup_logging
 
 app = Flask(__name__, template_folder='../templates')
 
-SYMBOLS = ['$SPX', 'SPY', 'QQQ', '$NDX']        # GEX symbols (options chain)
-PRICE_SYMBOLS = ['SPY', 'QQQ', '$SPX', '$NDX', '/ES']  # price chart symbols
+SYMBOLS = ['$SPX', 'SPY', 'QQQ']               # GEX symbols (options chain)
+PRICE_SYMBOLS = ['SPY', 'QQQ', '$SPX', '/ES']  # price chart symbols
 REFRESH_INTERVAL = 60   # GEX refresh in seconds
 PRICE_SYNC_INTERVAL = 60  # price sync in seconds
 
@@ -108,7 +109,7 @@ def refresh_gex(symbol: str):
 def refresh_price(symbol: str):
     try:
         token = get_access_token()
-        fresh = fetch_candles(symbol, token, days=1, frequency=1)
+        fresh = fetch_candles(symbol, token, days=2, frequency=1)
         if not fresh:
             return
         added = append_candles(symbol, fresh)
@@ -148,7 +149,7 @@ def index():
 
 @app.route('/api/gex/<symbol>')
 def api_gex(symbol):
-    key = f'${symbol}' if symbol in ['SPX', 'NDX'] else f'/{symbol}' if symbol == 'ES' else symbol
+    key = f'${symbol}' if symbol == 'SPX' else f'/{symbol}' if symbol == 'ES' else symbol
     with cache_lock:
         data = cache.get(key) or cache.get(symbol)
     if not data:
@@ -159,11 +160,22 @@ def api_gex(symbol):
 @app.route('/api/price/<symbol>')
 def api_price(symbol):
     from zoneinfo import ZoneInfo
+    from datetime import time as dtime
     ET = ZoneInfo('America/New_York')
-    key = f'${symbol}' if symbol in ['SPX', 'NDX'] else f'/{symbol}' if symbol == 'ES' else symbol
+    key = f'${symbol}' if symbol == 'SPX' else f'/{symbol}' if symbol == 'ES' else symbol
     with cache_lock:
         candles = candle_cache.get(key, [])
-    recent = candles[-390:]
+
+    # Filter to regular market hours (9:30–16:00 ET) to exclude noisy extended-hours candles.
+    # ES futures trade nearly 24 hrs so we keep all their candles.
+    if symbol != 'ES':
+        market_open  = dtime(9, 30)
+        market_close = dtime(16, 0)
+        def in_market_hours(c):
+            t = datetime.fromtimestamp(c['datetime'] / 1000, tz=ET).time()
+            return market_open <= t <= market_close
+        candles = [c for c in candles if in_market_hours(c)]
+
     return jsonify([{
         'time':   int(c['datetime'] / 1000),   # Unix timestamp in seconds for LW Charts
         'open':   c['open'],
@@ -171,7 +183,7 @@ def api_price(symbol):
         'low':    c['low'],
         'close':  c['close'],
         'volume': c['volume']
-    } for c in recent])
+    } for c in candles])
 
 
 @app.route('/api/all')
@@ -266,6 +278,7 @@ def on_flow_alert(alert: dict):
 # ── Startup ─────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
+    setup_logging()
     print("Starting GEX Dashboard...")
 
     # Load price history and fill any gap since last run

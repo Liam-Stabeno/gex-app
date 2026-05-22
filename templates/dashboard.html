@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GEX Dashboard</title>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -219,10 +219,10 @@
     <script>
         const LWC = window.LightweightCharts;
 
-        const GEX_SYMBOLS    = ['SPX', 'SPY', 'QQQ', 'NDX'];
-        const PRICE_SYMBOLS  = ['SPY', 'QQQ', 'SPX', 'NDX', 'ES'];
+        const GEX_SYMBOLS    = ['SPX', 'SPY', 'QQQ'];
+        const PRICE_SYMBOLS  = ['SPY', 'QQQ', 'SPX', 'ES'];
         // Streamed symbols get live updates via SSE; poll them infrequently as a fallback.
-        // Non-streamed symbols (SPX, NDX) still depend on the 30s GEX poll for price.
+        // Non-streamed symbols (SPX) still depend on the 30s GEX poll for price.
         const STREAM_SYMBOLS = new Set(['SPY', 'QQQ', 'ES']);  // match streamer.py
         const GEX_REFRESH_MS   = 30000;   // GEX: 30 s
         const PRICE_REFRESH_MS = 300000;  // Price: 5 min (streaming covers live updates)
@@ -233,9 +233,21 @@
 
         // ── Timezone helper (LW Charts is UTC-only — shift timestamps to ET) ──
 
-        function timeToET(utcSecs) {
-            const d = new Date(new Date(utcSecs * 1000).toLocaleString('en-US', { timeZone: 'America/New_York' }));
-            return d.getTime() / 1000;
+        function fmtET24(utcSecs) {
+            return new Date(utcSecs * 1000).toLocaleTimeString('en-US', {
+                timeZone: 'America/New_York',
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit',
+            });
+        }
+
+        function fmtETDate(utcSecs) {
+            return new Date(utcSecs * 1000).toLocaleDateString('en-US', {
+                timeZone: 'America/New_York',
+                month: 'short',
+                day: 'numeric',
+            });
         }
 
         // ── Formatters ──────────────────────────────────────────────────────
@@ -270,12 +282,17 @@
             return LWC.createChart(container, {
                 ...DARK_BASE,
                 autoSize: true,
+                localization: {
+                    timeFormatter: fmtET24,   // crosshair tooltip — 24-hr ET
+                },
                 timeScale: {
                     borderColor: '#1e1e2e',
                     timeVisible: true,
                     secondsVisible: false,
                     fixLeftEdge: false,
                     fixRightEdge: false,
+                    tickMarkFormatter: (utcSecs, tickMarkType) =>
+                        tickMarkType <= 2 ? fmtETDate(utcSecs) : fmtET24(utcSecs),
                 },
             });
         }
@@ -454,7 +471,7 @@
                 wickDownColor: '#ff4444',
             });
             series.setData(candles.map(c => ({
-                time:  timeToET(c.time),  // shift UTC → ET so LW Charts labels show correct ET times
+                time:  c.time,
                 open:  c.open,
                 high:  c.high,
                 low:   c.low,
@@ -471,7 +488,7 @@
             if (priceCharts[symbol]) {
                 // Chart already exists — update data in place (preserves zoom/scroll position)
                 priceCharts[symbol].series.setData(candles.map(c => ({
-                    time:  timeToET(c.time),
+                    time:  c.time,
                     open:  c.open, high: c.high, low: c.low, close: c.close,
                 })));
                 priceCharts[symbol].candles = [...candles];
@@ -502,7 +519,7 @@
             if (!entry) return;   // chart not yet loaded — polling will catch it
 
             const lwCandle = {
-                time:  timeToET(candle.time),   // shift UTC seconds → ET
+                time:  candle.time,
                 open:  candle.open,
                 high:  candle.high,
                 low:   candle.low,

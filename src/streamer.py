@@ -2,12 +2,14 @@
 Schwab WebSocket streamer — real-time candle updates + options flow monitoring.
 
 Subscriptions:
-  CHART_EQUITY    → SPY, QQQ          (1-min OHLCV candles)
-  CHART_FUTURES   → /ES               (1-min OHLCV candles)
-  LEVELONE_OPTIONS → call-wall strikes (volume spike / flow alerts)
+  CHART_EQUITY      → SPY, QQQ        (1-min OHLCV candles, bar boundaries)
+  CHART_FUTURES     → /ES             (1-min OHLCV candles, bar boundaries)
+  LEVELONE_EQUITIES → SPY, QQQ        (tick-by-tick last price — animates current candle)
+  LEVELONE_FUTURES  → /ES             (tick-by-tick last price — animates current candle)
+  LEVELONE_OPTIONS  → call-wall strikes (volume spike / flow alerts)
 
 Callbacks:
-  on_candle(dict)      — new/updated 1-min price candle
+  on_candle(dict)      — new/updated 1-min price candle (fires on every tick)
   on_flow_alert(dict)  — weighted options volume spike detected
 
 Usage:
@@ -29,7 +31,8 @@ from gex import get_access_token
 # ── Price streaming ─────────────────────────────────────────────────────────────
 STREAM_EQUITY  = ['SPY', 'QQQ']
 STREAM_FUTURES = ['/ES']
-CHART_FIELDS   = '0,1,2,3,4,5,6,7,8'
+CHART_FIELDS        = '0,1,2,3,4,5,6,7,8'
+LEVELONE_FIELDS     = '3,8'    # field 3 = last price, field 8 = total volume
 
 # ── Options flow ────────────────────────────────────────────────────────────────
 # LEVELONE_OPTIONS fields we care about:
@@ -46,6 +49,8 @@ def get_streamer_info(access_token: str) -> dict:
         'https://api.schwabapi.com/trader/v1/userPreference',
         headers={'Authorization': f'Bearer {access_token}'}
     )
+    if not resp.ok:
+        print(f'[STREAMER] userPreference {resp.status_code}: {resp.text}')
     resp.raise_for_status()
     info = resp.json()['streamerInfo'][0]
     return {
@@ -89,6 +94,26 @@ def _parse_chart(msg: dict) -> list:
     return candles
 
 
+def _floor_minute_ms() -> int:
+    """Return the current minute boundary as a Unix millisecond timestamp."""
+    return int(time.time() // 60) * 60 * 1000
+
+
+def _parse_levelone(msg: dict) -> list:
+    """Parse LEVELONE_EQUITIES / LEVELONE_FUTURES into tick dicts."""
+    ticks = []
+    for item in msg.get('content', []):
+        last = item.get('3')
+        if last is None:
+            continue
+        ticks.append({
+            'symbol': item.get('key', ''),
+            'last':   float(last),
+            'volume': int(item.get('8', 0)),
+        })
+    return ticks
+
+
 def _parse_options(msg: dict) -> list:
     """Parse LEVELONE_OPTIONS content into quote dicts."""
     quotes = []
@@ -120,6 +145,10 @@ class SchwabStreamer:
         self._running  = False
         self._ws       = None
         self._thread   = None
+
+        # Live candle state — one per symbol, updated on every tick
+        # Used to animate the current 1-min bar between CHART_EQUITY bar boundaries
+        self._live_candles   = {}    # symbol -> { symbol, datetime (ms), open, high, low, close, volume }
 
         # Options watch list — set via update_options_watch()
         # contract_info: symbol -> { strike, side, expiry_label, weight, underlying }
@@ -214,11 +243,20 @@ class SchwabStreamer:
             for notify in data.get('data', []):
                 service = notify.get('service', '')
                 if service in ('CHART_EQUITY', 'CHART_FUTURES'):
+                    # Official completed bar — sync live candle and fire callback
                     for candle in _parse_chart(notify):
+                        self._live_candles[candle['symbol']] = dict(candle)
                         try:
                             self.on_candle(candle)
                         except Exception as exc:
                             print(f'[STREAMER] on_candle error: {exc}')
+
+                elif service in ('LEVELONE_EQUITIES', 'LEVELONE_FUTURES'):
+                    for tick in _parse_levelone(notify):
+                        try:
+                            self._handle_tick(tick)
+                        except Exception as exc:
+                            print(f'[STREAMER] tick error: {exc}')
 
                 elif service == 'LEVELONE_OPTIONS':
                     for quote in _parse_options(notify):
@@ -246,11 +284,15 @@ class SchwabStreamer:
         self._ws.run_forever(ping_interval=25, ping_timeout=10)
 
     def _subscribe_price(self, ws, cid, corr):
-        ws.send(_make_request('CHART_EQUITY',  'SUBS', 1, cid, corr,
+        ws.send(_make_request('CHART_EQUITY',      'SUBS', 1, cid, corr,
                               {'keys': ','.join(STREAM_EQUITY),  'fields': CHART_FIELDS}))
-        ws.send(_make_request('CHART_FUTURES', 'SUBS', 2, cid, corr,
+        ws.send(_make_request('CHART_FUTURES',     'SUBS', 2, cid, corr,
                               {'keys': ','.join(STREAM_FUTURES), 'fields': CHART_FIELDS}))
-        print(f'[STREAMER] Subscribed price: {STREAM_EQUITY + STREAM_FUTURES}')
+        ws.send(_make_request('LEVELONE_EQUITIES', 'SUBS', 4, cid, corr,
+                              {'keys': ','.join(STREAM_EQUITY),  'fields': LEVELONE_FIELDS}))
+        ws.send(_make_request('LEVELONE_FUTURES',  'SUBS', 5, cid, corr,
+                              {'keys': ','.join(STREAM_FUTURES), 'fields': LEVELONE_FIELDS}))
+        print(f'[STREAMER] Subscribed CHART + LEVELONE: {STREAM_EQUITY + STREAM_FUTURES}')
 
     def _subscribe_options(self, ws, cid, corr):
         with self._watch_lock:
@@ -260,6 +302,40 @@ class SchwabStreamer:
         ws.send(_make_request('LEVELONE_OPTIONS', 'SUBS', 3, cid, corr,
                               {'keys': ','.join(symbols), 'fields': OPTIONS_FIELDS}))
         print(f'[STREAMER] Subscribed LEVELONE_OPTIONS: {len(symbols)} contracts')
+
+    def _handle_tick(self, tick: dict):
+        """
+        Update the live in-progress candle for a symbol on each price tick.
+        Fires on_candle so the browser updates the current bar in real time.
+        """
+        symbol = tick['symbol']
+        last   = tick['last']
+        now_ms = _floor_minute_ms()
+
+        live = self._live_candles.get(symbol)
+
+        if live is None or live['datetime'] != now_ms:
+            # New minute — start a fresh candle; open from prev close if available
+            open_price = live['close'] if live else last
+            self._live_candles[symbol] = {
+                'symbol':   symbol,
+                'datetime': now_ms,
+                'open':     open_price,
+                'high':     last,
+                'low':      last,
+                'close':    last,
+                'volume':   tick['volume'],
+            }
+        else:
+            live['close']  = last
+            live['high']   = max(live['high'], last)
+            live['low']    = min(live['low'],  last)
+            live['volume'] = tick['volume']
+
+        try:
+            self.on_candle(dict(self._live_candles[symbol]))
+        except Exception as exc:
+            print(f'[STREAMER] on_candle error: {exc}')
 
     def _handle_options_quote(self, quote: dict):
         """
