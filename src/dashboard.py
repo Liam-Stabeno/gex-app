@@ -22,6 +22,10 @@ cache = {}
 candle_cache = {}   # symbol -> list of candles
 cache_lock = threading.Lock()
 
+# Separate lock for CSV file writes — prevents the streamer and price_loop
+# from calling append_candles concurrently and corrupting the CSV.
+csv_lock = threading.Lock()
+
 # Global streamer reference so GEX refresh can update the watch list
 _streamer = None
 
@@ -72,6 +76,14 @@ def refresh_gex(symbol: str):
         def serialize_levels(lvl):
             return {k: (float(v) if v is not None else None) for k, v in lvl.items()}
 
+        # Extract the actual 0DTE expiry date from the chain
+        # (key format is "2026-05-22:0" — split off the ":0" suffix)
+        odte_date = None
+        for exp_key in chain.get('callExpDateMap', {}).keys():
+            if exp_key.endswith(':0'):
+                odte_date = exp_key.split(':')[0]   # "2026-05-22"
+                break
+
         data = {
             'symbol': symbol.replace('$', '').replace('/', ''),
             'spot': spot,
@@ -82,6 +94,7 @@ def refresh_gex(symbol: str):
             'multi': gex_to_dict(gex_multi, spot),
             'zero':  gex_to_dict(gex_0dte,  spot),
             'has_0dte': not gex_0dte.empty,
+            'odte_date': odte_date,   # "YYYY-MM-DD" of the 0DTE expiry (today or next open day)
             'updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
@@ -112,7 +125,8 @@ def refresh_price(symbol: str):
         fresh = fetch_candles(symbol, token, days=2, frequency=1)
         if not fresh:
             return
-        added = append_candles(symbol, fresh)
+        with csv_lock:
+            added = append_candles(symbol, fresh)
         if added > 0:
             candles = load_candles(symbol)
             with cache_lock:
@@ -164,17 +178,28 @@ def api_price(symbol):
     ET = ZoneInfo('America/New_York')
     key = f'${symbol}' if symbol == 'SPX' else f'/{symbol}' if symbol == 'ES' else symbol
     with cache_lock:
-        candles = candle_cache.get(key, [])
+        candles = list(candle_cache.get(key, []))
 
-    # Filter to regular market hours (9:30–16:00 ET) to exclude noisy extended-hours candles.
-    # ES futures trade nearly 24 hrs so we keep all their candles.
+    # ES futures are nearly 24-hr; return all candles (last ~2 days from cache).
+    # Equity/ETF symbols: filter to regular market hours (9:30–16:00 ET) and
+    # return ONLY the most recent trading session so yesterday's data does not
+    # appear as a stale backdrop behind today's price action.
     if symbol != 'ES':
         market_open  = dtime(9, 30)
         market_close = dtime(16, 0)
-        def in_market_hours(c):
-            t = datetime.fromtimestamp(c['datetime'] / 1000, tz=ET).time()
-            return market_open <= t <= market_close
-        candles = [c for c in candles if in_market_hours(c)]
+
+        # Collect all market-hours candles, grouped by ET date
+        by_date: dict = {}
+        for c in candles:
+            dt = datetime.fromtimestamp(c['datetime'] / 1000, tz=ET)
+            if market_open <= dt.time() <= market_close:
+                by_date.setdefault(dt.date(), []).append(c)
+
+        if by_date:
+            latest_date = max(by_date.keys())
+            candles = by_date[latest_date]   # only the most recent session
+        else:
+            candles = []
 
     return jsonify([{
         'time':   int(c['datetime'] / 1000),   # Unix timestamp in seconds for LW Charts
@@ -229,27 +254,57 @@ def api_stream():
 def on_streamer_candle(candle: dict):
     """
     Called by SchwabStreamer for each incoming 1-min candle update.
-    Updates candle_cache and pushes to SSE clients.
-    candle: { symbol, datetime (ms), open, high, low, close, volume }
+    Updates candle_cache, pushes to SSE clients, and persists completed
+    bars to CSV immediately (is_final=True = CHART_* completed bar).
+    candle: { symbol, datetime (ms), open, high, low, close, volume, is_final }
     """
     raw_symbol = candle['symbol']
-    # Map streamed symbol back to cache key (e.g. 'SPY' -> 'SPY', '/ES' -> '/ES')
-    cache_key = raw_symbol
+    cache_key  = raw_symbol
+    ts_ms      = candle['datetime']
+    is_final   = candle.get('is_final', False)
 
-    # Update candle cache — append or replace last candle
+    # Update candle cache — only for current or newer candles.
+    # CHART_EQUITY sends a history dump on subscribe; those old bars must NOT be
+    # appended (they already exist in the cache from the CSV) or the cache gets
+    # duplicates, which corrupts LW Charts setData() and causes tall green bars.
+    push_sse   = False
+    write_csv  = False
     with cache_lock:
         existing = candle_cache.get(cache_key, [])
-        if existing and existing[-1]['datetime'] == candle['datetime']:
-            existing[-1] = candle   # update in-progress candle
+        if existing:
+            last_ts = existing[-1]['datetime']
+            if ts_ms == last_ts:
+                existing[-1] = candle   # update the in-progress candle
+                push_sse = True
+            elif ts_ms > last_ts:
+                existing.append(candle) # genuinely new bar
+                push_sse  = True
+                write_csv = is_final    # only persist completed bars
+            # else: historical bar older than last cached — skip silently
         else:
             existing.append(candle)
+            push_sse  = True
+            write_csv = is_final
         candle_cache[cache_key] = existing
 
-    # Push to all SSE clients — time in seconds for JS (LW Charts needs seconds)
+    if not push_sse:
+        return   # stale history bar — don't corrupt the live chart
+
+    # Persist completed bar to CSV immediately so it survives a restart.
+    # append_candles deduplicates by datetime — safe if REST poll also writes it.
+    if write_csv:
+        csv_candle = {k: v for k, v in candle.items() if k != 'is_final'}
+        try:
+            with csv_lock:
+                append_candles(raw_symbol, [csv_candle])
+        except Exception as e:
+            print(f'[ERROR] CSV write {raw_symbol}: {e}')
+
+    # Strip is_final before pushing to browser — JS doesn't need it
     sse_push({
         'type':    'candle',
         'symbol':  raw_symbol,
-        'time':    candle['datetime'] // 1000,  # ms → seconds
+        'time':    ts_ms // 1000,   # ms → seconds
         'open':    candle['open'],
         'high':    candle['high'],
         'low':     candle['low'],
@@ -258,7 +313,8 @@ def on_streamer_candle(candle: dict):
     })
 
     ts = datetime.now().strftime('%H:%M:%S')
-    print(f'[{ts}] Streamer candle: {raw_symbol} {candle["close"]:.2f}')
+    flag = ' [saved]' if write_csv else ''
+    print(f'[{ts}] Streamer candle: {raw_symbol} {candle["close"]:.2f}{flag}')
 
 
 def on_flow_alert(alert: dict):

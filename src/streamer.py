@@ -76,7 +76,8 @@ def _make_request(service, command, req_id, customer_id, correl_id, parameters):
 
 
 def _parse_chart(msg: dict) -> list:
-    """Parse CHART_EQUITY / CHART_FUTURES content into candle dicts."""
+    """Parse CHART_EQUITY / CHART_FUTURES content into candle dicts.
+    These are completed bars — is_final=True."""
     candles = []
     for item in msg.get('content', []):
         ts_ms = item.get('7')
@@ -90,6 +91,7 @@ def _parse_chart(msg: dict) -> list:
             'low':      float(item.get('3', 0)),
             'close':    float(item.get('4', 0)),
             'volume':   int(item.get('5', 0)),
+            'is_final': True,   # completed bar — safe to persist to CSV
         })
     return candles
 
@@ -325,12 +327,14 @@ class SchwabStreamer:
                 'low':      last,
                 'close':    last,
                 'volume':   tick['volume'],
+                'is_final': False,  # in-progress tick — do NOT persist to CSV
             }
         else:
             live['close']  = last
             live['high']   = max(live['high'], last)
             live['low']    = min(live['low'],  last)
             live['volume'] = tick['volume']
+            # is_final stays False — still in progress
 
         try:
             self.on_candle(dict(self._live_candles[symbol]))

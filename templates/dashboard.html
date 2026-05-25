@@ -86,6 +86,31 @@
             position: relative;
         }
 
+        /* ── Timeframe buttons ── */
+        .tf-buttons {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 4px;
+            justify-content: flex-end;
+        }
+
+        .tf-btn {
+            background: none;
+            border: 1px solid #222233;
+            color: #444;
+            font-family: 'Courier New', monospace;
+            font-size: 0.58rem;
+            padding: 2px 6px;
+            border-radius: 3px;
+            cursor: pointer;
+            letter-spacing: 1px;
+            transition: border-color 0.1s, color 0.1s;
+            user-select: none;
+        }
+
+        .tf-btn:hover { border-color: #444; color: #888; }
+        .tf-btn.active { border-color: #00d4ff; color: #00d4ff; }
+
         /* ── Flow feed ── */
         #flow-feed {
             display: flex;
@@ -188,7 +213,7 @@
         #modal-close:hover { color: #fff; }
 
         #modal-chart-container {
-            height: 520px;
+            height: 560px;
             width: 100%;
             margin-top: 12px;
         }
@@ -201,7 +226,7 @@
     <div class="section-label">GAMMA EXPOSURE</div>
     <div class="grid" id="gex-grid"></div>
 
-    <div class="section-label">PRICE — 1 MIN · ET</div>
+    <div class="section-label">PRICE · ET</div>
     <div class="grid" id="price-grid"></div>
 
     <div class="section-label">OPTIONS FLOW</div>
@@ -228,7 +253,9 @@
         const PRICE_REFRESH_MS = 300000;  // Price: 5 min (streaming covers live updates)
 
         const gexCharts   = {};   // key (symbol-slot) -> { chart, series, chartData, spot }
-        const priceCharts = {};   // symbol -> { chart, series, candles }
+        const priceCharts = {};   // symbol -> { chart, candleSeries, volumeSeries }
+        const rawCandles  = {};   // symbol -> array of raw 1m candles (source of truth)
+        const selectedTF  = {};   // symbol -> timeframe in minutes (default 1)
         let   modalLWChart = null;
 
         // ── Timezone helper (LW Charts is UTC-only — shift timestamps to ET) ──
@@ -258,6 +285,41 @@
             const b = n / 1e9;
             return (b >= 0 ? '+' : '') + b.toFixed(2) + 'B';
         };
+
+        // ── Candle aggregation (client-side timeframe resampling) ────────────
+
+        /**
+         * Aggregate an array of 1m candles into larger timeframe bars.
+         * candles must be sorted ascending by .time (Unix seconds).
+         * minutes: 1, 5, 15, 30, 60
+         */
+        function aggregateCandles(candles, minutes) {
+            if (minutes === 1 || !candles.length) return candles;
+            const bucket = minutes * 60;   // seconds per bar
+            const groups = {};
+
+            for (const c of candles) {
+                const key = Math.floor(c.time / bucket) * bucket;
+                if (!groups[key]) {
+                    groups[key] = {
+                        time:   key,
+                        open:   c.open,
+                        high:   c.high,
+                        low:    c.low,
+                        close:  c.close,
+                        volume: c.volume || 0,
+                    };
+                } else {
+                    const g = groups[key];
+                    g.high   = Math.max(g.high, c.high);
+                    g.low    = Math.min(g.low,  c.low);
+                    g.close  = c.close;
+                    g.volume = (g.volume || 0) + (c.volume || 0);
+                }
+            }
+
+            return Object.values(groups).sort((a, b) => a.time - b.time);
+        }
 
         // ── Chart factory ────────────────────────────────────────────────────
 
@@ -309,7 +371,7 @@
             div.innerHTML = `
                 <div class="chart-div-header">
                     <div>
-                        <div class="chart-title">GEX · ${label}</div>
+                        <div class="chart-title">GEX · ${label}<span id="odte-date-${id}" style="margin-left:6px;color:#555;font-size:0.6rem;letter-spacing:1px;"></span></div>
                         <div class="symbol">${symbol}</div>
                         <div class="spot" id="spot-${id}">Loading...</div>
                     </div>
@@ -341,12 +403,28 @@
                         <div class="symbol">${symbol}</div>
                         <div class="spot" id="price-spot-${symbol}">—</div>
                     </div>
-                    <div style="text-align:right; color:#444; font-size:0.65rem;">
-                        1 MIN · ET
+                    <div>
+                        <div class="tf-buttons" id="tf-btns-${symbol}">
+                            <button class="tf-btn active" data-tf="1">1m</button>
+                            <button class="tf-btn" data-tf="5">5m</button>
+                            <button class="tf-btn" data-tf="15">15m</button>
+                            <button class="tf-btn" data-tf="30">30m</button>
+                            <button class="tf-btn" data-tf="60">1h</button>
+                        </div>
                     </div>
                 </div>
                 <div class="chart-container" id="price-canvas-${symbol}"></div>
             `;
+            // Wire up TF buttons — stopPropagation so dblclick on a button doesn't open modal
+            div.querySelectorAll('.tf-btn').forEach(btn => {
+                btn.addEventListener('click', e => {
+                    e.stopPropagation();
+                    const tf = parseInt(btn.dataset.tf);
+                    div.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    setTimeframe(symbol, tf);
+                });
+            });
             div.addEventListener('dblclick', () => expandPrice(symbol));
             return div;
         }
@@ -443,6 +521,13 @@
             renderGexChart(symbol, slot, chartData, spot);
         }
 
+        // Format "2026-05-22" → "05/22/2026"
+        function fmtOdteDate(iso) {
+            if (!iso) return '';
+            const [y, m, d] = iso.split('-');
+            return `${m}/${d}/${y}`;
+        }
+
         function updateGexDiv(symbol, data) {
             const multiTotal = data.multi.net_gex.reduce((a, b) => a + b, 0);
             const zeroTotal  = data.zero.net_gex.reduce((a, b) => a + b, 0);
@@ -450,9 +535,15 @@
             updateGexSlot(symbol, 'multi', data.multi, data.levels_multi, data.spot,
                           multiTotal, multiTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
 
-            const zeroDiv = document.getElementById(`gex-div-${symbol}-zero`);
+            const zeroDiv  = document.getElementById(`gex-div-${symbol}-zero`);
+            const dateEl   = document.getElementById(`odte-date-${symbol}-zero`);
+
             if (data.has_0dte) {
                 if (zeroDiv) zeroDiv.style.display = '';
+                // Stamp the 0DTE expiry date into the title
+                if (dateEl && data.odte_date) {
+                    dateEl.textContent = `· ${fmtOdteDate(data.odte_date)}`;
+                }
                 updateGexSlot(symbol, 'zero', data.zero, data.levels_0dte, data.spot,
                               zeroTotal, zeroTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
             } else {
@@ -460,50 +551,105 @@
             }
         }
 
-        // ── Price chart ───────────────────────────────────────────────────────
+        // ── Price chart (LW Charts — candles + volume) ────────────────────────
 
+        /**
+         * Build candlestick + volume series on an existing LW chart.
+         * Returns { candleSeries, volumeSeries }.
+         * candles: array of { time, open, high, low, close, volume }
+         */
         function buildCandleSeries(chart, candles) {
-            const series = chart.addSeries(LWC.CandlestickSeries, {
-                upColor:     '#00ff88',
-                downColor:   '#ff4444',
+            // Candlestick series (primary pane)
+            const candleSeries = chart.addSeries(LWC.CandlestickSeries, {
+                upColor:      '#00ff88',
+                downColor:    '#ff4444',
                 borderVisible: false,
                 wickUpColor:   '#00ff88',
                 wickDownColor: '#ff4444',
             });
-            series.setData(candles.map(c => ({
+
+            // Volume histogram — overlaid in same pane, pushed to bottom 15% via scaleMargins
+            const volumeSeries = chart.addSeries(LWC.HistogramSeries, {
+                priceFormat:       { type: 'volume' },
+                priceScaleId:      'volume',
+                lastValueVisible:  false,
+                priceLineVisible:  false,
+            });
+            chart.priceScale('volume').applyOptions({
+                scaleMargins: { top: 0.85, bottom: 0 },
+                visible: false,
+            });
+
+            _setSeriesData(candleSeries, volumeSeries, candles);
+            chart.timeScale().fitContent();
+            return { candleSeries, volumeSeries };
+        }
+
+        /** Push a full candle array into an existing candleSeries + volumeSeries pair. */
+        function _setSeriesData(candleSeries, volumeSeries, candles) {
+            candleSeries.setData(candles.map(c => ({
                 time:  c.time,
                 open:  c.open,
                 high:  c.high,
                 low:   c.low,
                 close: c.close,
             })));
-            chart.timeScale().fitContent();
-            return series;
+            volumeSeries.setData(candles.map(c => ({
+                time:  c.time,
+                value: c.volume || 0,
+                color: c.close >= c.open ? 'rgba(0,255,136,0.25)' : 'rgba(255,68,68,0.25)',
+            })));
         }
 
         function renderPriceChart(symbol, candles) {
+            if (!candles.length) return;
+
+            // Merge with any live SSE candles newer than the REST payload
+            const prevRaw    = rawCandles[symbol] || [];
+            const lastRestTs = candles[candles.length - 1].time;
+            const liveExtra  = prevRaw.filter(c => c.time > lastRestTs);
+            rawCandles[symbol] = [...candles, ...liveExtra];
+
+            if (!selectedTF[symbol]) selectedTF[symbol] = 1;
+
+            const display   = aggregateCandles(rawCandles[symbol], selectedTF[symbol]);
             const container = document.getElementById(`price-canvas-${symbol}`);
-            if (!container || !candles.length) return;
+            if (!container || !display.length) return;
 
             if (priceCharts[symbol]) {
-                // Chart already exists — update data in place (preserves zoom/scroll position)
-                priceCharts[symbol].series.setData(candles.map(c => ({
-                    time:  c.time,
-                    open:  c.open, high: c.high, low: c.low, close: c.close,
-                })));
-                priceCharts[symbol].candles = [...candles];
+                // Chart already exists — replace data in place
+                const entry = priceCharts[symbol];
+                _setSeriesData(entry.candleSeries, entry.volumeSeries, display);
+                entry.chart.timeScale().scrollToRealTime();
             } else {
                 // First render — create chart from scratch
                 container.innerHTML = '';
-                const chart  = makePriceChart(container);
-                const series = buildCandleSeries(chart, candles);
-                priceCharts[symbol] = { chart, series, candles: [...candles] };
+                const chart = makePriceChart(container);
+                const { candleSeries, volumeSeries } = buildCandleSeries(chart, display);
+                priceCharts[symbol] = { chart, candleSeries, volumeSeries };
             }
 
-            const last = candles[candles.length - 1];
+            const last = rawCandles[symbol][rawCandles[symbol].length - 1];
             if (last) {
                 document.getElementById(`price-spot-${symbol}`).textContent = last.close.toFixed(2);
             }
+        }
+
+        /**
+         * Switch a symbol's displayed timeframe and re-render from raw 1m data.
+         * Called when user clicks a TF button.
+         */
+        function setTimeframe(symbol, minutes) {
+            selectedTF[symbol] = minutes;
+            const raw = rawCandles[symbol];
+            if (!raw || !raw.length) return;
+
+            const display = aggregateCandles(raw, minutes);
+            const entry   = priceCharts[symbol];
+            if (!entry) return;
+
+            _setSeriesData(entry.candleSeries, entry.volumeSeries, display);
+            entry.chart.timeScale().fitContent();
         }
 
         // ── Streaming ─────────────────────────────────────────────────────────
@@ -518,28 +664,48 @@
             const entry = priceCharts[symbol];
             if (!entry) return;   // chart not yet loaded — polling will catch it
 
-            const lwCandle = {
-                time:  candle.time,
-                open:  candle.open,
-                high:  candle.high,
-                low:   candle.low,
-                close: candle.close,
-            };
-            entry.series.update(lwCandle);   // appends new or updates last candle in place
-
-            // Keep in-memory candle array consistent (for modal expand)
-            const apiCandle = { time: candle.time, open: candle.open, high: candle.high,
-                                low: candle.low, close: candle.close };
-            const last = entry.candles[entry.candles.length - 1];
+            // Update raw 1m store
+            if (!rawCandles[symbol]) rawCandles[symbol] = [];
+            const raw  = rawCandles[symbol];
+            const last = raw[raw.length - 1];
             if (last && last.time === candle.time) {
-                entry.candles[entry.candles.length - 1] = apiCandle;
-            } else {
-                entry.candles.push(apiCandle);
+                raw[raw.length - 1] = { ...candle };
+            } else if (!last || candle.time > last.time) {
+                raw.push({ ...candle });
             }
 
-            // Update spot price display
+            // Update spot display
             const el = document.getElementById(`price-spot-${symbol}`);
             if (el) el.textContent = candle.close.toFixed(2);
+
+            // Re-aggregate the bucket that contains this candle for the active TF
+            const tf         = selectedTF[symbol] || 1;
+            const bucket     = tf * 60;
+            const bucketTime = Math.floor(candle.time / bucket) * bucket;
+            const subset     = raw.filter(c => Math.floor(c.time / bucket) * bucket === bucketTime);
+            if (!subset.length) return;
+
+            const agg = {
+                time:   bucketTime,
+                open:   subset[0].open,
+                high:   Math.max(...subset.map(c => c.high)),
+                low:    Math.min(...subset.map(c => c.low)),
+                close:  subset[subset.length - 1].close,
+                volume: subset.reduce((s, c) => s + (c.volume || 0), 0),
+            };
+
+            entry.candleSeries.update({
+                time:  agg.time,
+                open:  agg.open,
+                high:  agg.high,
+                low:   agg.low,
+                close: agg.close,
+            });
+            entry.volumeSeries.update({
+                time:  agg.time,
+                value: agg.volume,
+                color: agg.close >= agg.open ? 'rgba(0,255,136,0.25)' : 'rgba(255,68,68,0.25)',
+            });
         }
 
         const MAX_FLOW_ROWS = 50;
@@ -647,21 +813,26 @@
         }
 
         function expandPrice(symbol) {
-            const entry = priceCharts[symbol];
-            if (!entry || !entry.candles.length) return;
-            const last = entry.candles[entry.candles.length - 1];
+            const raw = rawCandles[symbol];
+            if (!raw || !raw.length) return;
+
+            const tf      = selectedTF[symbol] || 1;
+            const display = aggregateCandles(raw, tf);
+            const last    = display[display.length - 1];
+            const tfLabel = tf === 60 ? '1H' : `${tf}M`;
+
             openModal(`
                 <div style="margin-bottom:8px">
-                    <div style="font-size:0.65rem;color:#444;letter-spacing:2px">PRICE · 1 MIN · ET</div>
+                    <div style="font-size:0.65rem;color:#444;letter-spacing:2px">PRICE · ${tfLabel} · ET</div>
                     <div style="font-size:1.4rem;color:#fff;font-weight:bold">${symbol}
                         <span style="font-size:1rem;color:#00d4ff">${last ? last.close.toFixed(2) : ''}</span>
                     </div>
-                    <div style="font-size:0.8rem;color:#555">Double-click to expand · Press ESC to close</div>
+                    <div style="font-size:0.8rem;color:#555">Press ESC to close</div>
                 </div>
             `);
             const container = document.getElementById('modal-chart-container');
             modalLWChart = makePriceChart(container);
-            buildCandleSeries(modalLWChart, entry.candles);
+            buildCandleSeries(modalLWChart, display);
         }
 
         document.getElementById('modal-close').addEventListener('click', closeModal);
@@ -708,7 +879,10 @@
             gexGrid.appendChild(createGexDiv(s, 'multi'));
             gexGrid.appendChild(createGexDiv(s, 'zero'));
         });
-        PRICE_SYMBOLS.forEach(s => priceGrid.appendChild(createPriceDiv(s)));
+        PRICE_SYMBOLS.forEach(s => {
+            selectedTF[s] = 1;   // default to 1m
+            priceGrid.appendChild(createPriceDiv(s));
+        });
 
         // Initial full load
         fetchGexAll();

@@ -10,14 +10,15 @@ ET = ZoneInfo('America/New_York')
 CANDLE_FIELDS = ['datetime', 'open', 'high', 'low', 'close', 'volume']
 
 
-def csv_path(symbol: str) -> str:
+def csv_path(symbol: str, interval: str = '1m') -> str:
     safe = symbol.replace('$', '').replace('/', '')
-    return os.path.join(DATA_DIR, f'price_history_{safe}.csv')
+    suffix = '' if interval == '1m' else f'_{interval}'
+    return os.path.join(DATA_DIR, f'price_history_{safe}{suffix}.csv')
 
 
-def load_candles(symbol: str) -> list:
-    """Load all candles from CSV on disk."""
-    path = csv_path(symbol)
+def load_candles(symbol: str, interval: str = '1m') -> list:
+    """Load all candles from CSV on disk, always sorted ascending by datetime."""
+    path = csv_path(symbol, interval)
     if not os.path.exists(path):
         return []
     rows = []
@@ -32,12 +33,13 @@ def load_candles(symbol: str) -> list:
                 'close':    float(row['close']),
                 'volume':   int(row['volume'])
             })
+    rows.sort(key=lambda c: c['datetime'])
     return rows
 
 
-def save_candles(symbol: str, candles: list):
+def save_candles(symbol: str, candles: list, interval: str = '1m'):
     """Write full candle list to CSV, replacing existing file."""
-    path = csv_path(symbol)
+    path = csv_path(symbol, interval)
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=CANDLE_FIELDS)
@@ -45,10 +47,10 @@ def save_candles(symbol: str, candles: list):
         writer.writerows(candles)
 
 
-def append_candles(symbol: str, candles: list):
+def append_candles(symbol: str, candles: list, interval: str = '1m'):
     """Append new candles to existing CSV, skipping duplicates by datetime."""
-    path = csv_path(symbol)
-    existing = load_candles(symbol)
+    path = csv_path(symbol, interval)
+    existing = load_candles(symbol, interval)
     existing_dts = {c['datetime'] for c in existing}
 
     new_candles = [c for c in candles if c['datetime'] not in existing_dts]
@@ -63,6 +65,20 @@ def append_candles(symbol: str, candles: list):
         writer.writerows(new_candles)
 
     return len(new_candles)
+
+
+def sort_and_dedup_csv(symbol: str, interval: str = '1m'):
+    """Re-sort a CSV by datetime ascending and remove any duplicate timestamps.
+    Safe to call at any time — writes atomically to a temp file then renames."""
+    candles = load_candles(symbol, interval)
+    if not candles:
+        return 0
+    seen = {}
+    for c in candles:
+        seen[c['datetime']] = c   # last write wins on dup
+    unique = sorted(seen.values(), key=lambda x: x['datetime'])
+    save_candles(symbol, unique, interval)
+    return len(unique)
 
 
 def fetch_candles(symbol: str, token: str, days: int = 1, frequency: int = 1) -> list:
