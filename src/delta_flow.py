@@ -316,8 +316,4 @@ def process_chain_snapshot(new_snap: dict):
 
     net      = (total_call + total_put) / 1e6
     net_0dte = (total_call_0dte + total_put_0dte) / 1e6
-    print(
-        f'[{now_et.strftime("%H:%M:%S")}] Chain flow: {contracts_hit} contracts'
-        f'  call={total_call/1e6:+.1f}M  put={total_put/1e6:+.1f}M  net={net:+.1f}M'
-        f'  | 0DTE net={net_0dte:+.1f}M'
-    )
+    p

@@ -1535,6 +1535,13 @@
                 // Store alerts for marker rendering — applyFlowMarkers() is called
                 // automatically by renderPriceChart when SPX candles load
                 for (const a of alerts) _flowMarkers.push(a);
+                // Wait for SPX chart to be ready then apply markers
+                const waitAndApply = setInterval(() => {
+                    if (priceCharts['SPX']?.markersPrimitive) {
+                        clearInterval(waitAndApply);
+                        applyFlowMarkers();
+                    }
+                }, 200);
             } catch(e) { console.error('flow_alerts restore:', e); }
         })();
 
