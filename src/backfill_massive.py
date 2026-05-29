@@ -22,6 +22,7 @@ Set your API key via env var or edit API_KEY below:
 
 import os
 import sys
+import shutil
 import time
 import argparse
 import requests
@@ -29,7 +30,18 @@ from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(__file__))
-from price_history import append_candles, load_candles
+from price_history import append_candles, load_candles, csv_path
+
+
+def snapshot_csv(symbol: str):
+    """Copy symbol's CSV to a timestamped snapshot before any writes."""
+    src = csv_path(symbol)
+    if not os.path.exists(src):
+        return
+    ts  = datetime.now().strftime('%Y%m%d_%H%M%S')
+    dst = src.replace('.csv', f'.snapshot_{ts}.csv')
+    shutil.copy2(src, dst)
+    print(f"  Snapshot: {os.path.basename(dst)}")
 
 # ── Config ──────────────────────────────────────────────────────────────────────
 
@@ -60,7 +72,8 @@ ES_CONTRACTS = [
     ('ESU5', '2025-06-20', '2025-09-18'),
     ('ESZ5', '2025-09-19', '2025-12-18'),
     ('ESH6', '2025-12-19', '2026-03-19'),
-    ('ESM6', '2026-03-20', '2099-12-31'),  # current front month — open-ended
+    ('ESM6', '2026-03-20', '2026-06-19'),  # rolls to ESU6 on 3rd Friday of June
+    ('ESU6', '2026-06-20', '2099-12-31'),  # next front month — open-ended
 ]
 
 
@@ -204,6 +217,10 @@ def backfill_symbol(app_symbol: str, from_date: str, to_date: str,
 
     existing = load_candles(app_symbol, interval='1m')
     print(f"  Existing 1m candles on disk: {len(existing)}")
+
+    # Always snapshot before touching the CSV
+    if not dry_run:
+        snapshot_csv(app_symbol)
 
     total_added = 0
 

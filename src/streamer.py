@@ -2,9 +2,9 @@
 Schwab WebSocket streamer — real-time candle updates + options flow monitoring.
 
 Subscriptions:
-  CHART_EQUITY      → SPY, QQQ        (1-min OHLCV candles, bar boundaries)
+  CHART_EQUITY      → (none — $SPX is a cash index; CHART_EQUITY returns bad bars for indexes)
   CHART_FUTURES     → /ES             (1-min OHLCV candles, bar boundaries)
-  LEVELONE_EQUITIES → SPY, QQQ        (tick-by-tick last price — animates current candle)
+  LEVELONE_EQUITIES → $SPX            (tick-by-tick last price — animates live candle)
   LEVELONE_FUTURES  → /ES             (tick-by-tick last price — animates current candle)
   LEVELONE_OPTIONS  → call-wall strikes (volume spike / flow alerts)
 
@@ -29,7 +29,12 @@ from datetime import datetime
 from gex import get_access_token
 
 # ── Price streaming ─────────────────────────────────────────────────────────────
-STREAM_EQUITY  = ['SPY', 'QQQ']
+# STREAM_CHART_EQUITY: symbols that get CHART_EQUITY bars (tradeable ETFs only).
+# Cash indexes like $SPX must NOT be in this list — Schwab's CHART_EQUITY service
+# returns a sequence counter instead of open price for index symbols, corrupting
+# the CSV.  $SPX gets historical bars via the REST price history API instead.
+STREAM_CHART_EQUITY = []       # no CHART_EQUITY subscriptions needed right now
+STREAM_LEVELONE_EQUITY = ['$SPX']  # LEVELONE only — real-time last price for live candle
 STREAM_FUTURES = ['/ES']
 CHART_FIELDS        = '0,1,2,3,4,5,6,7,8'
 LEVELONE_FIELDS     = '3,8'    # field 3 = last price, field 8 = total volume
@@ -151,6 +156,11 @@ class SchwabStreamer:
         # Live candle state — one per symbol, updated on every tick
         # Used to animate the current 1-min bar between CHART_EQUITY bar boundaries
         self._live_candles   = {}    # symbol -> { symbol, datetime (ms), open, high, low, close, volume }
+
+        # Per-minute volume tracking — LEVELONE field 8 is cumulative DAY volume,
+        # not per-bar volume.  We record the day-volume at the start of each minute
+        # and compute an incremental delta so the volume histogram stays reasonable.
+        self._minute_vol_start = {}  # symbol -> day volume at the start of this minute
 
         # Options watch list — set via update_options_watch()
         # contract_info: symbol -> { strike, side, expiry_label, weight, underlying }
@@ -286,15 +296,22 @@ class SchwabStreamer:
         self._ws.run_forever(ping_interval=25, ping_timeout=10)
 
     def _subscribe_price(self, ws, cid, corr):
-        ws.send(_make_request('CHART_EQUITY',      'SUBS', 1, cid, corr,
-                              {'keys': ','.join(STREAM_EQUITY),  'fields': CHART_FIELDS}))
+        # CHART_EQUITY — tradeable ETFs only (not cash indexes like $SPX)
+        if STREAM_CHART_EQUITY:
+            ws.send(_make_request('CHART_EQUITY', 'SUBS', 1, cid, corr,
+                                  {'keys': ','.join(STREAM_CHART_EQUITY), 'fields': CHART_FIELDS}))
+
+        # CHART_FUTURES — completed 1-min bars with proper OHLCV
         ws.send(_make_request('CHART_FUTURES',     'SUBS', 2, cid, corr,
                               {'keys': ','.join(STREAM_FUTURES), 'fields': CHART_FIELDS}))
+
+        # LEVELONE — tick-by-tick last price to animate the live candle
         ws.send(_make_request('LEVELONE_EQUITIES', 'SUBS', 4, cid, corr,
-                              {'keys': ','.join(STREAM_EQUITY),  'fields': LEVELONE_FIELDS}))
+                              {'keys': ','.join(STREAM_LEVELONE_EQUITY), 'fields': LEVELONE_FIELDS}))
         ws.send(_make_request('LEVELONE_FUTURES',  'SUBS', 5, cid, corr,
                               {'keys': ','.join(STREAM_FUTURES), 'fields': LEVELONE_FIELDS}))
-        print(f'[STREAMER] Subscribed CHART + LEVELONE: {STREAM_EQUITY + STREAM_FUTURES}')
+        print(f'[STREAMER] Subscribed LEVELONE equities: {STREAM_LEVELONE_EQUITY}')
+        print(f'[STREAMER] Subscribed CHART+LEVELONE futures: {STREAM_FUTURES}')
 
     def _subscribe_options(self, ws, cid, corr):
         with self._watch_lock:
@@ -309,15 +326,22 @@ class SchwabStreamer:
         """
         Update the live in-progress candle for a symbol on each price tick.
         Fires on_candle so the browser updates the current bar in real time.
+
+        LEVELONE field 8 is cumulative DAY volume, not per-minute volume.
+        We track the baseline at the start of each minute and send only the
+        incremental delta — otherwise the volume histogram spikes to millions
+        and collapses the chart's Y-axis.
         """
-        symbol = tick['symbol']
-        last   = tick['last']
-        now_ms = _floor_minute_ms()
+        symbol   = tick['symbol']
+        last     = tick['last']
+        day_vol  = tick['volume']   # cumulative total for the day
+        now_ms   = _floor_minute_ms()
 
         live = self._live_candles.get(symbol)
 
         if live is None or live['datetime'] != now_ms:
-            # New minute — start a fresh candle; open from prev close if available
+            # New minute — record day-volume baseline so we can compute the delta
+            self._minute_vol_start[symbol] = day_vol
             open_price = live['close'] if live else last
             self._live_candles[symbol] = {
                 'symbol':   symbol,
@@ -326,14 +350,17 @@ class SchwabStreamer:
                 'high':     last,
                 'low':      last,
                 'close':    last,
-                'volume':   tick['volume'],
-                'is_final': False,  # in-progress tick — do NOT persist to CSV
+                'volume':   0,      # no trades yet in this new minute
+                'is_final': False,
             }
         else:
+            # Compute per-minute volume as delta from the start of this minute
+            baseline   = self._minute_vol_start.get(symbol, day_vol)
+            min_volume = max(0, day_vol - baseline)
             live['close']  = last
             live['high']   = max(live['high'], last)
             live['low']    = min(live['low'],  last)
-            live['volume'] = tick['volume']
+            live['volume'] = min_volume
             # is_final stays False — still in progress
 
         try:
@@ -372,23 +399,23 @@ class SchwabStreamer:
 
         # Underlying symbol — strip option suffix (e.g. "SPY   260522C..." → "SPY")
         underlying = meta.get('underlying') or symbol[:3].strip()
-
-        alert = {
-            'symbol':         symbol,
-            'underlying':     underlying,
-            'strike':         meta['strike'],
-            'side':           meta['side'],           # 'call' | 'put'
-            'expiry_label':   meta['expiry_label'],   # '0DTE' | 'MULTI'
-            'is_0dte':        meta['is_0dte'],
-            'weight':         meta['weight'],
-            'volume_delta':   delta,
-            'weighted_delta': round(weighted, 1),
-            'last':           quote['last'],
-            'bid':            quote['bid'],
-            'ask':            quote['ask'],
-            'direction':      direction,
-            'time':           datetime.now().strftime('%H:%M:%S'),
-        }
-
         if self.on_flow_alert:
-            self.on_flow_alert(alert)
+            try:
+                self.on_flow_alert({
+                    'symbol':         symbol,
+                    'underlying':     underlying,
+                    'strike':         meta['strike'],
+                    'side':           meta['side'],
+                    'expiry_label':   meta['expiry_label'],
+                    'is_0dte':        meta.get('is_0dte', False),
+                    'volume_delta':   delta,
+                    'weighted_delta': weighted,
+                    'last':           quote['last'],
+                    'bid':            quote['bid'],
+                    'ask':            quote['ask'],
+                    'direction':      direction,
+                    'delta':          meta.get('delta', 0.50),
+                    'oi':             meta.get('oi', 0),
+                })
+            except Exception as exc:
+                print(f'[STREAMER] on_flow_alert error: {exc}')

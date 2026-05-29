@@ -1,11 +1,13 @@
 import os
 import csv
+import time
 import requests
 from datetime import datetime, timezone, timedelta, time as dtime
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
-DATA_DIR = 'data'
+_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(os.path.dirname(_SRC_DIR), 'data')
 ET = ZoneInfo('America/New_York')
 CANDLE_FIELDS = ['datetime', 'open', 'high', 'low', 'close', 'volume']
 
@@ -17,14 +19,21 @@ def csv_path(symbol: str, interval: str = '1m') -> str:
 
 
 def load_candles(symbol: str, interval: str = '1m') -> list:
-    """Load all candles from CSV on disk, always sorted ascending by datetime."""
+    """Load all candles from CSV on disk, always sorted ascending by datetime.
+    Strips NUL bytes before parsing so a partial-write corruption never crashes the app."""
     path = csv_path(symbol, interval)
     if not os.path.exists(path):
         return []
     rows = []
-    with open(path, 'r', newline='') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
+    with open(path, 'rb') as f:
+        raw = f.read()
+    # Strip NUL bytes (can appear at EOF after a write that pre-allocates space)
+    if b'\x00' in raw:
+        raw = raw.replace(b'\x00', b'')
+    import io
+    reader = csv.DictReader(io.StringIO(raw.decode('utf-8', errors='replace')))
+    for row in reader:
+        try:
             rows.append({
                 'datetime': int(row['datetime']),
                 'open':     float(row['open']),
@@ -33,6 +42,8 @@ def load_candles(symbol: str, interval: str = '1m') -> list:
                 'close':    float(row['close']),
                 'volume':   int(row['volume'])
             })
+        except (ValueError, KeyError):
+            pass   # skip malformed rows
     rows.sort(key=lambda c: c['datetime'])
     return rows
 
@@ -81,19 +92,39 @@ def sort_and_dedup_csv(symbol: str, interval: str = '1m'):
     return len(unique)
 
 
-def fetch_candles(symbol: str, token: str, days: int = 1, frequency: int = 1) -> list:
-    """Fetch OHLCV candles from Schwab price history API."""
+def fetch_candles(symbol: str, token: str, days: int = 1, frequency: int = 1,
+                  start_ms: int = None, end_ms: int = None) -> list:
+    """
+    Fetch OHLCV candles from Schwab price history API.
+
+    If start_ms / end_ms are given (Unix ms), they override period/periodType.
+    Schwab's `period=N` only covers completed trading sessions — it will NOT
+    include the current live session.  Use start_ms/end_ms to pull today's data.
+    """
+    if start_ms is not None and end_ms is not None:
+        # Explicit date range — Schwab ignores period/periodType when these are set
+        params = {
+            'symbol':               symbol,
+            'frequencyType':        'minute',
+            'frequency':            frequency,
+            'startDate':            int(start_ms),
+            'endDate':              int(end_ms),
+            'needExtendedHoursData': True,
+        }
+    else:
+        params = {
+            'symbol':               symbol,
+            'periodType':           'day',
+            'period':               days,
+            'frequencyType':        'minute',
+            'frequency':            frequency,
+            'needExtendedHoursData': True,
+        }
+
     response = requests.get(
         'https://api.schwabapi.com/marketdata/v1/pricehistory',
         headers={'Authorization': f'Bearer {token}'},
-        params={
-            'symbol': symbol,
-            'periodType': 'day',
-            'period': days,
-            'frequencyType': 'minute',
-            'frequency': frequency,
-            'needExtendedHoursData': True
-        }
+        params=params,
     )
 
     if not response.ok:
@@ -121,10 +152,16 @@ def format_time(dt_ms: int) -> str:
 def sync_symbol(symbol: str, token: str) -> list:
     """
     Load existing candles from disk, detect gap since last candle,
-    fetch missing data from Schwab, merge and save.
+    fetch missing data from Schwab, merge and save.  Also fetches today's
+    live session separately because Schwab's period= param only covers
+    completed trading days.
     Returns full candle list.
     """
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo('America/New_York')
+
     existing = load_candles(symbol)
+    total_added = 0
 
     if existing:
         last_ts = existing[-1]['datetime'] / 1000
@@ -137,14 +174,28 @@ def sync_symbol(symbol: str, token: str) -> list:
         gap_days = 10
         print(f"[price_history] {symbol}: no existing data, fetching {gap_days} days")
 
+    # Pass 1: completed sessions
     fresh = fetch_candles(symbol, token, days=gap_days)
+    if fresh:
+        added = append_candles(symbol, fresh)
+        total_added += added
 
-    if not fresh:
+    # Pass 2: today's live session (period= never includes current day)
+    today_midnight = datetime.now(tz=ET).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_ms = int(today_midnight.timestamp() * 1000)
+    end_ms   = int((time.time() + 3600) * 1000)
+    live = fetch_candles(symbol, token, frequency=1, start_ms=start_ms, end_ms=end_ms)
+    if live:
+        added = append_candles(symbol, live)
+        total_added += added
+        if added > 0:
+            print(f"[price_history] {symbol}: +{added} candles from today's live session")
+
+    if not fresh and not live:
         print(f"[price_history] No candles returned for {symbol}")
         return existing
 
-    added = append_candles(symbol, fresh)
-    print(f"[price_history] {symbol}: {len(existing)} existing + {added} new candles added")
+    print(f"[price_history] {symbol}: {len(existing)} existing + {total_added} new candles added")
 
     return load_candles(symbol)
 
@@ -360,28 +411,5 @@ if __name__ == '__main__':
     import sys
     from gex import get_access_token
     token = get_access_token()
-
-    args = sys.argv[1:]
-
-    if '--fill-gaps' in args or '--fill' in args:
-        dry = '--dry-run' in args
-        FILL_SYMBOLS = ['SPY', 'QQQ', '$SPX', '/ES']
-        fill_all_gaps(token, symbols=FILL_SYMBOLS, dry_run=dry)
-
-    elif '--check-gaps' in args or '--check' in args:
-        for sym in ['SPY', 'QQQ', '$SPX', '/ES']:
-            gaps = find_gaps(sym)
-            fillable = sum(1 for g in gaps if g['fillable'])
-            print(f"\n{sym}: {len(gaps)} gap(s)  ({fillable} fillable)")
-            for g in gaps:
-                tag = '[OK]' if g['fillable'] else '[X] '
-                if 'gap_minutes' in g:
-                    print(f"  {tag} {g['date']}  {g['gap_minutes']} min gap")
-                else:
-                    print(f"  {tag} {g['date']}  {g['candle_count']} candles ({g['missing']} missing)")
-
-    else:
-        BACKFILL_SYMBOLS = ['SPY', 'QQQ', '$SPX', '/ES']
-        for sym in BACKFILL_SYMBOLS:
-            backfill(sym, token, days=10)
-        print("\nDone. Check data/ folder for CSV files.")
+    symbols = sys.argv[1:] or None
+    fill_all_gaps(token, symbols)

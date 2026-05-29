@@ -111,14 +111,26 @@
         .tf-btn:hover { border-color: #444; color: #888; }
         .tf-btn.active { border-color: #00d4ff; color: #00d4ff; }
 
+        /* ── Flow + Delta grid ── */
+        .flow-delta-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+            margin-bottom: 20px;
+            align-items: start;
+        }
+        @media (max-width: 900px) {
+            .flow-delta-grid { grid-template-columns: 1fr; }
+        }
+
         /* ── Flow feed ── */
         #flow-feed {
             display: flex;
             flex-direction: column;
             gap: 4px;
-            margin-bottom: 20px;
-            max-height: 320px;
+            max-height: 420px;
             overflow-y: auto;
+            margin-bottom: 20px;
         }
 
         #flow-feed:empty::after {
@@ -130,15 +142,13 @@
         }
 
         .flow-row {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            background: #12121a;
-            border: 1px solid #1e1e2e;
+            display: grid;
+            grid-template-columns: 80px 1fr;
+            gap: 0;
             border-radius: 6px;
-            padding: 7px 12px;
             font-size: 0.72rem;
             animation: flowIn 0.2s ease;
+            overflow: hidden;
         }
 
         @keyframes flowIn {
@@ -146,15 +156,41 @@
             to   { opacity: 1; transform: translateY(0); }
         }
 
-        .flow-row.call  { border-left: 3px solid #00ff88; }
-        .flow-row.put   { border-left: 3px solid #ff4444; }
+        /* bullish = green bg, bearish = red bg */
+        .flow-row.bullish { background: rgba(0,200,80,0.10); border: 1px solid rgba(0,200,80,0.25); }
+        .flow-row.bearish { background: rgba(255,50,50,0.10); border: 1px solid rgba(255,50,50,0.25); }
 
-        .flow-time  { color: #444; min-width: 52px; }
-        .flow-sym   { color: #fff; font-weight: bold; min-width: 38px; letter-spacing: 1px; }
-        .flow-strike { color: #00d4ff; min-width: 54px; }
-        .flow-side  { font-weight: bold; min-width: 36px; }
-        .flow-side.call { color: #00ff88; }
-        .flow-side.put  { color: #ff4444; }
+        .flow-row-time {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 3px;
+            padding: 6px 10px;
+            border-right: 1px solid #1e1e2e;
+            min-width: 70px;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .flow-row-time .flow-ts  { color: #888; font-size: 0.7rem; letter-spacing: 0.5px; }
+        .flow-row-time .flow-ago { color: #00d4ff; font-size: 0.65rem; font-weight: bold; letter-spacing: 0.5px; }
+        .flow-row.bullish .flow-row-time { border-right-color: rgba(0,200,80,0.2); }
+        .flow-row.bearish .flow-row-time { border-right-color: rgba(255,50,50,0.2); }
+
+        .flow-row-body {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px 10px;
+            padding: 6px 10px;
+        }
+
+        .flow-sym    { color: #fff; font-weight: bold; letter-spacing: 1px; }
+        .flow-strike { color: #00d4ff; }
+        .flow-side   { font-weight: bold; }
+        /* side color follows sentiment, not the option type */
+        .flow-row.bullish .flow-side { color: #00ff88; }
+        .flow-row.bearish .flow-side { color: #ff4444; }
 
         .flow-badge {
             font-size: 0.6rem;
@@ -166,12 +202,15 @@
         .flow-badge.dte0  { background: #1a0a2a; color: #cc88ff; border: 1px solid #cc88ff; }
         .flow-badge.multi { background: #0a1a1a; color: #448888; border: 1px solid #448888; }
 
-        .flow-vol   { color: #bbb; min-width: 80px; }
-        .flow-dir   { font-weight: bold; min-width: 38px; letter-spacing: 1px; }
-        .flow-dir.BUY  { color: #00ff88; }
-        .flow-dir.SELL { color: #ff4444; }
-        .flow-price { color: #555; font-size: 0.68rem; }
-        .flow-score { color: #333; font-size: 0.65rem; margin-left: auto; }
+        .flow-dir                    { font-weight: bold; letter-spacing: 1px; }
+        .flow-row.bullish .flow-dir  { color: #00ff88; }
+        .flow-row.bearish .flow-dir  { color: #ff4444; }
+        .flow-vol        { color: #ccc; }
+        .flow-notional   { font-weight: bold; font-size: 0.75rem; margin-left: auto; }
+        .flow-row.bullish .flow-notional { color: #00cc55; }
+        .flow-row.bearish .flow-notional { color: #ff5555; }
+        .flow-price      { color: #555; font-size: 0.66rem; }
+        .flow-delta      { color: #666; font-size: 0.65rem; }
 
         /* ── Modal ── */
         #modal-overlay {
@@ -217,20 +256,125 @@
             width: 100%;
             margin-top: 12px;
         }
+
+        /* ── 0DTE countdown ── */
+        #odte-countdown-bar {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 18px;
+            margin-bottom: 18px;
+            padding: 8px 16px;
+            background: #0e0e18;
+            border: 1px solid #1e1e2e;
+            border-radius: 7px;
+            font-size: 0.7rem;
+            letter-spacing: 2px;
+        }
+
+        #odte-countdown-bar .cd-label {
+            color: #333;
+        }
+
+        #odte-countdown-timer {
+            color: #cc88ff;
+            font-size: 1.05rem;
+            font-weight: bold;
+            letter-spacing: 3px;
+            min-width: 90px;
+            text-align: center;
+        }
+
+        #odte-countdown-timer.urgent {
+            color: #ff4444;
+        }
+
+        #odte-countdown-timer.expired {
+            color: #333;
+        }
+
+        #odte-session-clock {
+            color: #555;
+            font-size: 0.75rem;
+            letter-spacing: 2px;
+        }
+
+        #odte-session-phase {
+            font-size: 0.65rem;
+            padding: 2px 7px;
+            border-radius: 3px;
+            letter-spacing: 1px;
+            font-weight: bold;
+        }
+        .phase-premarket  { background: #0a0a1a; color: #444;    border: 1px solid #222; }
+        .phase-open       { background: #0d2b1a; color: #00ff88; border: 1px solid #00ff88; }
+        .phase-midday     { background: #1a1a0a; color: #888844; border: 1px solid #555522; }
+        .phase-powerhr    { background: #1a0d00; color: #ffaa00; border: 1px solid #ffaa00; }
+        .phase-pinrisk    { background: #2b0d0d; color: #ff4444; border: 1px solid #ff4444; }
+        .phase-closed     { background: #0a0a0a; color: #333;    border: 1px solid #222; }
     </style>
 </head>
 <body>
     <h1>⬡ GEX DASHBOARD</h1>
     <div id="last-update">Initializing... <span id="stream-dot" title="Streaming status" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#333;margin-left:6px;vertical-align:middle;"></span></div>
 
+    <div id="odte-countdown-bar">
+        <span class="cd-label">0DTE EXPIRES</span>
+        <span id="odte-countdown-timer">--:--:--</span>
+        <span id="odte-session-phase" class="phase-closed">CLOSED</span>
+        <span id="odte-session-clock">--:--:--</span>
+    </div>
+
     <div class="section-label">GAMMA EXPOSURE</div>
     <div class="grid" id="gex-grid"></div>
 
-    <div class="section-label">PRICE · ET</div>
+    <div class="section-label">PRICE</div>
     <div class="grid" id="price-grid"></div>
 
     <div class="section-label">OPTIONS FLOW</div>
     <div id="flow-feed"></div>
+
+    <div class="section-label">CUMULATIVE DEALER DELTA</div>
+    <div class="flow-delta-grid">
+        <div class="chart-div" id="delta-flow-div">
+            <div class="chart-div-header">
+                <div>
+                    <div class="chart-title">CUMULATIVE DEALER DELTA · TODAY · ALL EXPIRIES</div>
+                    <div class="symbol" style="font-size:0.9rem">Δ FLOW</div>
+                    <div style="font-size:0.68rem;margin-top:3px">
+                        <span id="delta-call-val" style="color:#cc44ff">call: —</span>
+                        &nbsp;&nbsp;
+                        <span id="delta-put-val"  style="color:#d4a017">put: —</span>
+                    </div>
+                </div>
+                <div style="font-size:0.65rem;color:#555;text-align:right;line-height:1.7">
+                    <span style="color:#cc44ff">■</span> CALL<br>
+                    <span style="color:#d4a017">■</span> PUT
+                </div>
+            </div>
+            <div class="chart-container" id="delta-flow-canvas" style="height:300px"></div>
+        </div>
+    </div>
+
+        <div class="chart-div" id="delta-flow-0dte-div">
+            <div class="chart-div-header">
+                <div>
+                    <div class="chart-title">CUMULATIVE DEALER DELTA · TODAY · 0DTE ONLY</div>
+                    <div class="symbol" style="font-size:0.9rem">Δ FLOW 0DTE</div>
+                    <div style="font-size:0.68rem;margin-top:3px">
+                        <span id="delta-0dte-call-val" style="color:#cc44ff">call: —</span>
+                        &nbsp;&nbsp;
+                        <span id="delta-0dte-put-val"  style="color:#d4a017">put: —</span>
+                    </div>
+                </div>
+                <div style="font-size:0.65rem;color:#555;text-align:right;line-height:1.7">
+                    <span style="color:#cc44ff">■</span> CALL<br>
+                    <span style="color:#d4a017">■</span> PUT
+                </div>
+            </div>
+            <div class="chart-container" id="delta-flow-0dte-canvas" style="height:300px"></div>
+        </div>
+    </div>
 
     <!-- Expand modal -->
     <div id="modal-overlay">
@@ -244,11 +388,11 @@
     <script>
         const LWC = window.LightweightCharts;
 
-        const GEX_SYMBOLS    = ['SPX', 'SPY', 'QQQ'];
-        const PRICE_SYMBOLS  = ['SPY', 'QQQ', 'SPX', 'ES'];
+        const GEX_SYMBOLS    = ['SPX' /*, 'SPY', 'QQQ' */];
+        const PRICE_SYMBOLS  = ['SPX', 'ES'];
         // Streamed symbols get live updates via SSE; poll them infrequently as a fallback.
         // Non-streamed symbols (SPX) still depend on the 30s GEX poll for price.
-        const STREAM_SYMBOLS = new Set(['SPY', 'QQQ', 'ES']);  // match streamer.py
+        const STREAM_SYMBOLS = new Set([/* 'SPY', 'QQQ', */ 'ES']);  // match streamer.py
         const GEX_REFRESH_MS   = 30000;   // GEX: 30 s
         const PRICE_REFRESH_MS = 300000;  // Price: 5 min (streaming covers live updates)
 
@@ -258,11 +402,10 @@
         const selectedTF  = {};   // symbol -> timeframe in minutes (default 1)
         let   modalLWChart = null;
 
-        // ── Timezone helper (LW Charts is UTC-only — shift timestamps to ET) ──
+        // ── Timezone helpers — uses browser local time ──────────────────────
 
         function fmtET24(utcSecs) {
             return new Date(utcSecs * 1000).toLocaleTimeString('en-US', {
-                timeZone: 'America/New_York',
                 hour12: false,
                 hour: '2-digit',
                 minute: '2-digit',
@@ -271,7 +414,6 @@
 
         function fmtETDate(utcSecs) {
             return new Date(utcSecs * 1000).toLocaleDateString('en-US', {
-                timeZone: 'America/New_York',
                 month: 'short',
                 day: 'numeric',
             });
@@ -344,6 +486,12 @@
             return LWC.createChart(container, {
                 ...DARK_BASE,
                 autoSize: true,
+                // Ensure the candlestick right scale always has room above the volume overlay.
+                // Without explicit margins, some LW Charts v5 builds auto-collapse the scale.
+                rightPriceScale: {
+                    borderColor:  '#1e1e2e',
+                    scaleMargins: { top: 0.05, bottom: 0.18 },  // leave 18% at bottom for volume bars
+                },
                 localization: {
                     timeFormatter: fmtET24,   // crosshair tooltip — 24-hr ET
                 },
@@ -529,6 +677,9 @@
         }
 
         function updateGexDiv(symbol, data) {
+            // Feed 0DTE expiry date into the countdown clock (use SPX as authoritative)
+            if (symbol === 'SPX' && data.odte_date) setOdteDate(data.odte_date);
+
             const multiTotal = data.multi.net_gex.reduce((a, b) => a + b, 0);
             const zeroTotal  = data.zero.net_gex.reduce((a, b) => a + b, 0);
 
@@ -568,25 +719,47 @@
                 wickDownColor: '#ff4444',
             });
 
-            // Volume histogram — overlaid in same pane, pushed to bottom 15% via scaleMargins
+            // Volume histogram — custom named overlay scale ('vol').
+            // In LW Charts v5, priceScaleId: '' maps to the RIGHT scale, which would
+            // cause volumeSeries.priceScale().applyOptions() to crush the candlestick
+            // scale to 15% and make volume bars fill the rest → the "green bars" bug.
+            // A non-empty custom ID creates a truly separate overlay scale that
+            // auto-scales independently from the right (price) scale.
             const volumeSeries = chart.addSeries(LWC.HistogramSeries, {
                 priceFormat:       { type: 'volume' },
-                priceScaleId:      'volume',
+                priceScaleId:      'vol',
                 lastValueVisible:  false,
                 priceLineVisible:  false,
             });
-            chart.priceScale('volume').applyOptions({
+            volumeSeries.priceScale().applyOptions({
                 scaleMargins: { top: 0.85, bottom: 0 },
                 visible: false,
             });
 
             _setSeriesData(candleSeries, volumeSeries, candles);
             chart.timeScale().fitContent();
-            return { candleSeries, volumeSeries };
+            // v5 markers API — create a markers primitive attached to the series
+            const markersPrimitive = LWC.createSeriesMarkers(candleSeries, []);
+            return { candleSeries, volumeSeries, markersPrimitive };
         }
 
         /** Push a full candle array into an existing candleSeries + volumeSeries pair. */
         function _setSeriesData(candleSeries, volumeSeries, candles) {
+            if (!candles.length) return;
+
+            // Debug: log sample of what we're passing to LW Charts
+            const s = candles[0], e = candles[candles.length - 1];
+            const bodies  = candles.map(c => Math.abs(c.close - c.open));
+            const avgBody = bodies.reduce((a, b) => a + b, 0) / bodies.length;
+            const volMin  = Math.min(...candles.map(c => c.volume || 0));
+            const volMax  = Math.max(...candles.map(c => c.volume || 0));
+            console.log(
+                `[LWC] setData ${candles.length} candles` +
+                `  first: ${new Date(s.time*1000).toISOString()} O=${s.open} H=${s.high} L=${s.low} C=${s.close}` +
+                `  last:  ${new Date(e.time*1000).toISOString()} O=${e.open} H=${e.high} L=${e.low} C=${e.close}` +
+                `  avgBody=${avgBody.toFixed(4)}  vol=${volMin.toLocaleString()}-${volMax.toLocaleString()}`
+            );
+
             candleSeries.setData(candles.map(c => ({
                 time:  c.time,
                 open:  c.open,
@@ -625,14 +798,17 @@
                 // First render — create chart from scratch
                 container.innerHTML = '';
                 const chart = makePriceChart(container);
-                const { candleSeries, volumeSeries } = buildCandleSeries(chart, display);
-                priceCharts[symbol] = { chart, candleSeries, volumeSeries };
+                const { candleSeries, volumeSeries, markersPrimitive } = buildCandleSeries(chart, display);
+                priceCharts[symbol] = { chart, candleSeries, volumeSeries, markersPrimitive };
             }
 
             const last = rawCandles[symbol][rawCandles[symbol].length - 1];
             if (last) {
                 document.getElementById(`price-spot-${symbol}`).textContent = last.close.toFixed(2);
             }
+
+            applySessionMarkers(symbol);
+            if (symbol === 'SPX') applyFlowMarkers();
         }
 
         /**
@@ -650,6 +826,7 @@
 
             _setSeriesData(entry.candleSeries, entry.volumeSeries, display);
             entry.chart.timeScale().fitContent();
+            applySessionMarkers(symbol);
         }
 
         // ── Streaming ─────────────────────────────────────────────────────────
@@ -668,6 +845,20 @@
             if (!rawCandles[symbol]) rawCandles[symbol] = [];
             const raw  = rawCandles[symbol];
             const last = raw[raw.length - 1];
+
+            // Session-change guard (equities only — ES trades 24/7 so no gap expected).
+            // If the new candle is from a different calendar day than the last REST load,
+            // the chart is still showing the previous session.  Reload via REST so it
+            // shows today's candles cleanly instead of appending across a huge time gap.
+            if (last && symbol !== 'ES') {
+                const lastDay = new Date(last.time * 1000).toDateString();
+                const newDay  = new Date(candle.time * 1000).toDateString();
+                if (lastDay !== newDay) {
+                    fetchPrice(symbol);   // REST reload — will replace stale session data
+                    return;
+                }
+            }
+
             if (last && last.time === candle.time) {
                 raw[raw.length - 1] = { ...candle };
             } else if (!last || candle.time > last.time) {
@@ -711,36 +902,75 @@
         const MAX_FLOW_ROWS = 50;
 
         function addFlowAlert(a) {
-            const feed    = document.getElementById('flow-feed');
-            const isCall  = a.side === 'call';
-            const badge   = a.is_0dte
+            const feed = document.getElementById('flow-feed');
+
+            // Determine bullish/bearish from side + direction
+            // PUT BUY  = bearish, PUT SELL  = bullish
+            // CALL BUY = bullish, CALL SELL = bearish
+            const isBullish = (a.side === 'call' && a.direction === 'BUY') ||
+                              (a.side === 'put'  && a.direction === 'SELL');
+            const sentiment = isBullish ? 'bullish' : 'bearish';
+
+            // Total premium spent: contracts × last price × $100 multiplier
+            const notional = (a.volume_delta || 0) * (a.last || 0) * 100;
+            const fmtNotional = notional >= 1e6
+                ? `$${(notional/1e6).toFixed(2)}M`
+                : notional >= 1e3
+                    ? `$${(notional/1e3).toFixed(0)}K`
+                    : `$${notional.toFixed(0)}`;
+
+            const badge = a.is_0dte
                 ? '<span class="flow-badge dte0">0DTE</span>'
                 : '<span class="flow-badge multi">MULTI</span>';
-            const price   = a.last > 0
-                ? `@ $${a.last.toFixed(2)} (${a.bid.toFixed(2)} / ${a.ask.toFixed(2)})`
+
+            const price = a.last > 0 ? `@ $${a.last.toFixed(2)}` : '';
+
+            // Timestamp from server time_s (unix seconds)
+            const ts = a.time
+                ? new Date(a.time * 1000).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false})
                 : '';
-            const score   = `w:${a.weighted_delta.toFixed(0)}`;
 
             const row = document.createElement('div');
-            row.className = `flow-row ${a.side}`;
+            row.className = `flow-row ${sentiment}`;
+            row.dataset.alertTime = a.time || Math.floor(Date.now()/1000);
             row.innerHTML = `
-                <span class="flow-time">${a.time}</span>
-                <span class="flow-sym">${a.underlying}</span>
-                <span class="flow-strike">${a.strike}</span>
-                <span class="flow-side ${a.side}">${a.side.toUpperCase()}</span>
-                ${badge}
-                <span class="flow-vol">+${a.volume_delta.toLocaleString()} contracts</span>
-                <span class="flow-dir ${a.direction}">${a.direction}</span>
-                <span class="flow-price">${price}</span>
-                <span class="flow-score">${score}</span>
+                <div class="flow-row-time">
+                    <span class="flow-ts">${ts}</span>
+                    <span class="flow-ago">just now</span>
+                </div>
+                <div class="flow-row-body">
+                    <span class="flow-sym">${a.underlying || ''}</span>
+                    <span class="flow-strike">${a.strike}</span>
+                    <span class="flow-side ${a.side}">${a.side.toUpperCase()}</span>
+                    ${badge}
+                    <span class="flow-dir ${a.direction}">${a.direction}</span>
+                    <span class="flow-vol">+${(a.volume_delta||0).toLocaleString()} contracts</span>
+                    <span class="flow-price">${price}</span>
+                    <span class="flow-delta">δ${Math.abs(a.delta || 0.5).toFixed(2)}</span>
+                    <span class="flow-notional">${fmtNotional}</span>
+                </div>
             `;
 
             feed.insertBefore(row, feed.firstChild);
-
-            // Keep feed trimmed to MAX_FLOW_ROWS
             while (feed.children.length > MAX_FLOW_ROWS) {
                 feed.removeChild(feed.lastChild);
             }
+        }
+
+        // ── Flow alert markers on SPX price chart ────────────────────────────
+        // Bullish (PUT SELL, CALL BUY) → green chevron below bar
+        // Bearish (PUT BUY, CALL SELL) → red chevron above bar
+
+        const _flowMarkers = [];   // raw alert dicts — rendered via applySessionMarkers
+
+        function addFlowMarker(a) {
+            _flowMarkers.push(a);
+            applyFlowMarkers();
+        }
+
+        function applyFlowMarkers() {
+            // Re-apply session markers which now include flow markers merged in
+            applySessionMarkers('SPX');
         }
 
         function connectSSE() {
@@ -764,6 +994,10 @@
                 }
                 if (msg.type === 'flow_alert') {
                     addFlowAlert(msg);
+                    addFlowMarker(msg);
+                }
+                if (msg.type === 'delta_flow') {
+                    handleDeltaFlowSSE(msg);
                 }
             };
 
@@ -823,7 +1057,7 @@
 
             openModal(`
                 <div style="margin-bottom:8px">
-                    <div style="font-size:0.65rem;color:#444;letter-spacing:2px">PRICE · ${tfLabel} · ET</div>
+                    <div style="font-size:0.65rem;color:#444;letter-spacing:2px">PRICE · ${tfLabel}</div>
                     <div style="font-size:1.4rem;color:#fff;font-weight:bold">${symbol}
                         <span style="font-size:1rem;color:#00d4ff">${last ? last.close.toFixed(2) : ''}</span>
                     </div>
@@ -840,6 +1074,389 @@
             if (e.target === document.getElementById('modal-overlay')) closeModal();
         });
         document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+        // ── Cumulative Delta Flow chart ───────────────────────────────────────
+
+        let deltaChart     = null;
+        let deltaCallSeries = null;
+        let deltaPutSeries  = null;
+        // raw point arrays {time, value} — kept for REST reload merge
+        let deltaCallData  = [];
+        let deltaPutData   = [];
+
+        function fmtDeltaB(v) {
+            if (v == null) return '—';
+            const b = v / 1e9;
+            return (b >= 0 ? '+' : '') + b.toFixed(2) + 'B';
+        }
+
+        function initDeltaChart() {
+            const container = document.getElementById('delta-flow-canvas');
+            if (!container || deltaChart) return;
+
+            deltaChart = LWC.createChart(container, {
+                ...DARK_BASE,
+                autoSize: true,
+                rightPriceScale: {
+                    borderColor: '#1e1e2e',
+                    scaleMargins: { top: 0.08, bottom: 0.08 },
+                },
+                localization: {
+                    priceFormatter: v => {
+                        const b = v / 1e9;
+                        return (b >= 0 ? '+' : '') + b.toFixed(2) + 'B';
+                    },
+                    timeFormatter: fmtET24,
+                },
+                timeScale: {
+                    borderColor:    '#1e1e2e',
+                    timeVisible:    true,
+                    secondsVisible: false,
+                    tickMarkFormatter: (utcSecs, tickMarkType) =>
+                        tickMarkType <= 2 ? fmtETDate(utcSecs) : fmtET24(utcSecs),
+                },
+            });
+
+            deltaCallSeries = deltaChart.addSeries(LWC.LineSeries, {
+                color:             '#cc44ff',
+                lineWidth:         2,
+                priceLineVisible:  false,
+                lastValueVisible:  true,
+                crosshairMarkerVisible: true,
+                title: 'CALL Δ',
+            });
+
+            deltaPutSeries = deltaChart.addSeries(LWC.LineSeries, {
+                color:             '#d4a017',
+                lineWidth:         2,
+                priceLineVisible:  false,
+                lastValueVisible:  true,
+                crosshairMarkerVisible: true,
+                title: 'PUT Δ',
+            });
+        }
+
+        function _applyDeltaData() {
+            if (!deltaChart) initDeltaChart();
+            if (!deltaChart) return;
+            if (deltaCallData.length) deltaCallSeries.setData(deltaCallData);
+            if (deltaPutData.length)  deltaPutSeries.setData(deltaPutData);
+            deltaChart.timeScale().fitContent();
+
+            // Update summary labels
+            const lastCall = deltaCallData[deltaCallData.length - 1];
+            const lastPut  = deltaPutData[deltaPutData.length - 1];
+            document.getElementById('delta-call-val').textContent = 'call: ' + fmtDeltaB(lastCall?.value);
+            document.getElementById('delta-put-val').textContent  = 'put: '  + fmtDeltaB(lastPut?.value);
+        }
+
+        async function fetchDeltaFlow() {
+            try {
+                const res = await fetch('/api/delta_flow');
+                if (!res.ok) return;
+                const data = await res.json();
+                // Merge REST data with any SSE points already buffered
+                const callSet = new Map(deltaCallData.map(p => [p.time, p.value]));
+                const putSet  = new Map(deltaPutData.map(p => [p.time, p.value]));
+                for (const p of (data.call || [])) callSet.set(p.time, p.value);
+                for (const p of (data.put  || [])) putSet.set(p.time, p.value);
+                deltaCallData = [...callSet.entries()].sort((a,b)=>a[0]-b[0]).map(([time,value])=>({time,value}));
+                deltaPutData  = [...putSet.entries()].sort((a,b)=>a[0]-b[0]).map(([time,value])=>({time,value}));
+                _applyDeltaData();
+            } catch(e) { console.error('Delta flow fetch:', e); }
+        }
+
+        function handleDeltaFlowSSE(msg) {
+            // msg: { type:'delta_flow', side, time, cumulative, delta, is_0dte }
+            if (!deltaChart) initDeltaChart();
+            if (!deltaChart) return;
+
+            const point = { time: msg.time, value: msg.cumulative };
+            if (msg.side === 'call') {
+                if (deltaCallData.length && deltaCallData[deltaCallData.length-1].time === msg.time) {
+                    deltaCallData[deltaCallData.length-1] = point;
+                } else {
+                    deltaCallData.push(point);
+                }
+                deltaCallSeries.update(point);
+                document.getElementById('delta-call-val').textContent = 'call: ' + fmtDeltaB(msg.cumulative);
+            } else {
+                if (deltaPutData.length && deltaPutData[deltaPutData.length-1].time === msg.time) {
+                    deltaPutData[deltaPutData.length-1] = point;
+                } else {
+                    deltaPutData.push(point);
+                }
+                deltaPutSeries.update(point);
+                document.getElementById('delta-put-val').textContent = 'put: ' + fmtDeltaB(msg.cumulative);
+            }
+        }
+
+        // ── 0DTE Cumulative Delta Flow chart ─────────────────────────────────
+
+        let deltaChart0dte      = null;
+        let deltaCallSeries0dte = null;
+        let deltaPutSeries0dte  = null;
+        let deltaCallData0dte   = [];
+        let deltaPutData0dte    = [];
+
+        function initDeltaChart0dte() {
+            const container = document.getElementById('delta-flow-0dte-canvas');
+            if (!container || deltaChart0dte) return;
+
+            deltaChart0dte = LWC.createChart(container, {
+                ...DARK_BASE,
+                autoSize: true,
+                rightPriceScale: {
+                    borderColor: '#1e1e2e',
+                    scaleMargins: { top: 0.08, bottom: 0.08 },
+                },
+                localization: {
+                    priceFormatter: v => {
+                        const b = v / 1e9;
+                        return (b >= 0 ? '+' : '') + b.toFixed(2) + 'B';
+                    },
+                    timeFormatter: fmtET24,
+                },
+                timeScale: {
+                    borderColor:    '#1e1e2e',
+                    timeVisible:    true,
+                    secondsVisible: false,
+                    tickMarkFormatter: (utcSecs, tickMarkType) =>
+                        tickMarkType <= 2 ? fmtETDate(utcSecs) : fmtET24(utcSecs),
+                },
+            });
+
+            deltaCallSeries0dte = deltaChart0dte.addSeries(LWC.LineSeries, {
+                color:             '#cc44ff',
+                lineWidth:         2,
+                priceLineVisible:  false,
+                lastValueVisible:  true,
+                crosshairMarkerVisible: true,
+                title: 'CALL 0DTE',
+            });
+
+            deltaPutSeries0dte = deltaChart0dte.addSeries(LWC.LineSeries, {
+                color:             '#d4a017',
+                lineWidth:         2,
+                priceLineVisible:  false,
+                lastValueVisible:  true,
+                crosshairMarkerVisible: true,
+                title: 'PUT 0DTE',
+            });
+        }
+
+        function _applyDeltaData0dte() {
+            if (!deltaChart0dte) initDeltaChart0dte();
+            if (!deltaChart0dte) return;
+            if (deltaCallData0dte.length) deltaCallSeries0dte.setData(deltaCallData0dte);
+            if (deltaPutData0dte.length)  deltaPutSeries0dte.setData(deltaPutData0dte);
+            deltaChart0dte.timeScale().fitContent();
+            const lastCall = deltaCallData0dte[deltaCallData0dte.length - 1];
+            const lastPut  = deltaPutData0dte[deltaPutData0dte.length - 1];
+            document.getElementById('delta-0dte-call-val').textContent = 'call: ' + fmtDeltaB(lastCall?.value);
+            document.getElementById('delta-0dte-put-val').textContent  = 'put: '  + fmtDeltaB(lastPut?.value);
+        }
+
+        async function fetchDeltaFlow0dte() {
+            try {
+                const res = await fetch('/api/delta_flow/0dte');
+                if (!res.ok) return;
+                const data = await res.json();
+                const callSet = new Map(deltaCallData0dte.map(p => [p.time, p.value]));
+                const putSet  = new Map(deltaPutData0dte.map(p => [p.time, p.value]));
+                for (const p of (data.call || [])) callSet.set(p.time, p.value);
+                for (const p of (data.put  || [])) putSet.set(p.time, p.value);
+                deltaCallData0dte = [...callSet.entries()].sort((a,b)=>a[0]-b[0]).map(([time,value])=>({time,value}));
+                deltaPutData0dte  = [...putSet.entries()].sort((a,b)=>a[0]-b[0]).map(([time,value])=>({time,value}));
+                _applyDeltaData0dte();
+            } catch(e) { console.error('Delta flow 0dte fetch:', e); }
+        }
+
+        // ── Session time markers ─────────────────────────────────────────────
+        //
+        // Adds LW Charts markers at key ET session boundaries on a given date.
+        // Markers: OPEN 09:30, LUNCH 12:00, PWR HR 15:00, PIN 15:45, CLOSE 16:00
+        //
+        // LW Charts setMarkers() attaches markers to actual candle timestamps,
+        // so we find the nearest candle at or after each boundary rather than
+        // using the boundary time directly (avoids "no bar at this time" silent drop).
+
+        const SESSION_MARKS = [
+            { etH: 9,  etM: 30, label: 'OPEN',   color: '#00d4ff', shape: 'arrowUp',   pos: 'belowBar' },
+            { etH: 12, etM: 0,  label: 'LUNCH',  color: '#555577', shape: 'circle',    pos: 'aboveBar' },
+            { etH: 15, etM: 0,  label: 'PWR HR', color: '#ffaa00', shape: 'arrowDown', pos: 'aboveBar' },
+            { etH: 15, etM: 45, label: 'PIN',    color: '#cc44ff', shape: 'arrowDown', pos: 'aboveBar' },
+            { etH: 16, etM: 0,  label: 'CLOSE',  color: '#ff4444', shape: 'arrowDown', pos: 'aboveBar' },
+        ];
+
+        /**
+         * Build a set of marker objects for all session boundaries present in `candles`.
+         * candles: array of { time (unix s), ... } sorted ascending.
+         */
+        function buildSessionMarkers(candles) {
+            if (!candles.length) return [];
+
+            // Collect unique ET dates covered by these candles
+            const dates = new Set();
+            for (const c of candles) {
+                const d = new Date(c.time * 1000).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+                dates.add(d);
+            }
+
+            // Build target Unix-second timestamps for each boundary × each date
+            const targets = [];
+            for (const dateStr of dates) {
+                for (const m of SESSION_MARKS) {
+                    // Construct ET boundary as UTC ms
+                    const etStr = `${dateStr}T${String(m.etH).padStart(2,'0')}:${String(m.etM).padStart(2,'0')}:00`;
+                    // Use Intl to convert "ET naive" → UTC seconds
+                    const localMs = new Date(etStr).getTime();
+                    // Offset correction: get actual UTC seconds for that ET time
+                    const probe   = new Date(localMs);
+                    const etLocal = new Date(probe.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+                    const utcMs   = localMs - (etLocal - probe);
+                    targets.push({ utcS: Math.round(utcMs / 1000), mark: m });
+                }
+            }
+
+            // For each target, find the nearest candle at or after the boundary
+            const candleTimes = candles.map(c => c.time);
+            const markers = [];
+            for (const { utcS, mark } of targets) {
+                // Binary-search: first candle with time >= utcS
+                let lo = 0, hi = candleTimes.length - 1, idx = -1;
+                while (lo <= hi) {
+                    const mid = (lo + hi) >> 1;
+                    if (candleTimes[mid] >= utcS) { idx = mid; hi = mid - 1; }
+                    else lo = mid + 1;
+                }
+                if (idx === -1) continue;   // boundary after last candle — skip
+                markers.push({
+                    time:     candleTimes[idx],
+                    position: mark.pos,
+                    color:    mark.color,
+                    shape:    mark.shape,
+                    text:     mark.label,
+                });
+            }
+
+            // setMarkers requires ascending order and unique times per series
+            markers.sort((a, b) => a.time - b.time);
+            return markers;
+        }
+
+        function applySessionMarkers(symbol) {
+            const entry = priceCharts[symbol];
+            if (!entry || !entry.markersPrimitive) return;
+            const tf  = selectedTF[symbol] || 1;
+            const raw = rawCandles[symbol] || [];
+            const display = aggregateCandles(raw, tf);
+            if (!display.length) return;
+            const flowM = (symbol === 'SPX') ? _buildFlowMarkerData(raw) : [];
+            entry.markersPrimitive.setMarkers(flowM);
+        }
+
+        function _buildFlowMarkerData(candles) {
+            const out = [];
+            for (const a of _flowMarkers) {
+                if (!candles.length) continue;
+                const isBullish = (a.side === 'call' && a.direction === 'BUY') ||
+                                  (a.side === 'put'  && a.direction === 'SELL');
+                const alertTime = a.time || Math.floor(Date.now() / 1000);
+                let nearest = candles[0].time;
+                for (const c of candles) {
+                    if (Math.abs(c.time - alertTime) < Math.abs(nearest - alertTime))
+                        nearest = c.time;
+                }
+                out.push({
+                    time:     nearest,
+                    color:    isBullish ? '#00ff88' : '#ff4444',
+                    shape:    isBullish ? 'arrowUp' : 'arrowDown',
+                    position: isBullish ? 'belowBar' : 'aboveBar',
+                    text:     'FLOW',
+                });
+            }
+            return out;
+        }
+
+        // ── 0DTE countdown & session phase clock ─────────────────────────────
+
+        let _odteDate = null;   // "YYYY-MM-DD" set from GEX data
+
+        function setOdteDate(isoDate) {
+            if (isoDate && isoDate !== _odteDate) {
+                _odteDate = isoDate;
+            }
+        }
+
+        function _etNow() {
+            // Returns { h, m, s, dateStr } in ET
+            const now = new Date();
+            const parts = new Intl.DateTimeFormat('en-US', {
+                timeZone: 'America/New_York',
+                hour: '2-digit', minute: '2-digit', second: '2-digit',
+                hour12: false,
+                year: 'numeric', month: '2-digit', day: '2-digit',
+            }).formatToParts(now);
+            const p = {};
+            for (const { type, value } of parts) p[type] = value;
+            return {
+                h:       parseInt(p.hour),
+                m:       parseInt(p.minute),
+                s:       parseInt(p.second),
+                dateStr: `${p.year}-${p.month}-${p.day}`,
+                timeStr: `${p.hour}:${p.minute}:${p.second}`,
+            };
+        }
+
+        function tickCountdown() {
+            const et = _etNow();
+            const h = et.h, m = et.m, s = et.s;
+
+            // Session clock
+            document.getElementById('odte-session-clock').textContent = et.timeStr;
+
+            // Session phase
+            const phase = document.getElementById('odte-session-phase');
+            const totalMin = h * 60 + m;
+            let phaseLabel, phaseCls;
+            if      (totalMin < 9*60+30)   { phaseLabel = 'PRE-MKT'; phaseCls = 'phase-premarket'; }
+            else if (totalMin < 12*60)     { phaseLabel = 'OPEN';    phaseCls = 'phase-open';      }
+            else if (totalMin < 15*60)     { phaseLabel = 'MIDDAY';  phaseCls = 'phase-midday';    }
+            else if (totalMin < 15*60+45)  { phaseLabel = 'PWR HR';  phaseCls = 'phase-powerhr';   }
+            else if (totalMin < 16*60)     { phaseLabel = 'PIN RISK';phaseCls = 'phase-pinrisk';   }
+            else                           { phaseLabel = 'CLOSED';  phaseCls = 'phase-closed';    }
+            phase.textContent = phaseLabel;
+            phase.className   = `odte-session-phase ${phaseCls}`;
+
+            // Countdown to expiry
+            const timerEl = document.getElementById('odte-countdown-timer');
+            const expDate = _odteDate || et.dateStr;   // default to today if no GEX data yet
+            const expMs   = (() => {
+                // 16:00:00 ET on expDate
+                const etStr  = `${expDate}T16:00:00`;
+                const probe  = new Date(etStr).getTime();
+                const etLocal= new Date(new Date(probe).toLocaleString('en-US', { timeZone: 'America/New_York' }));
+                return probe - (etLocal - new Date(probe));
+            })();
+            const diffMs  = expMs - Date.now();
+
+            if (diffMs <= 0) {
+                timerEl.textContent = 'EXPIRED';
+                timerEl.className   = 'expired';
+            } else {
+                const totalSec = Math.floor(diffMs / 1000);
+                const hh = Math.floor(totalSec / 3600);
+                const mm = Math.floor((totalSec % 3600) / 60);
+                const ss = totalSec % 60;
+                timerEl.textContent = `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+                timerEl.className   = totalSec <= 1800 ? 'urgent' : '';  // red pulse inside 30 min
+            }
+        }
+
+        // Start the 1-second clock immediately
+        tickCountdown();
+        setInterval(tickCountdown, 1000);
 
         // ── Fetch & update ────────────────────────────────────────────────────
 
@@ -887,6 +1504,39 @@
         // Initial full load
         fetchGexAll();
         fetchPriceAll();
+        initDeltaChart();
+        fetchDeltaFlow();
+        fetchDeltaFlow0dte();
+
+        // Update "X ago" counters on all flow rows every second
+        function fmtAgo(secs) {
+            if (secs < 60)   return `${secs}s`;
+            if (secs < 3600) return `${Math.floor(secs/60)}m ${secs % 60}s`;
+            return `${Math.floor(secs/3600)}h ${Math.floor((secs%3600)/60)}m`;
+        }
+        setInterval(() => {
+            const now = Math.floor(Date.now() / 1000);
+            document.querySelectorAll('.flow-row[data-alert-time]').forEach(row => {
+                const elapsed = now - parseInt(row.dataset.alertTime);
+                const agoEl = row.querySelector('.flow-ago');
+                if (agoEl) agoEl.textContent = fmtAgo(elapsed);
+            });
+        }, 1000);
+
+        // Restore today's flow alerts on page load
+        (async () => {
+            try {
+                const res = await fetch('/api/flow_alerts');
+                if (!res.ok) return;
+                const alerts = await res.json();
+                // Oldest first so newest ends up at top after insertBefore
+                alerts.sort((a, b) => (a.time || 0) - (b.time || 0));
+                for (const a of alerts) addFlowAlert(a);
+                // Store alerts for marker rendering — applyFlowMarkers() is called
+                // automatically by renderPriceChart when SPX candles load
+                for (const a of alerts) _flowMarkers.push(a);
+            } catch(e) { console.error('flow_alerts restore:', e); }
+        })();
 
         // GEX refreshes every 30 s; price every 5 min as streaming fallback
         setInterval(fetchGexAll,   GEX_REFRESH_MS);

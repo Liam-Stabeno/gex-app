@@ -13,7 +13,10 @@ load_dotenv()
 CLIENT_ID = os.environ['SCHWAB_CLIENT_ID']
 CLIENT_SECRET = os.environ['SCHWAB_CLIENT_SECRET']
 
-TOKENS_FILE = 'data/tokens.json'
+# Resolve data/ relative to the project root (one level up from src/)
+_SRC_DIR     = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_DIR = os.path.dirname(_SRC_DIR)
+TOKENS_FILE  = os.path.join(_PROJECT_DIR, 'data', 'tokens.json')
 
 # ── Token cache — shared across all threads ────────────────────────────────────
 # Schwab access tokens last 30 min; refresh proactively at 25 min so a fresh
@@ -73,8 +76,14 @@ def get_access_token() -> str:
         return tokens['access_token']
 
 
-def fetch_option_chain(symbol: str, access_token: str) -> dict:
-    """Fetch option chain for a symbol, limited to 60 DTE and 100 strikes ATM."""
+def fetch_option_chain(symbol: str, access_token: str,
+                        strike_count: int = 100) -> dict:
+    """Fetch option chain for a symbol, limited to 60 DTE.
+
+    strike_count: strikes centered on spot (half above, half below).
+    SPX has daily expirations with 5-pt spacing → many more strikes per
+    window → hits Schwab's body-size limit at 200.  SPY/QQQ are safe at 200.
+    """
     from datetime import timedelta
     today    = datetime.now().strftime("%Y-%m-%d")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -84,7 +93,7 @@ def fetch_option_chain(symbol: str, access_token: str) -> dict:
         "symbol": symbol,
         "contractType": "ALL",
         "includeUnderlyingQuote": "true",
-        "strikeCount": 100,
+        "strikeCount": strike_count,
         "fromDate": today,
         "toDate": to_date,
     }
@@ -109,20 +118,6 @@ def fetch_option_chain(symbol: str, access_token: str) -> dict:
         response.raise_for_status()
 
     data = response.json()
-
-    # Debug: sample a non-0DTE option near ATM to verify gamma values
-    spot = data.get('underlyingPrice', 0)
-    print(f"\nSpot: {spot}, isDelayed: {data.get('isDelayed')}")
-    for exp_date, strikes in data.get('callExpDateMap', {}).items():
-        if ':0' in exp_date:
-            continue  # skip 0DTE
-        # Find strike closest to spot
-        closest = min(strikes.keys(), key=lambda s: abs(float(s) - spot))
-        opt = strikes[closest][0]
-        print(f"\nSample option ({exp_date} {closest} call):")
-        print(f"  gamma={opt.get('gamma')}  openInterest={opt.get('openInterest')}  delta={opt.get('delta')}")
-        break
-
     return data
 
 
@@ -231,20 +226,28 @@ def find_key_levels(gex_by_strike: pd.DataFrame, spot: float) -> dict:
     }
 
 
-def get_watch_contracts(chain: dict, call_wall: float, n_strikes: int = 3,
-                        underlying: str = '') -> list:
+def get_watch_contracts(chain: dict, call_wall: float,
+                        n_strikes: int = 3,       # kept for backwards compat (ignored)
+                        underlying: str = '',
+                        max_per_expiry: int = 40,
+                        spot_band_pct: float = 0.10) -> list:
     """
     Extract option contract symbols to watch for flow monitoring.
 
-    Selects calls AND puts at the n_strikes nearest strikes at/below call_wall,
-    for both the 0DTE expiry and the nearest multi-expiry.
-    Symbols are taken directly from the chain JSON so no format construction needed.
+    Selection strategy:
+      • 0DTE: ALL strikes in the chain — no filtering, no OI threshold.
+              Full 300-strike book streamed for today's expiry.
+      • MULTI (nearest non-0DTE expiry): top max_per_expiry strikes by OI
+              within ±spot_band_pct of spot.
 
     Returns list of dicts:
         { symbol, strike, side ('call'|'put'), expiry_label ('0DTE'|'MULTI'),
-          weight (1.0 for 0DTE, 0.15 for multi), is_0dte (bool) }
+          delta (float, real from chain), oi (int), is_0dte (bool), underlying (str) }
+
+    A 'weight' key is still set for backwards compat (= abs(delta), floored at 0.01).
     """
-    if call_wall is None:
+    spot = chain.get('underlyingPrice', 0)
+    if not spot:
         return []
 
     call_map = chain.get('callExpDateMap', {})
@@ -261,40 +264,109 @@ def get_watch_contracts(chain: dict, call_wall: float, n_strikes: int = 3,
             if multi_key is None:
                 multi_key = exp_key
 
-    def contracts_for_expiry(exp_key: str, is_0dte: bool) -> list:
-        weight = 1.0 if is_0dte else 0.15
-        label  = '0DTE' if is_0dte else 'MULTI'
+    def contracts_for_0dte(exp_key: str) -> list:
+        """0DTE strikes within ±5% of spot — wide enough to catch all active strikes."""
+        lo_0dte = spot * 0.95
+        hi_0dte = spot * 1.05
         result = []
+        all_call_strikes = call_map.get(exp_key, {})
+        for strike_str, opts in all_call_strikes.items():
+            strike = float(strike_str)
+            if not (lo_0dte <= strike <= hi_0dte):
+                continue
 
-        all_strikes = sorted(float(s) for s in call_map.get(exp_key, {}).keys())
-        # n_strikes nearest strikes at or below the call wall
-        below   = [s for s in all_strikes if s <= call_wall]
-        targets = below[-n_strikes:] if below else []
-
-        for strike in targets:
-            strike_str = f"{strike:.1f}"
-
-            calls = call_map.get(exp_key, {}).get(strike_str, [])
+            # ── Call ─────────────────────────────────────────────────────────
+            calls = opts
             if calls and calls[0].get('symbol'):
+                opt   = calls[0]
+                delta = float(opt.get('delta') or 0.50)
+                oi    = int(opt.get('openInterest') or 0)
                 result.append({
-                    'symbol':       calls[0]['symbol'],
+                    'symbol':       opt['symbol'],
                     'strike':       strike,
                     'side':         'call',
-                    'expiry_label': label,
-                    'weight':       weight,
-                    'is_0dte':      is_0dte,
+                    'expiry_label': '0DTE',
+                    'delta':        delta,
+                    'weight':       max(abs(delta), 0.01),
+                    'oi':           oi,
+                    'is_0dte':      True,
+                    'underlying':   underlying,
+                })
+
+            # ── Put ──────────────────────────────────────────────────────────
+            puts = put_map.get(exp_key, {}).get(strike_str, [])
+            if puts and puts[0].get('symbol'):
+                opt   = puts[0]
+                delta = float(opt.get('delta') or -0.50)
+                oi    = int(opt.get('openInterest') or 0)
+                result.append({
+                    'symbol':       opt['symbol'],
+                    'strike':       strike,
+                    'side':         'put',
+                    'expiry_label': '0DTE',
+                    'delta':        delta,
+                    'weight':       max(abs(delta), 0.01),
+                    'oi':           oi,
+                    'is_0dte':      True,
+                    'underlying':   underlying,
+                })
+
+        return result
+
+    def contracts_for_multi(exp_key: str) -> list:
+        """Top OI strikes within ±spot_band_pct for the nearest multi-expiry."""
+        result = []
+        lo_bound = spot * (1 - spot_band_pct)
+        hi_bound = spot * (1 + spot_band_pct)
+
+        candidates = []
+        all_call_strikes = call_map.get(exp_key, {})
+        for strike_str, opts in all_call_strikes.items():
+            strike = float(strike_str)
+            if not (lo_bound <= strike <= hi_bound):
+                continue
+            if not opts:
+                continue
+            oi = opts[0].get('openInterest', 0) or 0
+            candidates.append((oi, strike))
+
+        candidates.sort(reverse=True)
+        top_strikes = [s for _, s in candidates[:max_per_expiry]]
+
+        for strike in top_strikes:
+            strike_str = f"{strike:.1f}"
+
+            calls = all_call_strikes.get(strike_str, [])
+            if calls and calls[0].get('symbol'):
+                opt   = calls[0]
+                delta = float(opt.get('delta') or 0.50)
+                oi    = int(opt.get('openInterest') or 0)
+                result.append({
+                    'symbol':       opt['symbol'],
+                    'strike':       strike,
+                    'side':         'call',
+                    'expiry_label': 'MULTI',
+                    'delta':        delta,
+                    'weight':       max(abs(delta), 0.01),
+                    'oi':           oi,
+                    'is_0dte':      False,
                     'underlying':   underlying,
                 })
 
             puts = put_map.get(exp_key, {}).get(strike_str, [])
             if puts and puts[0].get('symbol'):
+                opt   = puts[0]
+                delta = float(opt.get('delta') or -0.50)
+                oi    = int(opt.get('openInterest') or 0)
                 result.append({
-                    'symbol':       puts[0]['symbol'],
+                    'symbol':       opt['symbol'],
                     'strike':       strike,
                     'side':         'put',
-                    'expiry_label': label,
-                    'weight':       weight,
-                    'is_0dte':      is_0dte,
+                    'expiry_label': 'MULTI',
+                    'delta':        delta,
+                    'weight':       max(abs(delta), 0.01),
+                    'oi':           oi,
+                    'is_0dte':      False,
                     'underlying':   underlying,
                 })
 
@@ -302,56 +374,18 @@ def get_watch_contracts(chain: dict, call_wall: float, n_strikes: int = 3,
 
     contracts = []
     if dte0_key:
-        contracts.extend(contracts_for_expiry(dte0_key,  is_0dte=True))
+        contracts.extend(contracts_for_0dte(dte0_key))
     if multi_key:
-        contracts.extend(contracts_for_expiry(multi_key, is_0dte=False))
-
+        contracts.extend(contracts_for_multi(multi_key))
     return contracts
 
 
 def print_summary(levels: dict, gex_by_strike: pd.DataFrame, symbol: str = "SPX"):
     spot = levels['spot']
-    total_gex = gex_by_strike['net_gex'].sum()
-    regime = "POSITIVE (stable)" if total_gex > 0 else "NEGATIVE (volatile)"
-
-    print("\n" + "="*50)
-    print(f"  GEX SUMMARY — {symbol} @ {spot:,.2f}")
-    print("="*50)
-    print(f"  Total GEX:    ${total_gex/1e9:.2f}B  [{regime}]")
-    print(f"  GEX Flip:     {levels['flip_level']}")
-    print(f"  Put Wall:     {levels['put_wall']}")
-    print(f"  Call Wall:    {levels['call_wall']}")
-    print(f"  Pin / Magnet: {levels['pin']}")
-    print("="*50)
-
-    print("\nTop 10 strikes by absolute GEX:")
-    top = gex_by_strike.reindex(
-        gex_by_strike['net_gex'].abs().nlargest(10).index
-    ).sort_values('strike')
-    max_gex = gex_by_strike['net_gex'].abs().max()
-    if max_gex == 0 or np.isnan(max_gex):
-        print("  No gamma data available — market may be closed or greeks not returned.")
-    else:
-        for _, row in top.iterrows():
-            bar = "▓" * int(abs(row['net_gex']) / max_gex * 20)
-            sign = "+" if row['net_gex'] > 0 else "-"
-            print(f"  {row['strike']:>7.0f}  {sign}  {bar}")
-
-
-if __name__ == "__main__":
-    import sys
-    symbol = sys.argv[1] if len(sys.argv) > 1 else "$SPX"
-
-    print(f"Fetching {symbol} options chain...")
-    token = get_access_token()
-    chain = fetch_option_chain(symbol, token)
-    gex_all, gex_0dte, gex_multi, spot, raw_df = parse_gex(chain)
-    levels = find_key_levels(gex_all, spot)
-    print_summary(levels, gex_all, symbol)
-    print(f"\n0DTE strikes: {len(gex_0dte)}  |  Multi-expiry strikes: {len(gex_multi)}")
-
-    # Save data
-    safe_symbol = symbol.replace("$", "")
-    gex_all.to_csv(f'data/gex_by_strike_{safe_symbol}.csv', index=False)
-    raw_df.to_csv(f'data/gex_raw_{safe_symbol}.csv', index=False)
-    print(f"\nData saved to data/gex_by_strike_{safe_symbol}.csv")
+    print(f"\n{'='*50}")
+    print(f"  {symbol}  spot={spot:.2f}")
+    print(f"  Flip:      {levels.get('flip_level')}")
+    print(f"  Put Wall:  {levels.get('put_wall')}")
+    print(f"  Call Wall: {levels.get('call_wall')}")
+    print(f"  Pin:       {levels.get('pin')}")
+    print(f"{'='*50}\n")
