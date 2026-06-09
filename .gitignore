@@ -24,3 +24,9 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Excel (including temp lock files created by Word/Excel)
+*.xlsm
+*.xlsx
+*.xls
+~$*

@@ -34,7 +34,7 @@ from gex import get_access_token
 # returns a sequence counter instead of open price for index symbols, corrupting
 # the CSV.  $SPX gets historical bars via the REST price history API instead.
 STREAM_CHART_EQUITY = []       # no CHART_EQUITY subscriptions needed right now
-STREAM_LEVELONE_EQUITY = ['$SPX']  # LEVELONE only — real-time last price for live candle
+STREAM_LEVELONE_EQUITY = ['$SPX']  # LEVELONE — real-time last price if available
 STREAM_FUTURES = ['/ES']
 CHART_FIELDS        = '0,1,2,3,4,5,6,7,8'
 LEVELONE_FIELDS     = '3,8'    # field 3 = last price, field 8 = total volume
@@ -145,9 +145,10 @@ class SchwabStreamer:
     Handles price candles and options flow monitoring in a single connection.
     """
 
-    def __init__(self, on_candle, on_flow_alert=None):
-        self.on_candle      = on_candle
-        self.on_flow_alert  = on_flow_alert
+    def __init__(self, on_candle, on_flow_alert=None, on_options_quote=None):
+        self.on_candle         = on_candle
+        self.on_flow_alert     = on_flow_alert
+        self.on_options_quote  = on_options_quote  # called on every bid/ask tick
 
         self._running  = False
         self._ws       = None
@@ -327,6 +328,10 @@ class SchwabStreamer:
         Update the live in-progress candle for a symbol on each price tick.
         Fires on_candle so the browser updates the current bar in real time.
 
+        SPY ticks are scaled by SPY_TO_SPX_SCALE and used to animate the $SPX
+        live candle between 60s REST updates. Completed SPX bars still come from
+        the real REST price history — SPY is only used for intraday animation.
+
         LEVELONE field 8 is cumulative DAY volume, not per-minute volume.
         We track the baseline at the start of each minute and send only the
         incremental delta — otherwise the volume histogram spikes to millions
@@ -336,6 +341,7 @@ class SchwabStreamer:
         last     = tick['last']
         day_vol  = tick['volume']   # cumulative total for the day
         now_ms   = _floor_minute_ms()
+
 
         live = self._live_candles.get(symbol)
 
@@ -370,8 +376,9 @@ class SchwabStreamer:
 
     def _handle_options_quote(self, quote: dict):
         """
-        Compare incoming volume to cached baseline.
-        Fire alert when weighted volume delta >= ALERT_THRESHOLD.
+        Called on every LEVELONE_OPTIONS tick.
+        1. Fires on_options_quote for live GEX computation (every tick).
+        2. Compares volume to baseline and fires on_flow_alert when threshold crossed.
         """
         symbol  = quote['symbol']
 
@@ -381,6 +388,15 @@ class SchwabStreamer:
                 return   # not in our watch list
             prev_vol = self._volume_cache.get(symbol)
             self._volume_cache[symbol] = quote['volume']
+
+        # ── Live GEX: fire on every bid/ask tick ─────────────────────────────
+        if self.on_options_quote and (quote['bid'] > 0 or quote['ask'] > 0):
+            try:
+                self.on_options_quote({'symbol': symbol,
+                                       'bid':    quote['bid'],
+                                       'ask':    quote['ask']})
+            except Exception as exc:
+                print(f'[STREAMER] on_options_quote error: {exc}')
 
         if prev_vol is None:
             return   # first data point — establish baseline, don't alert yet
@@ -393,29 +409,45 @@ class SchwabStreamer:
         if weighted < ALERT_THRESHOLD:
             return
 
-        # Infer direction: last >= midpoint → bought at ask (bullish), else sold (bearish)
-        mid       = (quote['bid'] + quote['ask']) / 2 if quote['ask'] > 0 else 0
-        direction = 'BUY' if quote['last'] >= mid else 'SELL'
+        # Direction with confidence tier:
+        #   certain  — last at/outside bid-ask
+        #   likely   — last within 20% of spread from bid or ask
+        #   unknown  — true mid print, omit
+        bid, ask, last = quote['bid'], quote['ask'], quote['last']
+        direction          = None
+        direction_certain  = False
+        if last > 0 and ask > 0 and bid < ask:
+            spread = ask - bid
+            if last >= ask:
+                direction, direction_certain = 'BUY',  True
+            elif last <= bid:
+                direction, direction_certain = 'SELL', True
+            elif last >= ask - spread * 0.20:
+                direction, direction_certain = 'BUY',  False
+            elif last <= bid + spread * 0.20:
+                direction, direction_certain = 'SELL', False
+            # else: true mid — leave as None
 
         # Underlying symbol — strip option suffix (e.g. "SPY   260522C..." → "SPY")
         underlying = meta.get('underlying') or symbol[:3].strip()
         if self.on_flow_alert:
             try:
                 self.on_flow_alert({
-                    'symbol':         symbol,
-                    'underlying':     underlying,
-                    'strike':         meta['strike'],
-                    'side':           meta['side'],
-                    'expiry_label':   meta['expiry_label'],
-                    'is_0dte':        meta.get('is_0dte', False),
-                    'volume_delta':   delta,
-                    'weighted_delta': weighted,
-                    'last':           quote['last'],
-                    'bid':            quote['bid'],
-                    'ask':            quote['ask'],
-                    'direction':      direction,
-                    'delta':          meta.get('delta', 0.50),
-                    'oi':             meta.get('oi', 0),
+                    'symbol':            symbol,
+                    'underlying':        underlying,
+                    'strike':            meta['strike'],
+                    'side':              meta['side'],
+                    'expiry_label':      meta['expiry_label'],
+                    'is_0dte':           meta.get('is_0dte', False),
+                    'volume_delta':      delta,
+                    'weighted_delta':    weighted,
+                    'last':              quote['last'],
+                    'bid':               quote['bid'],
+                    'ask':               quote['ask'],
+                    'direction':         direction,
+                    'direction_certain': direction_certain,
+                    'delta':             meta.get('delta', 0.50),
+                    'oi':                meta.get('oi', 0),
                 })
             except Exception as exc:
                 print(f'[STREAMER] on_flow_alert error: {exc}')

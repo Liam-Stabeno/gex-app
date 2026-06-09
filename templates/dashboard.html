@@ -6,6 +6,8 @@
     <title>GEX Dashboard</title>
     <script src="https://unpkg.com/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -57,6 +59,15 @@
 
         .chart-div:hover { border-color: #333355; }
 
+
+        /* Two price charts side by side (trail + lines) */
+        .price-pair-wrapper {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            grid-column: 1 / -1;   /* span full price-grid row */
+        }
+
         .chart-div-header {
             display: flex;
             justify-content: space-between;
@@ -71,6 +82,7 @@
         .regime { font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; font-weight: bold; letter-spacing: 1px; }
         .regime.POSITIVE { background: #0d2b1a; color: #00ff88; border: 1px solid #00ff88; }
         .regime.NEGATIVE { background: #2b0d0d; color: #ff4444; border: 1px solid #ff4444; }
+        .regime.CLOSED   { background: #1a1a1a; color: #888;    border: 1px solid #555; }
 
         .total-gex { font-size: 0.7rem; color: #888; margin-top: 4px; }
         .total-gex span { color: #00d4ff; }
@@ -123,14 +135,40 @@
             .flow-delta-grid { grid-template-columns: 1fr; }
         }
 
+        /* ── GEX key ── */
+        .gex-key {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 10px;
+            justify-content: flex-end;
+        }
+        .gex-key-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 0.58rem;
+            color: #666;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+        }
+        .gex-key-line {
+            display: inline-block;
+            width: 18px;
+            height: 0;
+        }
+
         /* ── Flow feed ── */
         #flow-feed {
             display: flex;
             flex-direction: column;
             gap: 4px;
-            max-height: 420px;
-            overflow-y: auto;
+            height: 600px;
+            min-height: 200px;
+            overflow-y: scroll;
+            overflow-x: hidden;
             margin-bottom: 20px;
+            scroll-behavior: smooth;
+            box-sizing: border-box;
         }
 
         #flow-feed:empty::after {
@@ -143,12 +181,13 @@
 
         .flow-row {
             display: grid;
-            grid-template-columns: 80px 1fr;
+            grid-template-columns: 140px 1fr;
             gap: 0;
             border-radius: 6px;
             font-size: 0.72rem;
             animation: flowIn 0.2s ease;
             overflow: hidden;
+            min-height: 44px;
         }
 
         @keyframes flowIn {
@@ -159,23 +198,30 @@
         /* bullish = green bg, bearish = red bg */
         .flow-row.bullish { background: rgba(0,200,80,0.10); border: 1px solid rgba(0,200,80,0.25); }
         .flow-row.bearish { background: rgba(255,50,50,0.10); border: 1px solid rgba(255,50,50,0.25); }
+        .flow-row.neutral { background: rgba(100,100,120,0.08); border: 1px solid rgba(100,100,120,0.2); }
 
         .flow-row-time {
             display: flex;
             flex-direction: column;
-            align-items: center;
+            align-items: flex-start;
             justify-content: center;
-            gap: 3px;
-            padding: 6px 10px;
+            gap: 2px;
+            padding: 6px 8px;
             border-right: 1px solid #1e1e2e;
-            min-width: 70px;
-            text-align: center;
+            min-width: 130px;
             white-space: nowrap;
         }
-        .flow-row-time .flow-ts  { color: #888; font-size: 0.7rem; letter-spacing: 0.5px; }
-        .flow-row-time .flow-ago { color: #00d4ff; font-size: 0.65rem; font-weight: bold; letter-spacing: 0.5px; }
+        .flow-row-time .flow-ts-line {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            gap: 6px;
+        }
+        .flow-row-time .flow-ts  { color: #888; font-size: 0.68rem; letter-spacing: 0.5px; }
+        .flow-row-time .flow-ago { color: #00d4ff; font-size: 0.68rem; font-weight: bold; letter-spacing: 0.5px; }
         .flow-row.bullish .flow-row-time { border-right-color: rgba(0,200,80,0.2); }
         .flow-row.bearish .flow-row-time { border-right-color: rgba(255,50,50,0.2); }
+        .flow-row.neutral .flow-row-time { border-right-color: rgba(100,100,120,0.2); }
 
         .flow-row-body {
             display: flex;
@@ -203,12 +249,15 @@
         .flow-badge.multi { background: #0a1a1a; color: #448888; border: 1px solid #448888; }
 
         .flow-dir                    { font-weight: bold; letter-spacing: 1px; }
-        .flow-row.bullish .flow-dir  { color: #00ff88; }
-        .flow-row.bearish .flow-dir  { color: #ff4444; }
+        .flow-row.bullish .flow-dir         { color: #00ff88; }
+        .flow-row.bearish .flow-dir         { color: #ff4444; }
+        .flow-row.bullish .flow-dir.likely  { color: #00ff88; opacity: 0.5; }
+        .flow-row.bearish .flow-dir.likely  { color: #ff4444; opacity: 0.5; }
         .flow-vol        { color: #ccc; }
         .flow-notional   { font-weight: bold; font-size: 0.75rem; margin-left: auto; }
         .flow-row.bullish .flow-notional { color: #00cc55; }
         .flow-row.bearish .flow-notional { color: #ff5555; }
+        .flow-row.neutral .flow-notional { color: #888; }
         .flow-price      { color: #555; font-size: 0.66rem; }
         .flow-delta      { color: #666; font-size: 0.65rem; }
 
@@ -389,7 +438,7 @@
         const LWC = window.LightweightCharts;
 
         const GEX_SYMBOLS    = ['SPX' /*, 'SPY', 'QQQ' */];
-        const PRICE_SYMBOLS  = ['SPX', 'ES'];
+        const PRICE_SYMBOLS  = ['SPX', 'ES', 'VIX'];
         // Streamed symbols get live updates via SSE; poll them infrequently as a fallback.
         // Non-streamed symbols (SPX) still depend on the 30s GEX poll for price.
         const STREAM_SYMBOLS = new Set([/* 'SPY', 'QQQ', */ 'ES']);  // match streamer.py
@@ -398,8 +447,18 @@
 
         const gexCharts   = {};   // key (symbol-slot) -> { chart, series, chartData, spot }
         const priceCharts = {};   // symbol -> { chart, candleSeries, volumeSeries }
+        const trailCharts = {};   // symbol -> { chart, candleSeries, pinSeries, truePinSeries }
+        const gexLevels   = {};   // symbol -> { flip_level, put_wall, call_wall, pin }
+        const _gexPriceLines = {}; // symbol -> [priceLine, ...]
+        const _gexTrailLines = {}; // symbol -> [priceLine, ...] for trail chart
         const rawCandles  = {};   // symbol -> array of raw 1m candles (source of truth)
         const selectedTF  = {};   // symbol -> timeframe in minutes (default 1)
+        // Accumulated trail data for all 5 GEX levels over the session
+        const _flipTrail     = {};  // symbol -> [{time, value}]
+        const _putWallTrail  = {};
+        const _callWallTrail = {};
+        const _pinTrail      = {};
+        const _truePinTrail  = {};
         let   modalLWChart = null;
 
         // ── Timezone helpers — uses browser local time ──────────────────────
@@ -533,6 +592,8 @@
                     <div class="level-item">Put Wall: <span id="put-${id}">—</span></div>
                     <div class="level-item">Call Wall: <span id="call-${id}">—</span></div>
                     <div class="level-item">Pin: <span id="pin-${id}">—</span></div>
+                    <div class="level-item" style="color:#00e5ff">True Pin: <span id="pin-enhanced-${id}">—</span></div>
+                    <div class="level-item" style="color:#888;font-size:0.75em">Strikes: <span id="strikes-${id}">—</span></div>
                 </div>
                 <div class="chart-container"><canvas id="gex-canvas-${id}"></canvas></div>
             `;
@@ -551,7 +612,7 @@
                         <div class="symbol">${symbol}</div>
                         <div class="spot" id="price-spot-${symbol}">—</div>
                     </div>
-                    <div>
+                    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
                         <div class="tf-buttons" id="tf-btns-${symbol}">
                             <button class="tf-btn active" data-tf="1">1m</button>
                             <button class="tf-btn" data-tf="5">5m</button>
@@ -559,6 +620,16 @@
                             <button class="tf-btn" data-tf="30">30m</button>
                             <button class="tf-btn" data-tf="60">1h</button>
                         </div>
+                        ${symbol !== 'VIX' ? `<div class="gex-key">
+                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #ffff00"></span>FLIP</span>
+                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #ff4444"></span>PUT WALL</span>
+                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #00ff88"></span>CALL WALL</span>
+                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #cc44ff"></span>PIN</span>
+                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #00e5ff"></span>TRUE PIN</span>
+                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px solid rgba(255,165,0,0.6)"></span>VIX</span>
+                        </div>` : `<div class="gex-key">
+                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px solid rgba(255,165,0,0.6)"></span>VIX</span>
+                        </div>`}
                     </div>
                 </div>
                 <div class="chart-container" id="price-canvas-${symbol}"></div>
@@ -575,6 +646,133 @@
             });
             div.addEventListener('dblclick', () => expandPrice(symbol));
             return div;
+        }
+
+        // Returns a wrapper div with trail chart (left) + lines chart (right)
+        // Used for SPX and ES — VIX stays as a single chart.
+        function createPricePairDiv(symbol) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'price-pair-wrapper';
+
+            // ── Left: trail chart ──────────────────────────────────────────────
+            const trailDiv = document.createElement('div');
+            trailDiv.className = 'chart-div';
+            trailDiv.id = `trail-div-${symbol}`;
+            trailDiv.innerHTML = `
+                <div class="chart-div-header">
+                    <div>
+                        <div class="chart-title">TRAIL</div>
+                        <div class="symbol">${symbol}</div>
+                    </div>
+                    <div class="gex-key">
+                        <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #ffff00"></span>FLIP</span>
+                        <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #ff4444"></span>PUT WALL</span>
+                        <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #00ff88"></span>CALL WALL</span>
+                        <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #cc44ff"></span>PIN</span>
+                        <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #00e5ff"></span>TRUE PIN</span>
+                    </div>
+                </div>
+                <div class="chart-container" id="trail-canvas-${symbol}"></div>
+            `;
+
+            // ── Right: lines chart (existing behaviour) ───────────────────────
+            const linesDiv = createPriceDiv(symbol);
+
+            wrapper.appendChild(trailDiv);
+            wrapper.appendChild(linesDiv);
+            return wrapper;
+        }
+
+        // Initialise or update the trail chart for a symbol.
+        // Call whenever rawCandles[symbol] changes (same timing as renderPriceChart).
+        function renderTrailChart(symbol, candles) {
+            if (!candles.length) return;
+            const container = document.getElementById(`trail-canvas-${symbol}`);
+            if (!container) return;   // VIX has no trail chart
+
+            const display = aggregateCandles(candles, selectedTF[symbol] || 1);
+            if (!display.length) return;
+
+            // Helper — create a trail line series with shared options
+            function _makeTrailSeries(chart, color, lineWidth, lineStyle) {
+                return chart.addLineSeries({
+                    color, lineWidth,
+                    lineStyle: lineStyle ?? LWC.LineStyle.Solid,
+                    lastValueVisible: false, priceLineVisible: false,
+                    crosshairMarkerVisible: false, title: '',
+                });
+            }
+
+            if (trailCharts[symbol]) {
+                const e = trailCharts[symbol];
+                _setSeriesData(e.candleSeries, e.volumeSeries, display);
+                // Re-apply accumulated trail data on TF change
+                if (_flipTrail[symbol]?.length)     e.flipSeries.setData(_flipTrail[symbol]);
+                if (_putWallTrail[symbol]?.length)   e.putWallSeries.setData(_putWallTrail[symbol]);
+                if (_callWallTrail[symbol]?.length)  e.callWallSeries.setData(_callWallTrail[symbol]);
+                if (_pinTrail[symbol]?.length)       e.pinSeries.setData(_pinTrail[symbol]);
+                if (_truePinTrail[symbol]?.length)   e.truePinSeries.setData(_truePinTrail[symbol]);
+                e.chart.timeScale().scrollToRealTime();
+            } else {
+                container.innerHTML = '';
+                const chart = makePriceChart(container);
+                const { candleSeries, volumeSeries } = buildCandleSeries(chart, display);
+
+                const flipSeries     = _makeTrailSeries(chart, '#ffff00', 1, LWC.LineStyle.Dashed);
+                const putWallSeries  = _makeTrailSeries(chart, '#ff4444', 1, LWC.LineStyle.Dotted);
+                const callWallSeries = _makeTrailSeries(chart, '#00ff88', 1, LWC.LineStyle.Dotted);
+                const pinSeries      = _makeTrailSeries(chart, '#cc44ff', 2, LWC.LineStyle.LargeDashed);
+                const truePinSeries  = _makeTrailSeries(chart, '#00e5ff', 2, LWC.LineStyle.Solid);
+
+                if (_flipTrail[symbol]?.length)     flipSeries.setData(_flipTrail[symbol]);
+                if (_putWallTrail[symbol]?.length)   putWallSeries.setData(_putWallTrail[symbol]);
+                if (_callWallTrail[symbol]?.length)  callWallSeries.setData(_callWallTrail[symbol]);
+                if (_pinTrail[symbol]?.length)       pinSeries.setData(_pinTrail[symbol]);
+                if (_truePinTrail[symbol]?.length)   truePinSeries.setData(_truePinTrail[symbol]);
+
+                trailCharts[symbol] = { chart, candleSeries, volumeSeries,
+                    flipSeries, putWallSeries, callWallSeries, pinSeries, truePinSeries };
+                chart.timeScale().scrollToRealTime();
+            }
+        }
+
+        // Append the current PIN / TRUE PIN price to the trail series.
+        // Buffers into _pinTrail / _truePinTrail even before the trail chart exists
+        // so renderTrailChart can pick up accumulated history on first render.
+        function appendTrailPoint(symbol, levels) {
+            if (!_pinTrail[symbol])     _pinTrail[symbol]     = [];
+            if (!_truePinTrail[symbol]) _truePinTrail[symbol] = [];
+
+            // For ES, recompute basis offset (gexLevels['ES'] stores raw SPX values).
+            let basis = 0;
+            if (symbol === 'ES') {
+                const spxSpot = gexLevels['SPX']?.spot;
+                const esRaw   = rawCandles['ES'];
+                const esLast  = esRaw?.length ? esRaw[esRaw.length - 1].close : null;
+                if (spxSpot && esLast) basis = esLast - spxSpot;
+            }
+            const src = (symbol === 'ES' && gexLevels['SPX']) ? gexLevels['SPX'] : levels;
+
+            const now = Math.floor(Date.now() / 1000);
+            const tc  = trailCharts[symbol];   // may be null at startup — buffer anyway
+
+            function _append(trailArr, series, value) {
+                if (value == null || isNaN(value)) return;
+                const last = trailArr[trailArr.length - 1];
+                if (last && last.time === now) {
+                    trailArr[trailArr.length - 1] = { time: now, value };
+                    if (series) series.update({ time: now, value });
+                } else if (!last || now > last.time) {
+                    trailArr.push({ time: now, value });
+                    if (series) series.update({ time: now, value });
+                }
+            }
+
+            _append(_flipTrail[symbol],     tc?.flipSeries,     src?.flip_level   != null ? src.flip_level   + basis : null);
+            _append(_putWallTrail[symbol],  tc?.putWallSeries,  src?.put_wall     != null ? src.put_wall     + basis : null);
+            _append(_callWallTrail[symbol], tc?.callWallSeries, src?.call_wall    != null ? src.call_wall    + basis : null);
+            _append(_pinTrail[symbol],      tc?.pinSeries,      src?.pin          != null ? src.pin          + basis : null);
+            _append(_truePinTrail[symbol],  tc?.truePinSeries,  src?.pin_enhanced != null ? src.pin_enhanced + basis : null);
         }
 
         // ── GEX chart (Chart.js — horizontal bars, strikes on Y axis) ────────────
@@ -620,6 +818,20 @@
                     plugins: {
                         legend:  { display: false },
                         tooltip: { callbacks: { label: c => `GEX: ${fmtGex(c.raw)}` } },
+                        zoom: {
+                            zoom: {
+                                wheel:   { enabled: true, speed: 0.1 },
+                                pinch:   { enabled: true },
+                                mode:    'y',
+                            },
+                            pan: {
+                                enabled: true,
+                                mode:    'y',
+                            },
+                            limits: {
+                                y: { minRange: 5 },
+                            },
+                        },
                     },
                     scales: {
                         x: {
@@ -651,8 +863,10 @@
             const config    = makeGexChartConfig(chartData, spot);
             const chartInst = new Chart(canvas.getContext('2d'), config);
             chartInst._spotPrice = spot;
-            gexCharts[key]       = chartInst;
+            gexCharts[key]          = chartInst;
             gexCharts[key]._gexData = { ...chartData, spot };
+
+            canvas.ondblclick = () => chartInst.resetZoom();
         }
 
         function updateGexSlot(symbol, slot, chartData, levels, spot, totalGex, regime) {
@@ -662,10 +876,16 @@
             document.getElementById(`flip-${id}`).textContent  = fmt(levels.flip_level);
             document.getElementById(`put-${id}`).textContent   = fmt(levels.put_wall);
             document.getElementById(`call-${id}`).textContent  = fmt(levels.call_wall);
-            document.getElementById(`pin-${id}`).textContent   = fmt(levels.pin);
+            document.getElementById(`pin-${id}`).textContent          = fmt(levels.pin);
+            const peEl = document.getElementById(`pin-enhanced-${id}`);
+            if (peEl) peEl.textContent = fmt(levels.pin_enhanced);
             const r = document.getElementById(`regime-${id}`);
             r.textContent = regime;
             r.className   = `regime ${regime}`;
+            const sr = document.getElementById(`strikes-${id}`);
+            if (sr && chartData.strike_min != null) {
+                sr.textContent = `${chartData.strike_min} – ${chartData.strike_max}`;
+            }
             renderGexChart(symbol, slot, chartData, spot);
         }
 
@@ -677,14 +897,24 @@
         }
 
         function updateGexDiv(symbol, data) {
+            // Store levels for price chart overlay (include spot for ES basis calc)
+            gexLevels[symbol] = { ...data.levels_multi, spot: data.spot };
+            applyGexLevels(symbol);
+            if (symbol === 'SPX') applyGexLevels('ES');
+
+            // Append PIN / TRUE PIN positions to trail charts
+            appendTrailPoint(symbol,  gexLevels[symbol]);
+            if (symbol === 'SPX') appendTrailPoint('ES', gexLevels['ES'] || gexLevels['SPX']);
+
             // Feed 0DTE expiry date into the countdown clock (use SPX as authoritative)
             if (symbol === 'SPX' && data.odte_date) setOdteDate(data.odte_date);
 
             const multiTotal = data.multi.net_gex.reduce((a, b) => a + b, 0);
             const zeroTotal  = data.zero.net_gex.reduce((a, b) => a + b, 0);
 
+            const regime = data.regime || (multiTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
             updateGexSlot(symbol, 'multi', data.multi, data.levels_multi, data.spot,
-                          multiTotal, multiTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
+                          multiTotal, regime);
 
             const zeroDiv  = document.getElementById(`gex-div-${symbol}-zero`);
             const dateEl   = document.getElementById(`odte-date-${symbol}-zero`);
@@ -808,7 +1038,89 @@
             }
 
             applySessionMarkers(symbol);
-            if (symbol === 'SPX') applyFlowMarkers();
+            if (symbol === 'SPX') {
+                applyFlowMarkers();
+                applyGexLevels('SPX');
+                applyGexLevels('ES');   // ES mirrors SPX levels
+            }
+            if (symbol === 'ES') applyGexLevels('ES');
+
+            // Also initialise/refresh the side-by-side trail chart
+            renderTrailChart(symbol, rawCandles[symbol]);
+        }
+
+        // ── GEX level lines on SPX price chart ───────────────────────────────
+        const GEX_LINE_STYLES = {
+            flip_level:   { color: '#ffff00', title: 'FLIP',     lineStyle: LWC.LineStyle.Dashed,      lineWidth: 1 },
+            put_wall:     { color: '#ff4444', title: 'PUT WALL', lineStyle: LWC.LineStyle.Dotted,      lineWidth: 1 },
+            call_wall:    { color: '#00ff88', title: 'CALL WALL',lineStyle: LWC.LineStyle.Dotted,      lineWidth: 1 },
+            pin:          { color: '#cc44ff', title: 'PIN',      lineStyle: LWC.LineStyle.LargeDashed, lineWidth: 1 },
+            pin_enhanced: { color: '#00e5ff', title: 'TRUE PIN', lineStyle: LWC.LineStyle.Solid,       lineWidth: 2 },
+        };
+
+        function applyGexLevels(symbol) {
+            const levels = gexLevels[symbol] || (symbol === 'ES' ? gexLevels['SPX'] : null);
+            if (!levels) return;
+
+            // For ES: offset SPX levels by current ES–SPX basis
+            let basis = 0;
+            if (symbol === 'ES' && gexLevels['SPX']) {
+                const spxSpot = gexLevels['SPX'].spot;
+                const esRaw   = rawCandles['ES'];
+                const esLast  = esRaw && esRaw.length ? esRaw[esRaw.length - 1].close : null;
+                if (spxSpot && esLast) basis = esLast - spxSpot;
+            }
+
+            // Helper: draw level lines on any chart entry (priceChart or trailChart)
+            function _drawLines(entry, lineStore) {
+                if (!entry) return;
+                (lineStore[symbol] || []).forEach(l => { try { entry.candleSeries.removePriceLine(l); } catch(_) {} });
+                lineStore[symbol] = [];
+                Object.entries(GEX_LINE_STYLES).forEach(([key, style]) => {
+                    const raw = levels[key];
+                    if (!raw) return;
+                    const price = raw + basis;
+                    const line = entry.candleSeries.createPriceLine({
+                        price,
+                        color:            style.color,
+                        lineWidth:        style.lineWidth,
+                        lineStyle:        style.lineStyle,
+                        axisLabelVisible: true,
+                        title:            style.title,
+                    });
+                    lineStore[symbol].push(line);
+                });
+            }
+
+            _drawLines(priceCharts[symbol], _gexPriceLines);
+            // Trail chart gets moving line series instead of static price lines
+            // (_gexTrailLines kept as empty store; trail history comes from appendTrailPoint)
+        }
+
+        // ── VIX overlay on SPX price chart ───────────────────────────────────
+        let _vixSeries = null;
+
+        function applyVix(candles) {
+            const entry = priceCharts['SPX'];
+            if (!entry || !candles.length) return;
+
+            if (!_vixSeries) {
+                _vixSeries = entry.chart.addSeries(LWC.LineSeries, {
+                    color:            'rgba(255, 165, 0, 0.6)',
+                    lineWidth:        1,
+                    priceScaleId:     'vix',
+                    lastValueVisible: true,
+                    priceLineVisible: false,
+                    title:            'VIX',
+                });
+                entry.chart.priceScale('vix').applyOptions({
+                    scaleMargins: { top: 0.75, bottom: 0.18 },
+                    visible:      true,
+                    borderColor:  '#332200',
+                });
+            }
+
+            _vixSeries.setData(candles.map(c => ({ time: c.time, value: c.close })));
         }
 
         /**
@@ -827,6 +1139,14 @@
             _setSeriesData(entry.candleSeries, entry.volumeSeries, display);
             entry.chart.timeScale().fitContent();
             applySessionMarkers(symbol);
+            if (symbol === 'SPX') {
+                _vixSeries = null;   // reset so applyVix re-attaches to this chart instance
+                fetchPrice('VIX');
+                applyGexLevels('SPX');
+            }
+
+            // Re-render trail chart at new TF
+            renderTrailChart(symbol, raw);
         }
 
         // ── Streaming ─────────────────────────────────────────────────────────
@@ -897,33 +1217,66 @@
                 value: agg.volume,
                 color: agg.close >= agg.open ? 'rgba(0,255,136,0.25)' : 'rgba(255,68,68,0.25)',
             });
+
+            // Mirror candle update to trail chart
+            const tc = trailCharts[symbol];
+            if (tc) {
+                tc.candleSeries.update({ time: agg.time, open: agg.open, high: agg.high, low: agg.low, close: agg.close });
+                tc.volumeSeries.update({ time: agg.time, value: agg.volume,
+                    color: agg.close >= agg.open ? 'rgba(0,255,136,0.15)' : 'rgba(255,68,68,0.15)' });
+            }
         }
 
-        const MAX_FLOW_ROWS = 50;
+        const MAX_FLOW_ROWS = 200;
 
         function addFlowAlert(a) {
             const feed = document.getElementById('flow-feed');
 
-            // Determine bullish/bearish from side + direction
+            // Re-derive direction_certain from bid/ask/last if missing (old saved alerts)
+            if (a.direction && a.direction_certain === undefined) {
+                const bid = a.bid || 0, ask = a.ask || 0, last = a.last || 0;
+                if (last > 0 && ask > 0 && bid < ask) {
+                    const spread = ask - bid;
+                    a.direction_certain = last >= ask || last <= bid
+                        ? true
+                        : (last >= ask - spread * 0.20 || last <= bid + spread * 0.20)
+                            ? false : null;
+                    if (a.direction_certain === null) a.direction = null;
+                } else {
+                    a.direction_certain = false;
+                }
+            }
+
+            // Determine bullish/bearish only when direction is confirmed
             // PUT BUY  = bearish, PUT SELL  = bullish
             // CALL BUY = bullish, CALL SELL = bearish
             const isBullish = (a.side === 'call' && a.direction === 'BUY') ||
                               (a.side === 'put'  && a.direction === 'SELL');
-            const sentiment = isBullish ? 'bullish' : 'bearish';
+            const isBearish = (a.side === 'put'  && a.direction === 'BUY') ||
+                              (a.side === 'call' && a.direction === 'SELL');
+            // Certain direction → full color; likely → muted via neutral row + dimmed badge
+            const sentiment = !a.direction ? 'neutral'
+                            : !a.direction_certain ? 'neutral'
+                            : isBullish ? 'bullish' : 'bearish';
 
-            // Total premium spent: contracts × last price × $100 multiplier
-            const notional = (a.volume_delta || 0) * (a.last || 0) * 100;
+            // Total premium spent: contracts × price × $100 multiplier
+            // Use last if available, fall back to mid if last is 0
+            const mid   = (a.bid > 0 || a.ask > 0) ? (a.bid + a.ask) / 2 : 0;
+            const price_used = (a.last > 0) ? a.last : mid;
+            const notional = (a.volume_delta || 0) * price_used * 100;
             const fmtNotional = notional >= 1e6
                 ? `$${(notional/1e6).toFixed(2)}M`
                 : notional >= 1e3
                     ? `$${(notional/1e3).toFixed(0)}K`
-                    : `$${notional.toFixed(0)}`;
+                    : notional > 0
+                        ? `$${notional.toFixed(0)}`
+                        : '—';
 
             const badge = a.is_0dte
                 ? '<span class="flow-badge dte0">0DTE</span>'
                 : '<span class="flow-badge multi">MULTI</span>';
 
-            const price = a.last > 0 ? `@ $${a.last.toFixed(2)}` : '';
+            const price = a.last > 0 ? `@ $${a.last.toFixed(2)}` : (mid > 0 ? `@ ~$${mid.toFixed(2)}` : '');
 
             // Timestamp from server time_s (unix seconds)
             const ts = a.time
@@ -935,15 +1288,17 @@
             row.dataset.alertTime = a.time || Math.floor(Date.now()/1000);
             row.innerHTML = `
                 <div class="flow-row-time">
-                    <span class="flow-ts">${ts}</span>
-                    <span class="flow-ago">just now</span>
+                    <div class="flow-ts-line">
+                        <span class="flow-ts">${ts}</span>
+                        <span class="flow-ago">just now</span>
+                    </div>
                 </div>
                 <div class="flow-row-body">
                     <span class="flow-sym">${a.underlying || ''}</span>
                     <span class="flow-strike">${a.strike}</span>
                     <span class="flow-side ${a.side}">${a.side.toUpperCase()}</span>
                     ${badge}
-                    <span class="flow-dir ${a.direction}">${a.direction}</span>
+                    ${a.direction ? `<span class="flow-dir ${a.direction}${a.direction_certain ? '' : ' likely'}">${a.direction_certain ? a.direction : '~' + a.direction}</span>` : ''}
                     <span class="flow-vol">+${(a.volume_delta||0).toLocaleString()} contracts</span>
                     <span class="flow-price">${price}</span>
                     <span class="flow-delta">δ${Math.abs(a.delta || 0.5).toFixed(2)}</span>
@@ -951,10 +1306,12 @@
                 </div>
             `;
 
+            const atTop = feed.scrollTop < 60;
             feed.insertBefore(row, feed.firstChild);
             while (feed.children.length > MAX_FLOW_ROWS) {
                 feed.removeChild(feed.lastChild);
             }
+            if (atTop) feed.scrollTop = 0;
         }
 
         // ── Flow alert markers on SPX price chart ────────────────────────────
@@ -1498,7 +1855,11 @@
         });
         PRICE_SYMBOLS.forEach(s => {
             selectedTF[s] = 1;   // default to 1m
-            priceGrid.appendChild(createPriceDiv(s));
+            // SPX and ES get trail+lines pair; VIX is single chart
+            const div = (s === 'SPX' || s === 'ES')
+                ? createPricePairDiv(s)
+                : createPriceDiv(s);
+            priceGrid.appendChild(div);
         });
 
         // Initial full load
@@ -1554,3 +1915,62 @@
     </script>
 </body>
 </html>
+eAll();
+        initDeltaChart();
+        fetchDeltaFlow();
+        fetchDeltaFlow0dte();
+
+        // Update "X ago" counters on all flow rows every second
+        function fmtAgo(secs) {
+            if (secs < 60)   return `${secs}s`;
+            if (secs < 3600) return `${Math.floor(secs/60)}m ${secs % 60}s`;
+            return `${Math.floor(secs/3600)}h ${Math.floor((secs%3600)/60)}m`;
+        }
+        setInterval(() => {
+            const now = Math.floor(Date.now() / 1000);
+            document.querySelectorAll('.flow-row[data-alert-time]').forEach(row => {
+                const elapsed = now - parseInt(row.dataset.alertTime);
+                const agoEl = row.querySelector('.flow-ago');
+                if (agoEl) agoEl.textContent = fmtAgo(elapsed);
+            });
+        }, 1000);
+
+        // Restore today's flow alerts on page load
+        (async () => {
+            try {
+                const res = await fetch('/api/flow_alerts');
+                if (!res.ok) return;
+                const alerts = await res.json();
+                alerts.sort((a, b) => (a.time || 0) - (b.time || 0));
+                for (const a of alerts) addFlowAlert(a);
+                for (const a of alerts) _flowMarkers.push(a);
+                const waitAndApply = setInterval(() => {
+                    if (priceCharts['SPX']?.markersPrimitive) {
+                        clearInterval(waitAndApply);
+                        applyFlowMarkers();
+                    }
+                }, 200);
+            } catch(e) { console.error('flow_alerts restore:', e); }
+        })();
+
+        // GEX refreshes every 30 s; price every 5 min as streaming fallback
+        setInterval(fetchGexAll,   GEX_REFRESH_MS);
+        setInterval(fetchPriceAll, PRICE_REFRESH_MS);
+
+        // Connect SSE for real-time candle updates
+        connectSSE();
+    </script>
+</body>
+</html>
+        })();
+
+        // GEX refreshes every 30 s; price every 5 min as streaming fallback
+        setInterval(fetchGexAll,   GEX_REFRESH_MS);
+        setInterval(fetchPriceAll, PRICE_REFRESH_MS);
+
+        // Connect SSE for real-time candle updates
+        connectSSE();
+    </script>
+</body>
+</html>
+l

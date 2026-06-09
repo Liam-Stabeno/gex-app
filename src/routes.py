@@ -53,7 +53,7 @@ def register(app):
     @app.route('/api/price/<symbol>')
     def api_price(symbol):
         from datetime import time as dtime
-        key = f'${symbol}' if symbol == 'SPX' else f'/{symbol}' if symbol == 'ES' else symbol
+        key = f'${symbol}' if symbol == 'SPX' else f'/{symbol}' if symbol == 'ES' else f'${symbol}.X' if symbol == 'VIX' else symbol
         with _cache_lock:
             candles = list(_candle_cache.get(key, []))
 
@@ -89,6 +89,31 @@ def register(app):
     def api_all():
         with _cache_lock:
             return jsonify(list(_cache.values()))
+
+    @app.route('/api/debug/chain')
+    def api_debug_chain():
+        """Fetch a fresh SPX chain and report gamma stats — for diagnosing GEX=0."""
+        from gex import get_access_token, fetch_option_chain
+        token = get_access_token()
+        chain = fetch_option_chain('$SPX', token, strike_count=10)
+        spot  = chain.get('underlyingPrice')
+        # Sample first 3 options from first expiration in callExpDateMap
+        samples = []
+        for exp_key, strikes in list(chain.get('callExpDateMap', {}).items())[:2]:
+            for strike_str, opts in list(strikes.items())[:3]:
+                if opts:
+                    o = opts[0]
+                    samples.append({
+                        'exp': exp_key,
+                        'strike': strike_str,
+                        'gamma': o.get('gamma'),
+                        'delta': o.get('delta'),
+                        'oi':    o.get('openInterest'),
+                        'bid':   o.get('bid'),
+                        'ask':   o.get('ask'),
+                    })
+        return jsonify({'spot': spot, 'samples': samples,
+                        'exp_keys': list(chain.get('callExpDateMap', {}).keys())[:10]})
 
     @app.route('/api/debug/price/<symbol>')
     def api_debug_price(symbol):

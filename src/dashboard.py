@@ -32,8 +32,8 @@ app = Flask(__name__, template_folder='../templates')
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-SYMBOLS              = ['$SPX']         # GEX symbols  (SPY, QQQ temporarily removed)
-PRICE_SYMBOLS        = ['$SPX', '/ES']  # price chart symbols
+SYMBOLS              = ['$SPX']                    # GEX symbols
+PRICE_SYMBOLS        = ['$SPX', '/ES', '$VIX.X']   # price chart symbols
 REFRESH_INTERVAL     = 60               # GEX refresh cadence (seconds)
 PRICE_SYNC_INTERVAL  = 60              # price sync cadence (seconds)
 
@@ -93,13 +93,15 @@ if __name__ == '__main__':
         background.refresh_gex(symbol)
 
     # Start background threads
-    threading.Thread(target=background.gex_loop,   daemon=True).start()
-    threading.Thread(target=background.price_loop, daemon=True).start()
+    threading.Thread(target=background.gex_loop,      daemon=True).start()
+    threading.Thread(target=background.price_loop,    daemon=True).start()
+    threading.Thread(target=background.live_gex_loop, daemon=True).start()
 
     # Start WebSocket streamer
     _streamer = SchwabStreamer(
         on_candle=background.on_streamer_candle,
         on_flow_alert=background.on_flow_alert,
+        on_options_quote=background.on_options_quote,
     )
     _streamer_ref[0] = _streamer
     _streamer.start()

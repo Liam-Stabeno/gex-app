@@ -87,7 +87,7 @@ def fetch_option_chain(symbol: str, access_token: str,
     from datetime import timedelta
     today    = datetime.now().strftime("%Y-%m-%d")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-    to_date  = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
+    to_date  = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
 
     params = {
         "symbol": symbol,
@@ -266,6 +266,7 @@ def get_watch_contracts(chain: dict, call_wall: float,
 
     def contracts_for_0dte(exp_key: str) -> list:
         """0DTE strikes within ±5% of spot — wide enough to catch all active strikes."""
+        expiry_date = exp_key.split(':')[0]   # e.g. '2026-06-10'
         lo_0dte = spot * 0.95
         hi_0dte = spot * 1.05
         result = []
@@ -286,6 +287,7 @@ def get_watch_contracts(chain: dict, call_wall: float,
                     'strike':       strike,
                     'side':         'call',
                     'expiry_label': '0DTE',
+                    'expiry_date':  expiry_date,
                     'delta':        delta,
                     'weight':       max(abs(delta), 0.01),
                     'oi':           oi,
@@ -304,6 +306,7 @@ def get_watch_contracts(chain: dict, call_wall: float,
                     'strike':       strike,
                     'side':         'put',
                     'expiry_label': '0DTE',
+                    'expiry_date':  expiry_date,
                     'delta':        delta,
                     'weight':       max(abs(delta), 0.01),
                     'oi':           oi,
@@ -315,6 +318,7 @@ def get_watch_contracts(chain: dict, call_wall: float,
 
     def contracts_for_multi(exp_key: str) -> list:
         """Top OI strikes within ±spot_band_pct for the nearest multi-expiry."""
+        expiry_date = exp_key.split(':')[0]   # e.g. '2026-06-12'
         result = []
         lo_bound = spot * (1 - spot_band_pct)
         hi_bound = spot * (1 + spot_band_pct)
@@ -346,6 +350,7 @@ def get_watch_contracts(chain: dict, call_wall: float,
                     'strike':       strike,
                     'side':         'call',
                     'expiry_label': 'MULTI',
+                    'expiry_date':  expiry_date,
                     'delta':        delta,
                     'weight':       max(abs(delta), 0.01),
                     'oi':           oi,
@@ -363,6 +368,7 @@ def get_watch_contracts(chain: dict, call_wall: float,
                     'strike':       strike,
                     'side':         'put',
                     'expiry_label': 'MULTI',
+                    'expiry_date':  expiry_date,
                     'delta':        delta,
                     'weight':       max(abs(delta), 0.01),
                     'oi':           oi,
