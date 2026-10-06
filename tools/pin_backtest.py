@@ -40,7 +40,7 @@ import pandas as pd
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'src'))
 import bs                                    # noqa: E402
-from gex_stats import ET, load_closes, load_checkpoints, expected_move_table  # noqa: E402
+from gex_stats import ET, load_closes, load_checkpoints, expected_move_table, day_file  # noqa: E402
 from gex import TRUE_PIN_WEIGHTS             # noqa: E402
 
 DATA = os.path.join(ROOT, 'data')
@@ -112,9 +112,9 @@ def collect():
         day = cp['day'].isoformat()
         if day not in cache:
             p0 = os.path.join(DATA, f'gex_0dte_snapshots_SPX_{day}.csv')
-            pw = os.path.join(DATA, f'gex_watchlist_SPX_{day}.csv')
+            pw = day_file(f'gex_watchlist_SPX_{day}.csv', DATA)    # plain or .gz
             cache = {day: (pd.read_csv(p0) if os.path.exists(p0) else None,
-                           pd.read_csv(pw) if os.path.exists(pw) else None)}
+                           pd.read_csv(pw) if pw else None)}
         s0, wl = cache[day]
         spot, close, ts = float(cp['spot']), closes[cp['day']], cp['et']
         c = {'spot (no move)': spot, 'nearest 25': round(spot / 25) * 25,

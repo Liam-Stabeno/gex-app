@@ -107,6 +107,7 @@ if __name__ == '__main__':
     threading.Thread(target=background.gex_loop,      daemon=True).start()
     threading.Thread(target=background.price_loop,    daemon=True).start()
     threading.Thread(target=background.live_gex_loop, daemon=True).start()
+    threading.Thread(target=background.daily_jobs_loop, daemon=True).start()
 
     # Start WebSocket streamer
     _streamer = SchwabStreamer(

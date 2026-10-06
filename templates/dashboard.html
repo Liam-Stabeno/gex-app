@@ -798,7 +798,8 @@
                     <span><span class="zone-swatch" style="background:rgba(255,60,80,0.55)"></span> negative gamma: dealers chase moves, price <b style="color:#ff3c50">speeds up</b></span>
                     <span title="Stronger colour = bigger GEX at that strike (linear). Thin or clear bands slow price only a little."><span class="zone-swatch" style="border:1px solid rgba(120,255,190,0.85)"></span> outlined: 3 strongest strikes (walls)</span>
                     <span style="margin-left:auto;color:#444">double-click: full screen · drag corner: resize</span>
-                </div>` : ''}
+                </div>
+                <div class="zone-bar" id="gamma-levels-${symbol}" title="From the latest 5-min GEX snapshot. Brakes = GEX at the current price vs today's biggest wall.">—</div>` : ''}
                 <div class="chart-container" id="price-canvas-${symbol}"></div>
             `;
             // Wire up TF buttons — stopPropagation so dblclick on a button doesn't open modal
@@ -1036,6 +1037,7 @@
             detached() { this._chart = this._series = null; }
             updateAllViews() {}
             paneViews() { return [this._view]; }
+            setAirPockets(air) { this._air = air || []; this._req && this._req(); }
             setData(data, mode) {
                 this._data = data; this._mode = mode;
                 const cols = (data && data[mode]) || [];
@@ -1078,6 +1080,28 @@
                             ctx.fillStyle = g > 0 ? `rgba(0,200,120,${a.toFixed(3)})` : `rgba(255,60,80,${a.toFixed(3)})`;
                             ctx.fillRect(x0, y[0], w, y[1]);
                         }
+                    }
+
+                    // Air pockets (latest snapshot): near-zero gamma, price travels easily
+                    const lastX = xs.filter(x => x != null).pop();
+                    if (lastX != null && this._air && this._air.length) {
+                        const x0 = Math.round(lastX * hr), wA = bitmapSize.width - x0;
+                        ctx.save();
+                        ctx.strokeStyle = 'rgba(200,200,220,0.22)';
+                        ctx.lineWidth = Math.max(1, Math.round(hr));
+                        for (const [lo, hi] of this._air) {
+                            const yTop = series.priceToCoordinate(hi + 2.5), yBot = series.priceToCoordinate(lo - 2.5);
+                            if (yTop == null || yBot == null) continue;
+                            const y0 = Math.round(yTop * vr), hA = Math.round((yBot - yTop) * vr);
+                            ctx.beginPath(); ctx.rect(x0, y0, wA, hA); ctx.clip();
+                            ctx.beginPath();
+                            const step = Math.round(8 * hr);
+                            for (let d = -hA; d < wA; d += step) { ctx.moveTo(x0 + d, y0 + hA); ctx.lineTo(x0 + d + hA, y0); }
+                            ctx.stroke();
+                            ctx.restore(); ctx.save();
+                            ctx.strokeStyle = 'rgba(200,200,220,0.22)'; ctx.lineWidth = Math.max(1, Math.round(hr));
+                        }
+                        ctx.restore();
                     }
 
                     // Walls: the 3 strongest strikes per snapshot, outlined as one continuous
@@ -1123,11 +1147,87 @@
             } catch (e) { console.warn('[gamma zones]', e); }
         }
 
+        // ── Trading levels from the gamma profile ─────────────────────────────
+        let _gammaLines = [];
+        const fmtM = g => `${g >= 0 ? '+' : '−'}${Math.abs(g / 1e6).toFixed(0)}M`;
+        const fmtD = d => `${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(0)}`;
+
+        let _lastGammaLevels = null;
+        const LEVEL_TRAILS = [   // key, axis title, colour, style, width
+            ['trapdoor',   'TRAPDOOR', '#ff3c50', 'Dashed', 2],
+            ['squeeze',    'SQUEEZE',  '#ff9f1c', 'Dashed', 2],
+            ['support',    'SUPPORT',  '#00c878', 'Solid',  1],
+            ['resistance', 'RESIST',   '#7dffc4', 'Solid',  1],
+        ];
+
+        // Step lines through each 5-min snapshot's level, bucketed to the candle
+        // timeframe, extended to the latest candle. A gap where a level doesn't exist.
+        function drawLevelTrails() {
+            const e = priceCharts.SPX;
+            if (!e) return;
+            if (!e.levelSeries) {
+                e.levelSeries = Object.fromEntries(LEVEL_TRAILS.map(([k, title, color, style, width]) =>
+                    [k, e.chart.addSeries(LWC.LineSeries, {
+                        color, lineWidth: width, lineStyle: LWC.LineStyle[style], title,
+                        lineType: LWC.LineType.WithSteps,
+                        lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false,
+                        autoscaleInfoProvider: () => null,
+                        priceFormat: { type: 'price', precision: 0, minMove: 1 },
+                    })]));
+            }
+            const hist = (_zoneMode === 'off' || !_lastGammaLevels) ? [] : (_lastGammaLevels.history || []);
+            const bucket = (selectedTF.SPX || 1) * 60;
+            const lastBar = rawCandles.SPX?.at(-1)?.time;
+            const endT = lastBar != null ? Math.floor(lastBar / bucket) * bucket : null;
+            for (const [k] of LEVEL_TRAILS) {
+                const byT = new Map();
+                for (const h of hist) byT.set(Math.floor(h.time / bucket) * bucket, h[k]);   // last in bucket wins
+                const pts = [...byT].sort((a, b) => a[0] - b[0])
+                    .map(([time, v]) => v == null ? { time } : { time, value: v });
+                const last = pts.at(-1);
+                if (last && endT != null && endT > last.time) pts.push(last.value == null ? { time: endT } : { time: endT, value: last.value });
+                e.levelSeries[k].setData(pts);
+            }
+        }
+
+        async function fetchGammaLevels() {
+            const el = document.getElementById('gamma-levels-SPX');
+            const e  = priceCharts.SPX;
+            if (!el || !e) return;
+            let L = null;
+            try {
+                const res = await fetch(`/api/gamma_levels/SPX?mode=${_zoneMode === 'odte' ? 'odte' : 'all'}`);
+                L = res.ok ? await res.json() : null;
+            } catch (_) {}
+            _gammaLines.forEach(l => { try { e.candleSeries.removePriceLine(l); } catch (_) {} });
+            _gammaLines = [];
+            e.zones?.setAirPockets(L && _zoneMode !== 'off' ? L.air_pockets : []);
+            _lastGammaLevels = L;
+            drawLevelTrails();
+            if (!L || !L.brakes) { el.textContent = '—'; return; }
+
+            const b = L.brakes;
+            const bColor = { strong: '#00ff88', moderate: '#9be7c4', weak: '#ffb300', accelerator: '#ff3c50' }[b.label];
+            const item = (name, lv, color) => lv
+                ? `<span>${name} <b style="color:${color}">${lv.strike}</b> (${fmtD(lv.dist)})</span>`
+                : `<span>${name} <b style="color:#555">—</b></span>`;
+            el.innerHTML = [
+                `<span>BRAKES AT PRICE <b style="color:${bColor}">${b.label.toUpperCase()} ${b.label === 'accelerator' ? '' : b.pct + '%'}</b></span>`,
+                item('Support', L.support, '#00c878'),
+                item('Resist', L.resistance, '#7dffc4'),
+                item('Trapdoor', L.trapdoor, '#ff3c50'),
+                item('Squeeze', L.squeeze, '#ff9f1c'),
+                `<span>Walls ${(L.walls || []).map(w => `<b style="color:${w.gex >= 0 ? '#00c878' : '#ff3c50'}">${w.strike}</b> ${fmtM(w.gex)}`).join(' · ')}</span>`,
+                (L.air_pockets || []).length ? `<span title="Near-zero gamma: price travels easily">Air ${L.air_pockets.map(([a, z]) => `${a}–${z}`).join(', ')}</span>` : '',
+            ].join('<span style="color:#333">│</span>');
+        }
+
         function setZoneMode(mode) {
             _zoneMode = mode;
             try { localStorage.setItem('zoneMode', mode); } catch (_) {}
             document.querySelectorAll('[data-zone]').forEach(b => b.classList.toggle('active', b.dataset.zone === mode));
             priceCharts.SPX?.zones?.setData(mode === 'off' ? null : _heatmap, mode);
+            fetchGammaLevels();
         }
 
         function togglePriceFullscreen(div, force) {
@@ -1698,6 +1798,7 @@
                     priceCharts.SPX.zones = new GammaZones(() => (selectedTF.SPX || 1) * 60);
                     candleSeries.attachPrimitive(priceCharts.SPX.zones);
                     if (_heatmap) priceCharts.SPX.zones.setData(_heatmap, _zoneMode);
+                    fetchGammaLevels();
                 }
             }
 
@@ -1815,7 +1916,7 @@
             _setSeriesData(entry.candleSeries, entry.volumeSeries, display);
             entry.chart.timeScale().fitContent();
             applySessionMarkers(symbol);
-            if (symbol === 'SPX') applyGexLevels('SPX');
+            if (symbol === 'SPX') { applyGexLevels('SPX'); drawLevelTrails(); }
 
             // Re-render trail chart at new TF
             renderTrailChart(symbol, raw);
@@ -2665,6 +2766,7 @@
         setInterval(fetchLevelHistory, 60000);
         fetchHeatmap();
         setInterval(fetchHeatmap, 60000);
+        setInterval(fetchGammaLevels, 30000);
         setZoneMode(_zoneMode);
 
         // Expected move to the close for the current regime (server table rebuilt hourly)

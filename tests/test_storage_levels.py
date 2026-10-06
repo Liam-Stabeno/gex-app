@@ -1,0 +1,93 @@
+"""
+Run from the project root:   python -m pytest tests/test_storage_levels.py -q
+"""
+import gzip
+import json
+import sys
+from datetime import date, datetime
+from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import gex_stats as gs  # noqa: E402
+
+ET = gs.ET
+
+
+# ── gamma levels ─────────────────────────────────────────────────────
+
+def test_gamma_levels_finds_each_level():
+    strikes = [7700, 7720, 7740, 7760, 7780, 7800, 7810, 7820, 7830, 7840, 7860, 7880, 7900]
+    gex = [-30, -5, 0.5, 0.5, 40, 100, 20, 60, 90, 10, 0.2, 0.3, -12]
+    L = gs.gamma_levels(strikes, gex, spot=7825)
+    assert [w["strike"] for w in L["walls"]] == [7800, 7830, 7820]
+    assert L["trapdoor"]["strike"] == 7720          # first below spot at or past -3% of max |GEX|
+    assert L["squeeze"]["strike"] == 7900           # first clearly negative above spot
+    assert L["support"]["strike"] == 7800           # 7820 is within 7.5 pts of spot
+    assert L["resistance"] is None                  # 7830 too close; 7840 (10) < 25% of max
+    assert [7740, 7760] in L["air_pockets"] and [7860, 7880] in L["air_pockets"]
+    assert L["brakes"]["label"] == "strong"         # halfway between 60 and 90 = 75% of 100
+
+
+def test_support_resistance_are_the_biggest_walls_not_the_nearest():
+    strikes = [7760, 7780, 7800, 7810, 7820, 7830, 7840, 7850, 7880]
+    gex     = [10,   140,  60,   50,   80,   90,   45,   150,  70]
+    L = gs.gamma_levels(strikes, gex, spot=7826)
+    assert L["support"]["strike"] == 7780       # nearest qualifying would be 7810; 7780 is the big one
+    assert L["resistance"]["strike"] == 7850    # nearest qualifying would be 7840
+
+
+def test_brakes_accelerator_when_negative_at_spot():
+    L = gs.gamma_levels([7790, 7800, 7810], [-20, -40, -10], spot=7800)
+    assert L["brakes"]["label"] == "accelerator"
+    assert L["support"] is None and L["resistance"] is None
+
+
+# ── storage ──────────────────────────────────────────────────────────
+
+def _grid(tmp, day, n=2):
+    snaps = [{"ts": f"{day}T10:{i * 5:02d}:00-04:00", "spot": 7800.0, "exp": [day],
+              "rows": [[7800.0, 0, 10, 0, 100.0 + i], [7750.0, 0, 0, 5, -20.0]]} for i in range(n)]
+    path = tmp / f"gex_grid_SPX_{day}.jsonl"
+    path.write_text("\n".join(json.dumps(s) for s in snaps), encoding="utf-8")
+    return path
+
+
+def test_archive_gzips_past_days_only_and_heatmap_still_reads(tmp_path):
+    old, today = _grid(tmp_path, "2026-10-05"), _grid(tmp_path, "2026-10-06")
+    original = old.read_bytes()
+    done = gs.archive_old_files("SPX", today=date(2026, 10, 6), data_dir=tmp_path)
+    assert done == ["gex_grid_SPX_2026-10-05.jsonl.gz"]
+    assert not old.exists() and today.exists()
+    assert gzip.decompress((tmp_path / done[0]).read_bytes()) == original
+    h = gs.load_heatmap("SPX", day=date(2026, 10, 5), data_dir=tmp_path)
+    assert h["all"] == [[-20, 100], [-20, 101]]
+    assert gs.archive_old_files("SPX", today=date(2026, 10, 6), data_dir=tmp_path) == []   # idempotent
+
+
+def _local(dt_et):
+    return datetime.fromtimestamp(dt_et.timestamp()).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def test_daily_summary_row_is_replaced_not_duplicated(tmp_path):
+    day = date(2026, 10, 5)
+    rows = [{"timestamp": _local(datetime(2026, 10, 5, h, m, tzinfo=ET)), "spot": 7800.0,
+             "total_gex": g, "regime": "", "flip_level": 7790, "put_wall": 7700, "call_wall": 7850,
+             "pin": 7850, "strike_min": 7600, "strike_max": 8000, "true_pin": 7820}
+            for h, m, g in ((9, 35, -1e8), (15, 55, 5e8))]
+    pd.DataFrame(rows).to_csv(tmp_path / "gex_snapshots_SPX_2026-10-05.csv", index=False)
+    bars = [{"datetime": int(datetime(2026, 10, 5, h, m, tzinfo=ET).timestamp() * 1000),
+             "open": o, "high": o + 5, "low": o - 5, "close": o + 1, "volume": 0}
+            for h, m, o in ((9, 30, 7790.0), (15, 59, 7810.0))]
+    pd.DataFrame(bars).to_csv(tmp_path / "price_history_SPX.csv", index=False)
+    _grid(tmp_path, "2026-10-05")
+
+    r = gs.write_daily_summary(day, "SPX", tmp_path)
+    gs.write_daily_summary(day, "SPX", tmp_path)
+    df = pd.read_csv(tmp_path / "daily_summary_SPX.csv")
+    assert len(df) == 1
+    assert (r["open"], r["close"], r["high"], r["low"]) == (7790.0, 7811.0, 7815.0, 7785.0)
+    assert (r["regime_open"], r["regime_close"]) == ("NEGATIVE", "POSITIVE")
+    assert r["call_wall"] == 7850 and r["true_pin"] == 7820 and r["wall1"] == 7800.0
+    assert gs.summary_days_missing("SPX", tmp_path) == []

@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from queue import Queue, Empty
 from zoneinfo import ZoneInfo
-from flask import jsonify, render_template, Response, stream_with_context
+from flask import request, jsonify, render_template, Response, stream_with_context
 
 import delta_flow
 import flow_alerts
@@ -55,7 +55,25 @@ def register(app):
     def api_gex_heatmap(symbol):
         """Today's net GEX by strike over time (5-min snapshots) for the gamma-zone heatmap."""
         import gex_stats
-        return jsonify(gex_stats.load_heatmap(symbol.upper().replace('$', '')))
+        day = None
+        if request.args.get('date'):
+            try:
+                day = datetime.strptime(request.args['date'], '%Y-%m-%d').date()
+            except ValueError:
+                return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+        return jsonify(gex_stats.load_heatmap(symbol.upper().replace('$', ''), day=day))
+
+    @app.route('/api/gamma_levels/<symbol>')
+    def api_gamma_levels(symbol):
+        """Walls, trapdoor, squeeze, support/resistance, air pockets, brakes at spot."""
+        import gex_stats
+        key = f'${symbol}' if symbol == 'SPX' else symbol
+        with _cache_lock:
+            spot = (_cache.get(key) or {}).get('spot')
+        if not spot:
+            return jsonify(None)
+        mode = request.args.get('mode', 'all')
+        return jsonify(gex_stats.current_gamma_levels(float(spot), mode, symbol.upper().replace('$', '')))
 
     @app.route('/api/expected_move/<symbol>')
     def api_expected_move(symbol):

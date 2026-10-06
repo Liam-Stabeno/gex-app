@@ -67,7 +67,7 @@ def _append_gex_snapshot(sym: str, tag: str, row: dict):
 # records the opening OI (it only changes overnight).
 _ET               = ZoneInfo('America/New_York')
 GRID_INTERVAL_SEC = 300      # snapshot every 5 min (the GEX refresh runs every 60 s)
-GRID_KEEP_DAYS    = 90       # day files older than this are deleted; None = keep all
+GRID_KEEP_DAYS    = None     # keep forever (finished days are gzipped by gex_stats.archive_old_files)
 _grid_last_ts: dict = {}     # sym -> time.time() of last snapshot
 _grid_cleaned_day: dict = {} # sym -> ET date of last cleanup
 
@@ -164,6 +164,32 @@ def load_level_history(sym: str) -> list:
                         'call_wall': num(r.get('call_wall')), 'pin': num(r.get('pin')),
                         'pin_enhanced': num(r.get('true_pin'))})
     return out
+
+
+def daily_jobs_loop():
+    """Once a day after the close: write the summary row, then gzip finished days.
+    On startup it also backfills summaries for past days and archives old files."""
+    import gex_stats
+    def run(write_today: bool):
+        try:
+            for d in gex_stats.summary_days_missing('SPX'):
+                gex_stats.write_daily_summary(d, 'SPX')
+            if write_today:
+                gex_stats.write_daily_summary(datetime.now(_ET).date(), 'SPX')
+            done = gex_stats.archive_old_files('SPX')
+            if done:
+                print(f'[daily] archived {len(done)} file(s)')
+        except Exception as e:  # never kill the thread
+            print(f'[daily] job failed: {e}')
+
+    run(write_today=False)
+    written_for = None
+    while True:
+        time.sleep(600)
+        now = datetime.now(_ET)
+        if now.weekday() < 5 and now.time() >= dtime(16, 20) and written_for != now.date():
+            run(write_today=True)
+            written_for = now.date()
 
 
 def _last_session_path(sym: str) -> str:

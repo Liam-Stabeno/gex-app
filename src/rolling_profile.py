@@ -52,7 +52,7 @@ SESSION_CLOSE = dtime(16, 15)    # lists today's 0DTE after the close, which wou
 
 PERSIST = True
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"   # <project>/data
-KEEP_DAYS = 30                   # day files older than this are deleted (~10 MB/day); None = keep all
+KEEP_DAYS = None                 # keep forever (finished days are gzipped by gex_stats.archive_old_files)
 
 STREAM_SNAPSHOT_SEC = 5          # snapshot cadence while streamed volume is arriving
 

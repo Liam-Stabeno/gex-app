@@ -130,12 +130,12 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     """
     import json
     day = day or datetime.now(ET).date()
-    path = os.path.join(data_dir, f'gex_grid_{sym}_{day.isoformat()}.jsonl')
-    empty = {'times': [], 'strikes': [], 'all': [], 'odte': []}
-    if not os.path.exists(path):
+    path = day_file(f'gex_grid_{sym}_{day.isoformat()}.jsonl', data_dir)
+    empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': []}
+    if not path:
         return empty
     snaps = []
-    with open(path, encoding='utf-8') as f:
+    with open_text(path) as f:
         for line in f:
             try:
                 snaps.append(json.loads(line))
@@ -147,7 +147,7 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     lo, hi = min(spots) - band, max(spots) + band
     strikes = sorted({r[0] for s in snaps for r in s['rows'] if lo <= r[0] <= hi})
     idx = {k: i for i, k in enumerate(strikes)}
-    out = {'times': [], 'strikes': strikes, 'all': [], 'odte': []}
+    out = {'times': [], 'spots': [], 'strikes': strikes, 'all': [], 'odte': []}
     for s in snaps:
         today_i = s['exp'].index(day.isoformat()) if day.isoformat() in s['exp'] else -1
         all_col, odte_col = [0.0] * len(strikes), [0.0] * len(strikes)
@@ -159,6 +159,242 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
             if exp_i == today_i:
                 odte_col[i] += gex
         out['times'].append(int(datetime.fromisoformat(s['ts']).timestamp()))
+        out['spots'].append(s.get('spot'))
         out['all'].append([round(v) for v in all_col])
         out['odte'].append([round(v) for v in odte_col])
     return out
+
+
+# ── Trading levels from one GEX-by-strike profile ──────────────────────────────
+# Thresholds are fractions of the profile's largest |GEX| (or largest positive).
+NEG_MIN        = 0.03   # a strike counts as negative gamma below -3% of max |GEX|
+SUPPORT_MIN    = 0.25   # support / resistance must be >= 25% of the largest positive strike
+SR_MIN_PTS     = 7.5    # ...and at least this far from spot (skip the strikes price sits on)
+AIR_MAX        = 0.05   # air pocket: |GEX| under 5% of max for at least AIR_MIN_PTS
+AIR_MIN_PTS    = 10
+LEVEL_BAND_PTS = 150    # only look this far from spot
+BRAKES_STRONG, BRAKES_WEAK = 0.50, 0.20
+
+
+def gamma_levels(strikes: list, gex: list, spot: float, n_walls: int = 3) -> dict:
+    """Walls, trapdoor / squeeze, support / resistance, air pockets and the brakes
+    reading at spot, from net GEX per strike (positive = dealers long gamma).
+
+    trapdoor : nearest strike below spot where net GEX turns clearly negative —
+               dealers start selling into the drop, moves can speed up
+    squeeze  : the same above spot
+    support / resistance : the biggest positive-GEX strike below / above spot (within
+               LEVEL_BAND_PTS, at least SR_MIN_PTS away) — the big walls price has to get through
+    air_pockets : runs of near-zero GEX near spot, where price travels easily
+    brakes   : GEX at spot vs the largest positive strike (strong / moderate / weak,
+               or 'accelerator' when negative)
+    """
+    pts = sorted((float(k), float(g)) for k, g in zip(strikes, gex) if abs(float(k) - spot) <= LEVEL_BAND_PTS)
+    if not pts:
+        return {}
+    max_abs = max(abs(g) for _, g in pts) or 1.0
+    max_pos = max([g for _, g in pts if g > 0], default=0.0) or max_abs
+    below = [p for p in reversed(pts) if p[0] < spot]
+    above = [p for p in pts if p[0] > spot]
+    lvl = lambda p: {'strike': p[0], 'gex': p[1], 'dist': round(p[0] - spot, 2)} if p else None
+    first = lambda seq, cond: next((p for p in seq if cond(p[1])), None)
+    # biggest positive strike in a set, if it's big enough to matter
+    biggest = lambda seq: max((p for p in seq if p[1] >= SUPPORT_MIN * max_pos), key=lambda p: p[1], default=None)
+
+    walls = sorted(pts, key=lambda p: -abs(p[1]))[:n_walls]
+    air, run = [], []
+    for k, g in pts + [(None, None)]:
+        if k is not None and abs(g) < AIR_MAX * max_abs:
+            run.append(k)
+            continue
+        if run and run[-1] - run[0] >= AIR_MIN_PTS:
+            air.append([run[0], run[-1]])
+        run = []
+
+    # GEX at spot: linear between the two strikes around it
+    lo = below[0] if below else None
+    hi = above[0] if above else None
+    if lo and hi:
+        w = (spot - lo[0]) / (hi[0] - lo[0])
+        g_spot = lo[1] * (1 - w) + hi[1] * w
+    else:
+        g_spot = (lo or hi)[1]
+    ratio = g_spot / max_pos
+    label = ('accelerator' if g_spot < 0 else 'strong' if ratio >= BRAKES_STRONG
+             else 'moderate' if ratio >= BRAKES_WEAK else 'weak')
+
+    return {
+        'spot': spot,
+        'walls': [lvl(p) for p in walls],
+        'trapdoor': lvl(first(below, lambda g: g <= -NEG_MIN * max_abs)),
+        'squeeze': lvl(first(above, lambda g: g <= -NEG_MIN * max_abs)),
+        'support': lvl(biggest([p for p in below if spot - p[0] >= SR_MIN_PTS])),
+        'resistance': lvl(biggest([p for p in above if p[0] - spot >= SR_MIN_PTS])),
+        'air_pockets': air,
+        'brakes': {'label': label, 'pct': round(100 * ratio), 'gex': g_spot},
+    }
+
+
+def current_gamma_levels(spot: float, mode: str = 'all', sym: str = 'SPX',
+                         data_dir: str = _DATA_DIR) -> dict | None:
+    """gamma_levels() on the latest 5-min snapshot of today's heatmap."""
+    h = load_heatmap(sym, data_dir=data_dir)
+    if not h['times'] or mode not in ('all', 'odte'):
+        return None
+    out = gamma_levels(h['strikes'], h[mode][-1], spot)
+    if out:
+        # the same levels for every 5-min snapshot today, so the chart can trail them
+        out['history'] = []
+        for t, col, sp in zip(h['times'], h[mode], h['spots']):
+            if not sp:
+                continue
+            L = gamma_levels(h['strikes'], col, float(sp))
+            out['history'].append({'time': t, **{k: (L[k]['strike'] if L.get(k) else None)
+                                                  for k in ('support', 'resistance', 'trapdoor', 'squeeze')}})
+        # air pockets are about total gamma: 0DTE alone looks empty away from spot
+        # even where other expiries hold plenty
+        if mode != 'all':
+            out['air_pockets'] = gamma_levels(h['strikes'], h['all'][-1], spot).get('air_pockets', [])
+        out.update(mode=mode, as_of=h['times'][-1])
+    return out
+
+
+# ── Long-term storage ──────────────────────────────────────────────────────────
+# Day files are kept forever. Once a day is over, the large ones are gzipped
+# (~10x smaller); readers accept either form. A one-row-per-day summary CSV
+# (daily_summary_<sym>.csv) is the quick way to track things day to day.
+ARCHIVE_PATTERNS = ('gex_grid_{sym}_*.jsonl', 'rolling_profile_{sym}_*.jsonl', 'gex_watchlist_{sym}_*.csv')
+
+
+def day_file(name: str, data_dir: str = _DATA_DIR) -> str | None:
+    """Path of a day file, plain or gzipped (None if neither exists)."""
+    plain = os.path.join(data_dir, name)
+    for p in (plain, plain + '.gz'):
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def open_text(path: str):
+    import gzip
+    return gzip.open(path, 'rt', encoding='utf-8') if path.endswith('.gz') else open(path, encoding='utf-8')
+
+
+def archive_old_files(sym: str = 'SPX', today=None, data_dir: str = _DATA_DIR) -> list:
+    """Gzip finished day files (dated before today). Verified before the original goes."""
+    import gzip, re, shutil
+    today = today or datetime.now(ET).date()
+    done = []
+    for pat in ARCHIVE_PATTERNS:
+        for path in glob.glob(os.path.join(data_dir, pat.format(sym=sym))):
+            m = re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(path))
+            if not m or datetime.strptime(m.group(1), '%Y-%m-%d').date() >= today:
+                continue
+            gz, tmp = path + '.gz', path + '.gz.tmp'
+            with open(path, 'rb') as src, gzip.open(tmp, 'wb', compresslevel=6) as dst:
+                shutil.copyfileobj(src, dst)
+            with gzip.open(tmp, 'rb') as chk:                 # read back fully before deleting
+                n = 0
+                for block in iter(lambda: chk.read(1 << 20), b''):
+                    n += len(block)
+            if n != os.path.getsize(path):
+                os.remove(tmp)
+                continue
+            os.replace(tmp, gz)
+            os.remove(path)
+            done.append(os.path.basename(gz))
+    return done
+
+
+SUMMARY_FIELDS = ['date', 'open', 'high', 'low', 'close', 'range', 'change',
+                  'regime_open', 'regime_close', 'total_gex_close_m',
+                  'flip', 'put_wall', 'call_wall', 'pin_lt', 'true_pin', 'pin_0dte',
+                  'support', 'resistance', 'trapdoor', 'squeeze', 'brakes_close',
+                  'wall1', 'wall1_m', 'wall2', 'wall2_m', 'wall3', 'wall3_m',
+                  'biggest_wall_of_day', 'biggest_wall_m', 'snapshots', 'grid_snapshots']
+
+
+def build_daily_summary(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | None:
+    """One row describing a finished day: prices, regime, levels at the close, walls."""
+    snap_path = os.path.join(data_dir, f'gex_snapshots_{sym}_{day.isoformat()}.csv')
+    if not os.path.exists(snap_path):
+        return None
+    s = pd.read_csv(snap_path)
+    if s.empty:
+        return None
+    s['et'] = s['timestamp'].map(_to_et)
+    sess = s[s['et'].map(lambda t: dtime(9, 30) <= t.time() <= dtime(16, 0))]
+    use = sess if not sess.empty else s
+    first, last = use.iloc[0], use.iloc[-1]
+
+    def num(v):
+        try:
+            return round(float(v), 2) if pd.notna(v) and v != '' else ''
+        except (TypeError, ValueError):
+            return ''
+
+    row = {k: '' for k in SUMMARY_FIELDS}
+    row.update(date=day.isoformat(),
+               regime_open='POSITIVE' if first['total_gex'] > 0 else 'NEGATIVE',
+               regime_close='POSITIVE' if last['total_gex'] > 0 else 'NEGATIVE',
+               total_gex_close_m=round(float(last['total_gex']) / 1e6),
+               flip=num(last.get('flip_level')), put_wall=num(last.get('put_wall')),
+               call_wall=num(last.get('call_wall')), pin_lt=num(last.get('pin')),
+               true_pin=num(last.get('true_pin')), snapshots=len(s))
+
+    p0 = os.path.join(data_dir, f'gex_0dte_snapshots_{sym}_{day.isoformat()}.csv')
+    if os.path.exists(p0):
+        s0 = pd.read_csv(p0)
+        if not s0.empty:
+            row['pin_0dte'] = num(s0['pin'].iloc[-1])
+
+    ph_path = os.path.join(data_dir, f'price_history_{sym}.csv')
+    if os.path.exists(ph_path):
+        ph = pd.read_csv(ph_path)
+        ph['dt'] = pd.to_datetime(ph['datetime'], unit='ms', utc=True).dt.tz_convert(ET)
+        t = ph['dt'].dt.time
+        d = ph[(ph['dt'].dt.date == day) & (t >= dtime(9, 30)) & (t <= dtime(15, 59))]
+        if not d.empty:
+            o, c = float(d['open'].iloc[0]), float(d['close'].iloc[-1])
+            hi, lo = float(d['high'].max()), float(d['low'].min())
+            row.update(open=o, high=hi, low=lo, close=c, range=round(hi - lo, 2), change=round(c - o, 2))
+
+    h = load_heatmap(sym, day=day, data_dir=data_dir)
+    if h['times']:
+        row['grid_snapshots'] = len(h['times'])
+        spot = float(row['close'] or last['spot'])
+        L = gamma_levels(h['strikes'], h['all'][-1], spot)
+        for k in ('support', 'resistance', 'trapdoor', 'squeeze'):
+            row[k] = L[k]['strike'] if L.get(k) else ''
+        row['brakes_close'] = L.get('brakes', {}).get('label', '')
+        for i, w in enumerate(L.get('walls', [])[:3], 1):
+            row[f'wall{i}'], row[f'wall{i}_m'] = w['strike'], round(w['gex'] / 1e6)
+        best = max(((abs(g), k, g) for col in h['all'] for k, g in zip(h['strikes'], col)), default=None)
+        if best:
+            row['biggest_wall_of_day'], row['biggest_wall_m'] = best[1], round(best[2] / 1e6)
+    return row
+
+
+def write_daily_summary(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | None:
+    """Insert or replace the day's row in daily_summary_<sym>.csv (sorted by date)."""
+    row = build_daily_summary(day, sym, data_dir)
+    if not row:
+        return None
+    path = os.path.join(data_dir, f'daily_summary_{sym}.csv')
+    df = pd.read_csv(path, dtype=str) if os.path.exists(path) else pd.DataFrame(columns=SUMMARY_FIELDS)
+    df = df[df['date'] != row['date']]
+    df = pd.concat([df, pd.DataFrame([row]).astype(str)], ignore_index=True).sort_values('date')
+    tmp = path + '.tmp'
+    df.reindex(columns=SUMMARY_FIELDS).to_csv(tmp, index=False)
+    os.replace(tmp, path)
+    return row
+
+
+def summary_days_missing(sym: str = 'SPX', data_dir: str = _DATA_DIR) -> list:
+    """Finished days that have snapshots but no summary row yet."""
+    path = os.path.join(data_dir, f'daily_summary_{sym}.csv')
+    have = set(pd.read_csv(path, dtype=str)['date']) if os.path.exists(path) else set()
+    today = datetime.now(ET).date()
+    days = sorted({datetime.strptime(f[-14:-4], '%Y-%m-%d').date()
+                   for f in glob.glob(os.path.join(data_dir, f'gex_snapshots_{sym}_2*.csv'))})
+    return [d for d in days if d < today and d.isoformat() not in have]
