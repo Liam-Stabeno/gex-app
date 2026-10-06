@@ -30,8 +30,48 @@
             text-align: center;
             color: #555;
             font-size: 0.75rem;
-            margin-bottom: 20px;
+            margin-bottom: 8px;
         }
+
+        /* ── RTD toggle bar ─────────────────────────────────────────────── */
+        #rtd-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 16px;
+            font-size: 0.7rem;
+            letter-spacing: 1px;
+            color: #555;
+        }
+        #rtd-status-dot {
+            display: inline-block;
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: #333;
+        }
+        #rtd-status-text { color: #555; }
+
+        /* pill toggle */
+        .rtd-toggle { position: relative; display: inline-block; width: 34px; height: 18px; cursor: pointer; }
+        .rtd-toggle input { opacity: 0; width: 0; height: 0; }
+        .rtd-slider {
+            position: absolute; inset: 0;
+            background: #222; border: 1px solid #333;
+            border-radius: 18px;
+            transition: background 0.2s, border-color 0.2s;
+        }
+        .rtd-slider::before {
+            content: '';
+            position: absolute;
+            width: 12px; height: 12px;
+            left: 2px; top: 2px;
+            background: #555;
+            border-radius: 50%;
+            transition: transform 0.2s, background 0.2s;
+        }
+        .rtd-toggle input:checked + .rtd-slider { background: #003d22; border-color: #00ff88; }
+        .rtd-toggle input:checked + .rtd-slider::before { transform: translateX(16px); background: #00ff88; }
 
         .section-label {
             color: #333;
@@ -96,6 +136,65 @@
             height: 260px;
             width: 100%;
             position: relative;
+        }
+
+        /* ── GEX chart resizable / draggable ────────────────────────────── */
+        .gex-chart-div {
+            resize: both;
+            overflow: hidden;
+            min-width: 260px;
+            min-height: 200px;
+        }
+        .gex-chart-div .chart-container {
+            height: calc(100% - 110px);   /* fill remaining space after header+levels */
+            min-height: 120px;
+        }
+        .gex-drag-handle {
+            cursor: grab;
+            user-select: none;
+            padding: 2px 6px 0;
+            color: #333;
+            font-size: 0.8rem;
+            display: inline-block;
+        }
+        .gex-drag-handle:active { cursor: grabbing; }
+
+        /* Strike range slider — vertical, left of canvas */
+        .gex-chart-row {
+            display: flex;
+            gap: 8px;
+            align-items: stretch;
+            height: calc(100% - 110px);
+            min-height: 120px;
+        }
+        .gex-strike-slider-wrap {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            width: 28px;
+            flex-shrink: 0;
+        }
+        .gex-strike-slider-wrap span {
+            font-size: 0.55rem;
+            color: #444;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+        }
+        .gex-strike-slider {
+            -webkit-appearance: slider-vertical;
+            appearance: slider-vertical;
+            writing-mode: vertical-lr;
+            direction: rtl;
+            width: 18px;
+            flex: 1;
+            accent-color: #00d4ff;
+            cursor: pointer;
+        }
+        .gex-canvas-wrap {
+            flex: 1;
+            position: relative;
+            min-width: 0;
         }
 
         /* ── Timeframe buttons ── */
@@ -366,6 +465,15 @@
 <body>
     <h1>⬡ GEX DASHBOARD</h1>
     <div id="last-update">Initializing... <span id="stream-dot" title="Streaming status" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#333;margin-left:6px;vertical-align:middle;"></span></div>
+    <div id="rtd-bar">
+        <span id="rtd-status-dot"></span>
+        <span id="rtd-status-text">TOS RTD: checking...</span>
+        <label class="rtd-toggle" title="Toggle TOS RTD as options quote source">
+            <input type="checkbox" id="rtd-toggle-input" onchange="onRtdToggle()">
+            <span class="rtd-slider"></span>
+        </label>
+        <span id="rtd-quotes-text" style="color:#444"></span>
+    </div>
 
     <div id="odte-countdown-bar">
         <span class="cd-label">0DTE EXPIRES</span>
@@ -376,6 +484,9 @@
 
     <div class="section-label">GAMMA EXPOSURE</div>
     <div class="grid" id="gex-grid"></div>
+
+    <div class="section-label">DEALER DIRECTIONAL OPEN INTEREST</div>
+    <div class="grid" id="ddoi-grid"></div>
 
     <div class="section-label">PRICE</div>
     <div class="grid" id="price-grid"></div>
@@ -465,6 +576,7 @@
 
         function fmtET24(utcSecs) {
             return new Date(utcSecs * 1000).toLocaleTimeString('en-US', {
+                timeZone: 'America/New_York',
                 hour12: false,
                 hour: '2-digit',
                 minute: '2-digit',
@@ -473,6 +585,7 @@
 
         function fmtETDate(utcSecs) {
             return new Date(utcSecs * 1000).toLocaleDateString('en-US', {
+                timeZone: 'America/New_York',
                 month: 'short',
                 day: 'numeric',
             });
@@ -483,8 +596,10 @@
         const fmt    = n => (n == null) ? '—' : n.toLocaleString('en-US', { maximumFractionDigits: 2 });
         const fmtGex = n => {
             if (n == null) return '—';
-            const b = n / 1e9;
-            return (b >= 0 ? '+' : '') + b.toFixed(2) + 'B';
+            const abs = Math.abs(n);
+            const sign = n >= 0 ? '+' : '-';
+            if (abs >= 1e9) return sign + (abs / 1e9).toFixed(2) + 'B';
+            return sign + (abs / 1e6).toFixed(0) + 'M';
         };
 
         // ── Candle aggregation (client-side timeframe resampling) ────────────
@@ -575,12 +690,16 @@
             div.className = 'chart-div';
             div.id = `gex-div-${id}`;
             if (slot === 'zero') div.style.display = 'none';  // hidden until market hours confirm 0DTE data
+            div.className += ' gex-chart-div';
             div.innerHTML = `
                 <div class="chart-div-header">
-                    <div>
-                        <div class="chart-title">GEX · ${label}<span id="odte-date-${id}" style="margin-left:6px;color:#555;font-size:0.6rem;letter-spacing:1px;"></span></div>
-                        <div class="symbol">${symbol}</div>
-                        <div class="spot" id="spot-${id}">Loading...</div>
+                    <div style="display:flex;align-items:center;gap:6px">
+                        <span class="gex-drag-handle" title="Drag to move">⠿</span>
+                        <div>
+                            <div class="chart-title">GEX · ${label}<span id="odte-date-${id}" style="margin-left:6px;color:#555;font-size:0.6rem;letter-spacing:1px;"></span></div>
+                            <div class="symbol">${symbol}</div>
+                            <div class="spot" id="spot-${id}">Loading...</div>
+                        </div>
                     </div>
                     <div style="text-align:right">
                         <div class="regime" id="regime-${id}">—</div>
@@ -595,9 +714,23 @@
                     <div class="level-item" style="color:#00e5ff">True Pin: <span id="pin-enhanced-${id}">—</span></div>
                     <div class="level-item" style="color:#888;font-size:0.75em">Strikes: <span id="strikes-${id}">—</span></div>
                 </div>
-                <div class="chart-container"><canvas id="gex-canvas-${id}"></canvas></div>
+                <div class="gex-chart-row">
+                    <div class="gex-strike-slider-wrap">
+                        <span>MORE</span>
+                        <input type="range" class="gex-strike-slider" id="slider-${id}"
+                               min="5" max="100" value="40" step="5"
+                               title="Strikes shown">
+                        <span>FEWER</span>
+                        <span id="slider-val-${id}" style="color:#00d4ff;font-size:0.6rem">40</span>
+                    </div>
+                    <div class="gex-canvas-wrap">
+                        <canvas id="gex-canvas-${id}"></canvas>
+                    </div>
+                </div>
             `;
             div.addEventListener('dblclick', () => expandGex(symbol, slot));
+            // Enable drag after element is added to DOM
+            requestAnimationFrame(() => makeDraggable(div));
             return div;
         }
 
@@ -690,16 +823,25 @@
             const container = document.getElementById(`trail-canvas-${symbol}`);
             if (!container) return;   // VIX has no trail chart
 
-            const display = aggregateCandles(candles, selectedTF[symbol] || 1);
+            // Only show today's candles so trail lines span a meaningful portion of the chart
+            const nowEt = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+            const todayMidnightEt = new Date(nowEt);
+            todayMidnightEt.setHours(0, 0, 0, 0);
+            const todayStartSec = Math.floor(todayMidnightEt.getTime() / 1000) - 4 * 3600; // include pre-market
+            const todayCandles = candles.filter(c => c.time >= todayStartSec);
+            const display = aggregateCandles(todayCandles.length ? todayCandles : candles, selectedTF[symbol] || 1);
             if (!display.length) return;
 
             // Helper — create a trail line series with shared options
-            function _makeTrailSeries(chart, color, lineWidth, lineStyle) {
-                return chart.addLineSeries({
+            function _makeTrailSeries(chart, color, lineWidth, lineStyle, label) {
+                return chart.addSeries(LWC.LineSeries, {
                     color, lineWidth,
                     lineStyle: lineStyle ?? LWC.LineStyle.Solid,
-                    lastValueVisible: false, priceLineVisible: false,
-                    crosshairMarkerVisible: false, title: '',
+                    lastValueVisible: true,
+                    priceLineVisible: false,
+                    crosshairMarkerVisible: false,
+                    title: label || '',
+                    priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
                 });
             }
 
@@ -718,11 +860,11 @@
                 const chart = makePriceChart(container);
                 const { candleSeries, volumeSeries } = buildCandleSeries(chart, display);
 
-                const flipSeries     = _makeTrailSeries(chart, '#ffff00', 1, LWC.LineStyle.Dashed);
-                const putWallSeries  = _makeTrailSeries(chart, '#ff4444', 1, LWC.LineStyle.Dotted);
-                const callWallSeries = _makeTrailSeries(chart, '#00ff88', 1, LWC.LineStyle.Dotted);
-                const pinSeries      = _makeTrailSeries(chart, '#cc44ff', 2, LWC.LineStyle.LargeDashed);
-                const truePinSeries  = _makeTrailSeries(chart, '#00e5ff', 2, LWC.LineStyle.Solid);
+                const flipSeries     = _makeTrailSeries(chart, '#ffff00', 1, LWC.LineStyle.Dashed,      'FLIP');
+                const putWallSeries  = _makeTrailSeries(chart, '#ff4444', 1, LWC.LineStyle.Dotted,      'PUT WALL');
+                const callWallSeries = _makeTrailSeries(chart, '#00ff88', 1, LWC.LineStyle.Dotted,      'CALL WALL');
+                const pinSeries      = _makeTrailSeries(chart, '#cc44ff', 2, LWC.LineStyle.LargeDashed, 'PIN');
+                const truePinSeries  = _makeTrailSeries(chart, '#00e5ff', 2, LWC.LineStyle.Solid,       'TRUE PIN');
 
                 if (_flipTrail[symbol]?.length)     flipSeries.setData(_flipTrail[symbol]);
                 if (_putWallTrail[symbol]?.length)   putWallSeries.setData(_putWallTrail[symbol]);
@@ -739,9 +881,14 @@
         // Append the current PIN / TRUE PIN price to the trail series.
         // Buffers into _pinTrail / _truePinTrail even before the trail chart exists
         // so renderTrailChart can pick up accumulated history on first render.
-        function appendTrailPoint(symbol, levels) {
-            if (!_pinTrail[symbol])     _pinTrail[symbol]     = [];
-            if (!_truePinTrail[symbol]) _truePinTrail[symbol] = [];
+        // candleTime: optional — pass the candle's bucket time so trail points align with
+        // candles (one point per candle) instead of one per wall-clock second.
+        function appendTrailPoint(symbol, levels, candleTime) {
+            if (!_flipTrail[symbol])     _flipTrail[symbol]     = [];
+            if (!_putWallTrail[symbol])  _putWallTrail[symbol]  = [];
+            if (!_callWallTrail[symbol]) _callWallTrail[symbol] = [];
+            if (!_pinTrail[symbol])      _pinTrail[symbol]      = [];
+            if (!_truePinTrail[symbol])  _truePinTrail[symbol]  = [];
 
             // For ES, recompute basis offset (gexLevels['ES'] stores raw SPX values).
             let basis = 0;
@@ -753,15 +900,22 @@
             }
             const src = (symbol === 'ES' && gexLevels['SPX']) ? gexLevels['SPX'] : levels;
 
-            const now = Math.floor(Date.now() / 1000);
+            // Use the candle bucket time when available — this ensures one trail point
+            // per candle instead of one per wall-clock second (which produces noisy steps).
+            const now = candleTime ?? Math.floor(Date.now() / 1000);
             const tc  = trailCharts[symbol];   // may be null at startup — buffer anyway
 
             function _append(trailArr, series, value) {
-                if (value == null || isNaN(value)) return;
+                if (value == null || isNaN(value) || value <= 0) return;
+                // Sanity: reject values more than 500 pts from previous (basis calc blowup)
                 const last = trailArr[trailArr.length - 1];
+                if (last && Math.abs(value - last.value) > 500) return;
                 if (last && last.time === now) {
-                    trailArr[trailArr.length - 1] = { time: now, value };
-                    if (series) series.update({ time: now, value });
+                    // Same bucket — update in place (value may have changed)
+                    if (last.value !== value) {
+                        trailArr[trailArr.length - 1] = { time: now, value };
+                        if (series) series.update({ time: now, value });
+                    }
                 } else if (!last || now > last.time) {
                     trailArr.push({ time: now, value });
                     if (series) series.update({ time: now, value });
@@ -781,7 +935,7 @@
             id: 'spotLine',
             afterDraw(chart) {
                 const { ctx, scales } = chart;
-                if (!chart._spotPrice || !scales.y) return;
+                if (!chart._spotPrice || !scales.y || chart._noHorizontalSpot) return;
                 const spot  = chart._spotPrice;
                 const spotY = scales.y.getPixelForValue(spot);
                 if (spotY < scales.y.top || spotY > scales.y.bottom) return;
@@ -800,6 +954,54 @@
             }
         };
         Chart.register(spotLinePlugin);
+
+        // Vertical spot line for charts with strikes on X axis (DDOI)
+        const spotLinePluginVertical = {
+            id: 'spotLineVertical',
+            afterDraw(chart) {
+                const { ctx, scales } = chart;
+                if (!chart._spotPrice || !scales.x) return;
+                const spot   = chart._spotPrice;
+                const labels = chart.data.labels;
+                if (!labels || !labels.length) return;
+                const nearest = labels.reduce((best, s, i) =>
+                    Math.abs(s - spot) < Math.abs(labels[best] - spot) ? i : best, 0);
+                const x = scales.x.getPixelForValue(nearest);
+                if (x < scales.x.left || x > scales.x.right) return;
+
+                ctx.save();
+
+                // Vertical dashed line
+                ctx.beginPath();
+                ctx.moveTo(x, scales.y.top);
+                ctx.lineTo(x, scales.y.bottom);
+                ctx.strokeStyle = '#00d4ff';
+                ctx.lineWidth   = 1.5;
+                ctx.setLineDash([4, 4]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Always-visible label with dark background box
+                const label  = spot.toLocaleString('en-US', { minimumFractionDigits: 2 });
+                ctx.font     = 'bold 10px Courier New';
+                ctx.textAlign = 'center';
+                const tw     = ctx.measureText(label).width;
+                const pad    = 4;
+                const bx     = x - tw / 2 - pad;
+                const by     = scales.y.top + 4;
+                const bw     = tw + pad * 2;
+                const bh     = 14;
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(bx, by, bw, bh);
+                ctx.strokeStyle = '#00d4ff';
+                ctx.lineWidth   = 1;
+                ctx.strokeRect(bx, by, bw, bh);
+                ctx.fillStyle   = '#00d4ff';
+                ctx.fillText(label, x, by + bh - 3);
+
+                ctx.restore();
+            }
+        };
 
         function makeGexChartConfig(chartData, spot, forModal = false) {
             const { strikes, net_gex } = chartData;
@@ -836,7 +1038,16 @@
                     scales: {
                         x: {
                             grid:  { color: '#1e1e2e' },
-                            ticks: { color: '#555', font: { size: forModal ? 11 : 9 } },
+                            ticks: {
+                                color: '#555',
+                                font:  { size: forModal ? 11 : 9 },
+                                callback: v => {
+                                    const abs = Math.abs(v);
+                                    const sign = v >= 0 ? '+' : '-';
+                                    if (abs >= 1e9) return sign + (abs / 1e9).toFixed(1) + 'B';
+                                    return sign + (abs / 1e6).toFixed(0) + 'M';
+                                },
+                            },
                         },
                         y: {
                             reverse: true,
@@ -853,20 +1064,219 @@
             };
         }
 
+        // ── DDOI chart ────────────────────────────────────────────────────────
+
+        const ddoiCharts = {};           // symbol -> Chart.js instance
+        const _ddoiStrikeCount = {};     // symbol -> n strikes
+
+        function createDdoiDiv(symbol) {
+            const div = document.createElement('div');
+            div.className = 'chart-div gex-chart-div';
+            div.id = `ddoi-div-${symbol}`;
+            div.innerHTML = `
+                <div class="chart-div-header">
+                    <div style="display:flex;align-items:center;gap:6px">
+                        <span class="gex-drag-handle" title="Drag to move">⠿</span>
+                        <div>
+                            <div class="chart-title">DEALER DIRECTIONAL OI</div>
+                            <div class="symbol">${symbol}</div>
+                            <div class="spot" id="ddoi-spot-${symbol}">—</div>
+                        </div>
+                    </div>
+                    <div style="text-align:right;font-size:0.65rem;color:#555;line-height:1.6">
+                        <span style="color:#00ff88">■</span> Call OI &nbsp;
+                        <span style="color:#ff4466">■</span> Put OI
+                    </div>
+                </div>
+                <div class="gex-chart-row">
+                    <div class="gex-strike-slider-wrap">
+                        <span>MORE</span>
+                        <input type="range" class="gex-strike-slider" id="ddoi-slider-${symbol}"
+                               min="5" max="120" value="40" step="5" title="Strikes shown">
+                        <span>FEWER</span>
+                        <span id="ddoi-slider-val-${symbol}" style="color:#00d4ff;font-size:0.6rem">40</span>
+                    </div>
+                    <div class="gex-canvas-wrap">
+                        <canvas id="ddoi-canvas-${symbol}"></canvas>
+                    </div>
+                </div>
+            `;
+            requestAnimationFrame(() => makeDraggable(div));
+            return div;
+        }
+
+        function renderDdoiChart(symbol, ddoi, spot) {
+            const canvas = document.getElementById(`ddoi-canvas-${symbol}`);
+            if (!canvas) return;
+            const spotEl = document.getElementById(`ddoi-spot-${symbol}`);
+            if (spotEl) spotEl.textContent = spot ? spot.toLocaleString('en-US', {minimumFractionDigits:2}) : '—';
+
+            if (!ddoi?.strikes?.length) {
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = '#333'; ctx.font = '11px Courier New'; ctx.textAlign = 'center';
+                ctx.fillText('Waiting for OI data...', canvas.width/2, canvas.height/2);
+                return;
+            }
+
+            // Apply strike window centred on spot
+            const n = _ddoiStrikeCount[symbol] || 40;
+            const spotIdx = ddoi.strikes.reduce((best, s, i) =>
+                Math.abs(s - spot) < Math.abs(ddoi.strikes[best] - spot) ? i : best, 0);
+            const lo = Math.max(0, spotIdx - Math.floor(n / 2));
+            const hi = Math.min(ddoi.strikes.length, lo + n);
+            const strikes  = ddoi.strikes.slice(lo, hi);
+            const call_oi  = ddoi.call_oi.slice(lo, hi);
+            const put_oi   = ddoi.put_oi.slice(lo, hi);
+
+            if (ddoiCharts[symbol]) { ddoiCharts[symbol].destroy(); delete ddoiCharts[symbol]; }
+
+            ddoiCharts[symbol] = new Chart(canvas.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: strikes,
+                    datasets: [
+                        { label: 'Call OI', data: call_oi, backgroundColor: 'rgba(0,255,136,0.65)', borderWidth: 0 },
+                        { label: 'Put OI',  data: put_oi,  backgroundColor: 'rgba(255,68,102,0.65)',  borderWidth: 0 },
+                    ],
+                },
+                options: {
+                    indexAxis: 'x',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: {
+                            label: c => `${c.dataset.label}: ${c.raw.toLocaleString()}`
+                        }},
+                        zoom: {
+                            zoom: { wheel: { enabled: true, speed: 0.1 }, pinch: { enabled: true }, mode: 'x' },
+                            pan:  { enabled: true, mode: 'x' },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#1e1e2e' },
+                            ticks: { color: '#555', font: { size: 9 },
+                                maxRotation: 45, minRotation: 45,
+                                callback: v => strikes[v] },
+                        },
+                        y: {
+                            grid: { color: '#1e1e2e' },
+                            ticks: { color: '#555', font: { size: 9 },
+                                callback: v => v >= 1000 ? (v/1000).toFixed(0)+'K' : v },
+                        },
+                    },
+                },
+                plugins: [spotLinePluginVertical],
+            });
+            ddoiCharts[symbol]._spotPrice        = spot;
+            ddoiCharts[symbol]._fullDdoi         = ddoi;
+            ddoiCharts[symbol]._noHorizontalSpot = true;
+
+            // Wire slider
+            const slider    = document.getElementById(`ddoi-slider-${symbol}`);
+            const sliderVal = document.getElementById(`ddoi-slider-val-${symbol}`);
+            if (slider && !slider._wired) {
+                slider._wired = true;
+                slider.addEventListener('input', () => {
+                    _ddoiStrikeCount[symbol] = parseInt(slider.value);
+                    if (sliderVal) sliderVal.textContent = slider.value;
+                    const d = ddoiCharts[symbol]?._fullDdoi || ddoi;
+                    renderDdoiChart(symbol, d, ddoiCharts[symbol]?._spotPrice || spot);
+                });
+            }
+            if (sliderVal) sliderVal.textContent = n;
+            if (slider)    slider.value = n;
+        }
+
+        // Strike count per chart key — persists across re-renders
+        const _gexStrikeCount = {};
+
         function renderGexChart(symbol, slot, chartData, spot) {
             const key    = `${symbol}-${slot}`;
             const canvas = document.getElementById(`gex-canvas-${key}`);
-            if (!canvas || !chartData.strikes.length) return;
+            if (!canvas) return;
+            if (!chartData.strikes.length) {
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = '#333';
+                ctx.font = '11px Courier New';
+                ctx.textAlign = 'center';
+                ctx.fillText('Waiting for OI data...', canvas.width / 2, canvas.height / 2);
+                return;
+            }
+
+            // Apply strike window centred on spot
+            const n = _gexStrikeCount[key] || 40;
+            const spotIdx = chartData.strikes.reduce((best, s, i) =>
+                Math.abs(s - spot) < Math.abs(chartData.strikes[best] - spot) ? i : best, 0);
+            const lo = Math.max(0, spotIdx - Math.floor(n / 2));
+            const hi = Math.min(chartData.strikes.length, lo + n);
+            const slicedData = {
+                strikes: chartData.strikes.slice(lo, hi),
+                net_gex: chartData.net_gex.slice(lo, hi),
+            };
 
             if (gexCharts[key]) { gexCharts[key].destroy(); delete gexCharts[key]; }
 
-            const config    = makeGexChartConfig(chartData, spot);
+            const config    = makeGexChartConfig(slicedData, spot);
             const chartInst = new Chart(canvas.getContext('2d'), config);
-            chartInst._spotPrice = spot;
-            gexCharts[key]          = chartInst;
+            chartInst._spotPrice  = spot;
+            chartInst._fullData   = chartData;   // keep full data for re-slice
+            gexCharts[key]        = chartInst;
             gexCharts[key]._gexData = { ...chartData, spot };
 
             canvas.ondblclick = () => chartInst.resetZoom();
+
+            // Wire slider on first render
+            const slider   = document.getElementById(`slider-${key}`);
+            const sliderVal = document.getElementById(`slider-val-${key}`);
+            if (slider && !slider._wired) {
+                slider._wired = true;
+                slider.addEventListener('input', () => {
+                    _gexStrikeCount[key] = parseInt(slider.value);
+                    if (sliderVal) sliderVal.textContent = slider.value;
+                    renderGexChart(symbol, slot, gexCharts[key]?._gexData || chartData, spot);
+                });
+            }
+            if (sliderVal) sliderVal.textContent = n;
+            if (slider) slider.value = n;
+        }
+
+        // ── Drag-to-move for GEX chart divs ──────────────────────────────────
+        function makeDraggable(div) {
+            const handle = div.querySelector('.gex-drag-handle');
+            if (!handle || div._draggable) return;
+            div._draggable = true;
+            let startX, startY, origLeft, origTop;
+            handle.addEventListener('mousedown', e => {
+                e.preventDefault();
+                // Switch to absolute positioning on first drag
+                if (!div.style.position || div.style.position === 'relative' || div.style.position === '') {
+                    const r = div.getBoundingClientRect();
+                    div.style.position = 'absolute';
+                    div.style.left = r.left + window.scrollX + 'px';
+                    div.style.top  = r.top  + window.scrollY + 'px';
+                    div.style.zIndex = 100;
+                    div.style.margin = '0';
+                    div.parentElement.style.position = 'relative';
+                }
+                startX = e.clientX; startY = e.clientY;
+                origLeft = parseInt(div.style.left) || 0;
+                origTop  = parseInt(div.style.top)  || 0;
+                const onMove = ev => {
+                    div.style.left = (origLeft + ev.clientX - startX) + 'px';
+                    div.style.top  = (origTop  + ev.clientY - startY) + 'px';
+                };
+                const onUp = () => {
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                };
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            });
         }
 
         function updateGexSlot(symbol, slot, chartData, levels, spot, totalGex, regime) {
@@ -902,9 +1312,8 @@
             applyGexLevels(symbol);
             if (symbol === 'SPX') applyGexLevels('ES');
 
-            // Append PIN / TRUE PIN positions to trail charts
-            appendTrailPoint(symbol,  gexLevels[symbol]);
-            if (symbol === 'SPX') appendTrailPoint('ES', gexLevels['ES'] || gexLevels['SPX']);
+            // Trail points are added by updatePriceCandle (candle-driven),
+            // not here — avoids double-points and keeps trails aligned with candles.
 
             // Feed 0DTE expiry date into the countdown clock (use SPX as authoritative)
             if (symbol === 'SPX' && data.odte_date) setOdteDate(data.odte_date);
@@ -912,9 +1321,11 @@
             const multiTotal = data.multi.net_gex.reduce((a, b) => a + b, 0);
             const zeroTotal  = data.zero.net_gex.reduce((a, b) => a + b, 0);
 
-            const regime = data.regime || (multiTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
+            // Each chart shows its own regime, not the combined total
+            const multiRegime = multiTotal >= 0 ? 'POSITIVE' : 'NEGATIVE';
+            const zeroRegime  = zeroTotal  >= 0 ? 'POSITIVE' : 'NEGATIVE';
             updateGexSlot(symbol, 'multi', data.multi, data.levels_multi, data.spot,
-                          multiTotal, regime);
+                          multiTotal, multiRegime);
 
             const zeroDiv  = document.getElementById(`gex-div-${symbol}-zero`);
             const dateEl   = document.getElementById(`odte-date-${symbol}-zero`);
@@ -929,6 +1340,24 @@
                               zeroTotal, zeroTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
             } else {
                 if (zeroDiv) zeroDiv.style.display = 'none';
+            }
+
+            // Update DDOI chart if data is present
+            if (data.ddoi) {
+                renderDdoiChart(symbol, data.ddoi, data.spot);
+            }
+
+            // After the close: backend serves the last in-session OI snapshot
+            if (data.last_session) {
+                const asOf = `last session · ${data.last_session.slice(5, 16)}`;
+                for (const slot of ['multi', 'zero']) {
+                    const r = document.getElementById(`regime-${symbol}-${slot}`);
+                    if (r) { r.textContent = 'CLOSED'; r.className = 'regime CLOSED'; r.title = asOf; }
+                    const s = document.getElementById(`spot-${symbol}-${slot}`);
+                    if (s) s.textContent += ` · ${asOf}`;
+                }
+                const ds = document.getElementById(`ddoi-spot-${symbol}`);
+                if (ds) ds.textContent += ` · ${asOf}`;
             }
         }
 
@@ -1156,6 +1585,63 @@
             if (dot) { dot.style.background = color; dot.title = title; }
         }
 
+        // ── TOS RTD toggle ────────────────────────────────────────────────────
+
+        function applyRtdStatus(s) {
+            const dot  = document.getElementById('rtd-status-dot');
+            const text = document.getElementById('rtd-status-text');
+            const chk  = document.getElementById('rtd-toggle-input');
+            const qtext = document.getElementById('rtd-quotes-text');
+            if (!dot) return;
+
+            // Sync toggle checkbox without triggering onchange
+            chk.checked = s.enabled;
+
+            if (!s.registered) {
+                dot.style.background  = '#333';
+                text.style.color      = '#444';
+                text.textContent      = 'TOS RTD: not detected';
+                chk.disabled          = true;
+                qtext.textContent     = '';
+            } else if (!s.connected) {
+                dot.style.background  = '#ff8800';
+                text.style.color      = '#ff8800';
+                text.textContent      = 'TOS RTD: registered, not connected';
+                chk.disabled          = false;
+                qtext.textContent     = '';
+            } else if (!s.enabled) {
+                dot.style.background  = '#555';
+                text.style.color      = '#555';
+                text.textContent      = 'TOS RTD: disabled (using Schwab)';
+                chk.disabled          = false;
+                qtext.textContent     = s.quote_count ? `${s.quote_count} symbols ready` : '';
+            } else {
+                dot.style.background  = '#00ff88';
+                text.style.color      = '#00ff88';
+                text.textContent      = `TOS RTD: LIVE · ${s.quote_count || 0} symbols`;
+                chk.disabled          = false;
+                qtext.textContent     = s.quote_count ? '' : 'warming up...';
+            }
+        }
+
+        async function fetchRtdStatus() {
+            try {
+                const res = await fetch('/api/rtd/status');
+                if (res.ok) applyRtdStatus(await res.json());
+            } catch (e) { /* silent */ }
+        }
+
+        async function onRtdToggle() {
+            try {
+                const res = await fetch('/api/rtd/toggle', { method: 'POST' });
+                if (res.ok) applyRtdStatus(await res.json());
+            } catch (e) { /* silent */ }
+        }
+
+        // Poll RTD status every 5 s so connected/quote_count stay fresh
+        fetchRtdStatus();
+        setInterval(fetchRtdStatus, 5000);
+
         function updatePriceCandle(symbol, candle) {
             // candle: { symbol, time (sec), open, high, low, close, volume }
             const entry = priceCharts[symbol];
@@ -1185,9 +1671,30 @@
                 raw.push({ ...candle });
             }
 
-            // Update spot display
+            // Update spot display — price chart header
             const el = document.getElementById(`price-spot-${symbol}`);
             if (el) el.textContent = candle.close.toFixed(2);
+
+            // Update GEX chart spot headers (multi + zero)
+            const fmtSpot = candle.close.toLocaleString('en-US', {minimumFractionDigits: 2});
+            const gexMultiSpotEl = document.getElementById(`spot-${symbol}-multi`);
+            if (gexMultiSpotEl) gexMultiSpotEl.textContent = fmtSpot;
+            const gexZeroSpotEl = document.getElementById(`spot-${symbol}-zero`);
+            if (gexZeroSpotEl) gexZeroSpotEl.textContent = fmtSpot;
+
+            // Update GEX chart spot lines (horizontal dashed line moves)
+            const multiKey = `${symbol}-multi`;
+            const zeroKey  = `${symbol}-zero`;
+            if (gexCharts[multiKey]) { gexCharts[multiKey]._spotPrice = candle.close; gexCharts[multiKey].update(); }
+            if (gexCharts[zeroKey])  { gexCharts[zeroKey]._spotPrice  = candle.close; gexCharts[zeroKey].update(); }
+
+            // Update DDOI chart spot line in real time
+            if (ddoiCharts[symbol]) {
+                ddoiCharts[symbol]._spotPrice = candle.close;
+                const ddoiSpotEl = document.getElementById(`ddoi-spot-${symbol}`);
+                if (ddoiSpotEl) ddoiSpotEl.textContent = fmtSpot;
+                ddoiCharts[symbol].update();
+            }
 
             // Re-aggregate the bucket that contains this candle for the active TF
             const tf         = selectedTF[symbol] || 1;
@@ -1224,6 +1731,9 @@
                 tc.candleSeries.update({ time: agg.time, open: agg.open, high: agg.high, low: agg.low, close: agg.close });
                 tc.volumeSeries.update({ time: agg.time, value: agg.volume,
                     color: agg.close >= agg.open ? 'rgba(0,255,136,0.15)' : 'rgba(255,68,68,0.15)' });
+                // Extend trail lines — use candle bucket time so one point per candle
+                const levels = gexLevels[symbol] || (symbol === 'ES' ? gexLevels['SPX'] : null);
+                if (levels) appendTrailPoint(symbol, levels, agg.time);
             }
         }
 
@@ -1348,6 +1858,9 @@
                 }
                 if (msg.type === 'candle') {
                     updatePriceCandle(msg.symbol, msg);
+                }
+                if (msg.type === 'gex') {
+                    if (msg.symbol && !msg.error) updateGexDiv(msg.symbol, msg);
                 }
                 if (msg.type === 'flow_alert') {
                     addFlowAlert(msg);
@@ -1848,10 +2361,12 @@
         // ── Init ──────────────────────────────────────────────────────────────
 
         const gexGrid   = document.getElementById('gex-grid');
+        const ddoiGrid  = document.getElementById('ddoi-grid');
         const priceGrid = document.getElementById('price-grid');
         GEX_SYMBOLS.forEach(s => {
             gexGrid.appendChild(createGexDiv(s, 'multi'));
             gexGrid.appendChild(createGexDiv(s, 'zero'));
+            if (ddoiGrid) ddoiGrid.appendChild(createDdoiDiv(s));
         });
         PRICE_SYMBOLS.forEach(s => {
             selectedTF[s] = 1;   // default to 1m
@@ -1913,64 +2428,302 @@
         // Connect SSE for real-time candle updates
         connectSSE();
     </script>
+<!-- ROLLING PROFILE START (install_rolling_profile.py) -->
+<!-- ═══ ROLLING PROFILE ══════════════════════════════════════════════════
+     Paste just above </body> in templates/dashboard.html (after the main script).
+     Needs: Chart.js + chartjs-plugin-zoom (already loaded), the dashboard's
+     openModal()/closeModal()/modalCJSChart, and /api/rolling_profile/<symbol>.
+     Adds its own "ROLLING PROFILE" section right after #gex-grid.
+═══════════════════════════════════════════════════════════════════════ -->
+<style>
+  .rp-grid { grid-template-columns: 1fr; }
+  .rp-panel {
+    display: flex; flex-direction: column;
+    height: 640px;                       /* default size; drag the corner to resize */
+    min-height: 320px;
+  }
+  .rp-panel .chart-div-header { cursor: zoom-in; }
+  .rp-head-right { display: flex; align-items: center; gap: 8px; }
+  .rp-time-label { color: #666; font-size: 11px; }
+  .rp-select {
+    background: #12121c; color: #ddd; border: 1px solid #2a2a3a; border-radius: 3px;
+    font-family: 'Courier New', monospace; font-size: 12px; padding: 3px 6px; cursor: pointer;
+  }
+  .rp-select:focus { outline: 1px solid #00bcd4; }
+  .rp-meta { display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+             font-size: 11px; color: #666; margin: 6px 0 4px; }
+  .rp-meta .rp-c { color: #00e676; }
+  .rp-meta .rp-p { color: #ff5252; }
+  .rp-meta .rp-warn { color: #ffb300; }
+  .rp-range { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .rp-range input { width: 120px; accent-color: #00d4ff; cursor: pointer; }
+  .rp-range-val { color: #00d4ff; min-width: 44px; }
+  .rp-hint { color: #444; font-size: 10px; }
+  .rp-canvas-wrap { position: relative; flex: 1; min-height: 200px; }
+  .rp-empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #444; font-size: 12px; pointer-events: none;
+  }
+</style>
+
+<script>
+(() => {
+  const RP_SYMBOL     = 'SPX';
+  const RP_RANGE_PTS  = 75;     // default strikes shown each side of spot (slider overrides)
+  const RP_RANGE_MIN  = 25;
+  const RP_RANGE_MAX  = 300;
+  const RP_DATA_PTS   = 350;    // data kept each side of spot, so zooming out reveals more strikes
+  const RP_POLL_MS    = 5000;
+  const RP_WINDOWS    = [
+    [60, '1 min'], [120, '2 min'], [180, '3 min'], [300, '5 min'],
+    [600, '10 min'], [900, '15 min'], [1800, '30 min'], [3600, '1 hr'],
+  ];
+  const RP_DEFAULT    = 1800;
+
+  const load = (k, dflt) => { try { return Number(localStorage.getItem(k)) || dflt; } catch (_) { return dflt; } };
+  const save = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+
+  let rpWindow = load('rpWindow', RP_DEFAULT);
+  let rpRange  = Math.min(RP_RANGE_MAX, Math.max(RP_RANGE_MIN, load('rpRange', RP_RANGE_PTS)));
+  let rpChart  = null;
+  let rpModal  = null;          // the full-screen copy, while open
+  let rpSpot   = null;
+  let rpLast   = null;          // last API response, for re-render on slider / reset
+
+  const fmtK   = v => v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'K' : String(v);
+  const fmtDur = s => s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`
+                                 : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;
+  const viewBounds = () => [Math.floor((rpSpot - rpRange) / 5) * 5, Math.ceil((rpSpot + rpRange) / 5) * 5];
+
+  // ── Panel ──────────────────────────────────────────────────────────
+  function createRollingProfileDiv() {
+    const div = document.createElement('div');
+    div.className = 'chart-div gex-chart-div rp-panel';
+    div.id = `rp-div-${RP_SYMBOL}`;
+    const opts = RP_WINDOWS.map(([s, l]) =>
+      `<option value="${s}"${s === rpWindow ? ' selected' : ''}>${l}</option>`).join('');
+    div.innerHTML = `
+      <div class="chart-div-header" id="rp-header" title="Double-click to expand">
+        <div>
+          <div class="chart-title">ROLLING PROFILE · 0DTE VOLUME</div>
+          <div class="symbol">${RP_SYMBOL}</div>
+        </div>
+        <div class="rp-head-right">
+          <label class="rp-time-label" for="rp-window">Time</label>
+          <select id="rp-window" class="rp-select">${opts}</select>
+        </div>
+      </div>
+      <div class="rp-meta">
+        <span class="rp-c">● Calls <b id="rp-call-tot">—</b></span>
+        <span class="rp-p">● Puts <b id="rp-put-tot">—</b></span>
+        <span id="rp-span">—</span>
+        <label class="rp-range" title="Strikes shown each side of spot">
+          Range <input type="range" id="rp-range" min="${RP_RANGE_MIN}" max="${RP_RANGE_MAX}" step="25" value="${rpRange}">
+          <span class="rp-range-val" id="rp-range-val">±${rpRange}</span>
+        </label>
+      </div>
+      <div class="rp-hint">scroll to zoom · drag to pan · double-click chart to reset · double-click title to expand</div>
+      <div class="rp-canvas-wrap">
+        <canvas id="rp-canvas"></canvas>
+        <div class="rp-empty" id="rp-empty">Collecting snapshots…</div>
+      </div>`;
+
+    const q = sel => div.querySelector(sel);
+    q('#rp-window').addEventListener('change', e => {
+      rpWindow = Number(e.target.value);
+      save('rpWindow', rpWindow);
+      fetchRollingProfile();
+    });
+    q('#rp-range').addEventListener('input', e => {
+      rpRange = Number(e.target.value);
+      save('rpRange', rpRange);
+      q('#rp-range-val').textContent = `±${rpRange}`;
+      resetView(rpChart);
+    });
+    q('#rp-range').addEventListener('dblclick', e => e.stopPropagation());
+    q('#rp-window').addEventListener('dblclick', e => e.stopPropagation());
+    q('#rp-header').addEventListener('dblclick', expandRollingProfile);
+    q('#rp-canvas').addEventListener('dblclick', () => resetView(rpChart));
+    return div;
+  }
+
+  // ── Chart ──────────────────────────────────────────────────────────
+  const rpSpotLine = {
+    id: 'rpSpotLine',
+    afterDatasetsDraw(chart) {
+      if (rpSpot == null) return;
+      const y = chart.scales.y.getPixelForValue(rpSpot);
+      const { left, right, top, bottom } = chart.chartArea;
+      if (y < top || y > bottom) return;
+      const c = chart.ctx;
+      c.save();
+      c.setLineDash([6, 4]);
+      c.strokeStyle = 'rgba(255,255,255,0.85)';
+      c.lineWidth = 1.5;
+      c.beginPath(); c.moveTo(left, y); c.lineTo(right, y); c.stroke();
+      c.restore();
+    },
+  };
+
+  function makeRollingChart(canvas, big = false) {
+    const line = (color, fillRgba) => ({
+      data: [], borderColor: color, backgroundColor: fillRgba, fill: 'origin',
+      borderWidth: 1.6, pointRadius: 0, tension: 0.15,
+    });
+    const markZoomed = ({ chart }) => { chart._rpZoomed = true; };
+    return new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: { datasets: [
+        { label: 'Calls', ...line('#00e676', 'rgba(0,230,118,0.10)') },
+        { label: 'Puts',  ...line('#ff5252', 'rgba(255,82,82,0.10)') },
+      ]},
+      options: {
+        indexAxis: 'y',                      // strikes vertical, volume horizontal
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'nearest', axis: 'y', intersect: false },
+        scales: {
+          y: {
+            type: 'linear', position: 'right',
+            // every 5-pt strike gets a label while they fit; zoomed out, labels thin to avoid overlap
+            ticks: { stepSize: 5, autoSkip: true, autoSkipPadding: 2, color: '#888', callback: v => String(v),
+                     font: { family: "'Courier New', monospace", size: big ? 11 : 10 } },
+            grid: { color: '#1a1a2a' },
+          },
+          x: {
+            type: 'linear', beginAtZero: true, reverse: true,   // mirrored: volume grows leftward from the strike axis
+            ticks: { color: '#555', maxTicksLimit: big ? 6 : 4, callback: fmtK,
+                     font: { family: "'Courier New', monospace", size: 10 } },
+            grid: { color: '#1a1a2a' },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: items => `Strike ${items[0].parsed.y}`,
+              label: item => `${item.dataset.label}: ${item.parsed.x.toLocaleString('en-US')}`,
+            },
+          },
+          zoom: {
+            zoom:   { wheel: { enabled: true, speed: 0.1 }, pinch: { enabled: true }, mode: 'y',
+                      onZoomComplete: markZoomed },
+            pan:    { enabled: true, mode: 'y', onPanComplete: markZoomed },
+            limits: { y: { minRange: 20 } },
+          },
+        },
+      },
+      plugins: [rpSpotLine],
+    });
+  }
+
+  // Push data into a chart. The strike window follows spot unless the user has
+  // zoomed or panned, in which case their view is kept until they reset it.
+  function applyData(chart, calls, puts) {
+    if (!chart) return;
+    if (!chart._rpZoomed) {
+      const [lo, hi] = viewBounds();
+      chart.options.scales.y.min = lo;
+      chart.options.scales.y.max = hi;
+    }
+    chart.data.datasets[0].data = calls;
+    chart.data.datasets[1].data = puts;
+    chart.update('none');
+  }
+
+  function resetView(chart) {
+    if (!chart) return;
+    if (chart.resetZoom) chart.resetZoom('none');
+    chart._rpZoomed = false;
+    if (rpLast) renderRollingProfile(rpLast);
+  }
+
+  function renderRollingProfile(d) {
+    rpLast = d;
+    const empty = document.getElementById('rp-empty');
+    rpSpot = d.spot;
+    if (!d.strikes.length || rpSpot == null) {
+      empty.style.display = 'flex';
+      empty.textContent = d.spot == null ? 'Waiting for 0DTE data…' : 'Collecting snapshots…';
+      [rpChart, rpModal].forEach(c => { if (c) { c.data.datasets.forEach(ds => ds.data = []); c.update('none'); } });
+      document.getElementById('rp-span').textContent = '—';
+      return;
+    }
+    empty.style.display = 'none';
+
+    const [lo, hi] = viewBounds();
+    const calls = [], puts = [];
+    let cTot = 0, pTot = 0;
+    d.strikes.forEach((k, i) => {
+      if (Math.abs(k - rpSpot) > RP_DATA_PTS) return;
+      calls.push({ x: d.call[i], y: k });
+      puts.push({ x: d.put[i], y: k });
+      if (k >= lo && k <= hi) { cTot += d.call[i]; pTot += d.put[i]; }
+    });
+
+    if (!rpChart) rpChart = makeRollingChart(document.getElementById('rp-canvas'));
+    applyData(rpChart, calls, puts);
+    if (rpModal && typeof modalCJSChart !== 'undefined' && modalCJSChart === rpModal) {
+      applyData(rpModal, calls, puts);
+    } else {
+      rpModal = null;                      // modal was closed
+    }
+
+    document.getElementById('rp-call-tot').textContent = fmtK(cTot);
+    document.getElementById('rp-put-tot').textContent  = fmtK(pTot);
+    const span = document.getElementById('rp-span');
+    span.className = d.partial ? 'rp-warn' : '';
+    span.textContent = d.partial
+      ? `only ${fmtDur(d.covered_sec)} of history`
+      : `actual ${fmtDur(d.covered_sec)} · ${d.updated} ET`;
+  }
+
+  // ── Full screen (reuses the dashboard's modal) ─────────────────────
+  function expandRollingProfile() {
+    if (typeof openModal !== 'function') return;
+    const label = (RP_WINDOWS.find(([s]) => s === rpWindow) || [0, ''])[1];
+    openModal(`
+      <div style="margin-bottom:8px">
+        <div style="font-size:0.65rem;color:#444;letter-spacing:2px">ROLLING PROFILE · 0DTE VOLUME · ${label}</div>
+        <div style="font-size:1.4rem;color:#fff;font-weight:bold">${RP_SYMBOL}</div>
+        <div style="font-size:0.8rem;color:#555">Scroll to zoom · drag to pan · double-click to reset · ESC to close</div>
+      </div>`);
+    const container = document.getElementById('modal-chart-container');
+    container.innerHTML = '<canvas id="rp-modal-canvas"></canvas>';
+    const canvas = document.getElementById('rp-modal-canvas');
+    rpModal = makeRollingChart(canvas, true);
+    modalCJSChart = rpModal;               // closeModal() destroys it
+    canvas.addEventListener('dblclick', () => resetView(rpModal));
+    if (rpLast) renderRollingProfile(rpLast);
+  }
+
+  async function fetchRollingProfile() {
+    try {
+      const r = await fetch(`/api/rolling_profile/${RP_SYMBOL}?window=${rpWindow}`);
+      if (r.ok) renderRollingProfile(await r.json());
+    } catch (e) { console.warn('[rolling profile]', e); }
+  }
+
+  // ── Init: own section right after the GEX grid ─────────────────────
+  const gexGrid = document.getElementById('gex-grid');
+  if (gexGrid) {
+    const label = document.createElement('div');
+    label.className = 'section-label';
+    label.textContent = 'ROLLING PROFILE';
+    const grid = document.createElement('div');
+    grid.className = 'grid rp-grid';
+    grid.id = 'rp-grid';
+    grid.appendChild(createRollingProfileDiv());
+    gexGrid.parentNode.insertBefore(label, gexGrid.nextSibling);
+    gexGrid.parentNode.insertBefore(grid, label.nextSibling);
+    fetchRollingProfile();
+    setInterval(fetchRollingProfile, RP_POLL_MS);
+  } else {
+    console.warn('[rolling profile] #gex-grid not found');
+  }
+})();
+</script>
+<!-- ROLLING PROFILE END -->
 </body>
 </html>
-eAll();
-        initDeltaChart();
-        fetchDeltaFlow();
-        fetchDeltaFlow0dte();
-
-        // Update "X ago" counters on all flow rows every second
-        function fmtAgo(secs) {
-            if (secs < 60)   return `${secs}s`;
-            if (secs < 3600) return `${Math.floor(secs/60)}m ${secs % 60}s`;
-            return `${Math.floor(secs/3600)}h ${Math.floor((secs%3600)/60)}m`;
-        }
-        setInterval(() => {
-            const now = Math.floor(Date.now() / 1000);
-            document.querySelectorAll('.flow-row[data-alert-time]').forEach(row => {
-                const elapsed = now - parseInt(row.dataset.alertTime);
-                const agoEl = row.querySelector('.flow-ago');
-                if (agoEl) agoEl.textContent = fmtAgo(elapsed);
-            });
-        }, 1000);
-
-        // Restore today's flow alerts on page load
-        (async () => {
-            try {
-                const res = await fetch('/api/flow_alerts');
-                if (!res.ok) return;
-                const alerts = await res.json();
-                alerts.sort((a, b) => (a.time || 0) - (b.time || 0));
-                for (const a of alerts) addFlowAlert(a);
-                for (const a of alerts) _flowMarkers.push(a);
-                const waitAndApply = setInterval(() => {
-                    if (priceCharts['SPX']?.markersPrimitive) {
-                        clearInterval(waitAndApply);
-                        applyFlowMarkers();
-                    }
-                }, 200);
-            } catch(e) { console.error('flow_alerts restore:', e); }
-        })();
-
-        // GEX refreshes every 30 s; price every 5 min as streaming fallback
-        setInterval(fetchGexAll,   GEX_REFRESH_MS);
-        setInterval(fetchPriceAll, PRICE_REFRESH_MS);
-
-        // Connect SSE for real-time candle updates
-        connectSSE();
-    </script>
-</body>
-</html>
-        })();
-
-        // GEX refreshes every 30 s; price every 5 min as streaming fallback
-        setInterval(fetchGexAll,   GEX_REFRESH_MS);
-        setInterval(fetchPriceAll, PRICE_REFRESH_MS);
-
-        // Connect SSE for real-time candle updates
-        connectSSE();
-    </script>
-</body>
-</html>
-l

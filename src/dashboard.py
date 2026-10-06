@@ -13,10 +13,11 @@ Modules:
     routes        — Flask API route handlers
 """
 
+import sys
 import threading
 import time
 from flask import Flask
-from gex import get_access_token
+from gex import get_access_token, SchwabAuthError
 from price_history import sync_symbol
 from streamer import SchwabStreamer
 from log_setup import setup_logging
@@ -25,10 +26,13 @@ import flow_alerts
 import sse
 import background
 import routes
+import tos_rtd
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__, template_folder='../templates')
+from rolling_profile import rolling_bp  # rolling profile (install_rolling_profile.py)
+app.register_blueprint(rolling_bp)  # rolling profile (install_rolling_profile.py)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -59,7 +63,11 @@ if __name__ == '__main__':
 
     # Sync price history from Schwab REST API
     print("\nSyncing price history...")
-    token = get_access_token()
+    try:
+        token = get_access_token()
+    except SchwabAuthError:
+        # Banner already printed by gex.py — exit cleanly without a traceback.
+        sys.exit(1)
     for symbol in PRICE_SYMBOLS:
         try:
             candles = sync_symbol(symbol, token)
@@ -92,6 +100,9 @@ if __name__ == '__main__':
     for symbol in SYMBOLS:
         background.refresh_gex(symbol)
 
+    # Start TOS RTD if available (lower latency options quotes)
+    tos_rtd.start()
+
     # Start background threads
     threading.Thread(target=background.gex_loop,      daemon=True).start()
     threading.Thread(target=background.price_loop,    daemon=True).start()
@@ -105,6 +116,17 @@ if __name__ == '__main__':
     )
     _streamer_ref[0] = _streamer
     _streamer.start()
+
+    # Open Chrome once Flask is ready
+    import threading as _t
+    def _open_browser():
+        time.sleep(1.5)
+        import webbrowser
+        try:
+            webbrowser.get('chrome').open('http://127.0.0.1:5000')
+        except webbrowser.Error:
+            webbrowser.open('http://127.0.0.1:5000')
+    _t.Thread(target=_open_browser, daemon=True).start()
 
     print("\nDashboard running at http://127.0.0.1:5000")
     try:

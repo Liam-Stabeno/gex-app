@@ -1,0 +1,295 @@
+<!-- ═══ ROLLING PROFILE ══════════════════════════════════════════════════
+     Paste just above </body> in templates/dashboard.html (after the main script).
+     Needs: Chart.js + chartjs-plugin-zoom (already loaded), the dashboard's
+     openModal()/closeModal()/modalCJSChart, and /api/rolling_profile/<symbol>.
+     Adds its own "ROLLING PROFILE" section right after #gex-grid.
+═══════════════════════════════════════════════════════════════════════ -->
+<style>
+  .rp-grid { grid-template-columns: 1fr; }
+  .rp-panel {
+    display: flex; flex-direction: column;
+    height: 640px;                       /* default size; drag the corner to resize */
+    min-height: 320px;
+  }
+  .rp-panel .chart-div-header { cursor: zoom-in; }
+  .rp-head-right { display: flex; align-items: center; gap: 8px; }
+  .rp-time-label { color: #666; font-size: 11px; }
+  .rp-select {
+    background: #12121c; color: #ddd; border: 1px solid #2a2a3a; border-radius: 3px;
+    font-family: 'Courier New', monospace; font-size: 12px; padding: 3px 6px; cursor: pointer;
+  }
+  .rp-select:focus { outline: 1px solid #00bcd4; }
+  .rp-meta { display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+             font-size: 11px; color: #666; margin: 6px 0 4px; }
+  .rp-meta .rp-c { color: #00e676; }
+  .rp-meta .rp-p { color: #ff5252; }
+  .rp-meta .rp-warn { color: #ffb300; }
+  .rp-range { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .rp-range input { width: 120px; accent-color: #00d4ff; cursor: pointer; }
+  .rp-range-val { color: #00d4ff; min-width: 44px; }
+  .rp-hint { color: #444; font-size: 10px; }
+  .rp-canvas-wrap { position: relative; flex: 1; min-height: 200px; }
+  .rp-empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #444; font-size: 12px; pointer-events: none;
+  }
+</style>
+
+<script>
+(() => {
+  const RP_SYMBOL     = 'SPX';
+  const RP_RANGE_PTS  = 75;     // default strikes shown each side of spot (slider overrides)
+  const RP_RANGE_MIN  = 25;
+  const RP_RANGE_MAX  = 300;
+  const RP_DATA_PTS   = 350;    // data kept each side of spot, so zooming out reveals more strikes
+  const RP_POLL_MS    = 5000;
+  const RP_WINDOWS    = [
+    [60, '1 min'], [120, '2 min'], [180, '3 min'], [300, '5 min'],
+    [600, '10 min'], [900, '15 min'], [1800, '30 min'], [3600, '1 hr'],
+  ];
+  const RP_DEFAULT    = 1800;
+
+  const load = (k, dflt) => { try { return Number(localStorage.getItem(k)) || dflt; } catch (_) { return dflt; } };
+  const save = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+
+  let rpWindow = load('rpWindow', RP_DEFAULT);
+  let rpRange  = Math.min(RP_RANGE_MAX, Math.max(RP_RANGE_MIN, load('rpRange', RP_RANGE_PTS)));
+  let rpChart  = null;
+  let rpModal  = null;          // the full-screen copy, while open
+  let rpSpot   = null;
+  let rpLast   = null;          // last API response, for re-render on slider / reset
+
+  const fmtK   = v => v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'K' : String(v);
+  const fmtDur = s => s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`
+                                 : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;
+  const viewBounds = () => [Math.floor((rpSpot - rpRange) / 5) * 5, Math.ceil((rpSpot + rpRange) / 5) * 5];
+
+  // ── Panel ──────────────────────────────────────────────────────────
+  function createRollingProfileDiv() {
+    const div = document.createElement('div');
+    div.className = 'chart-div gex-chart-div rp-panel';
+    div.id = `rp-div-${RP_SYMBOL}`;
+    const opts = RP_WINDOWS.map(([s, l]) =>
+      `<option value="${s}"${s === rpWindow ? ' selected' : ''}>${l}</option>`).join('');
+    div.innerHTML = `
+      <div class="chart-div-header" id="rp-header" title="Double-click to expand">
+        <div>
+          <div class="chart-title">ROLLING PROFILE · 0DTE VOLUME</div>
+          <div class="symbol">${RP_SYMBOL}</div>
+        </div>
+        <div class="rp-head-right">
+          <label class="rp-time-label" for="rp-window">Time</label>
+          <select id="rp-window" class="rp-select">${opts}</select>
+        </div>
+      </div>
+      <div class="rp-meta">
+        <span class="rp-c">● Calls <b id="rp-call-tot">—</b></span>
+        <span class="rp-p">● Puts <b id="rp-put-tot">—</b></span>
+        <span id="rp-span">—</span>
+        <label class="rp-range" title="Strikes shown each side of spot">
+          Range <input type="range" id="rp-range" min="${RP_RANGE_MIN}" max="${RP_RANGE_MAX}" step="25" value="${rpRange}">
+          <span class="rp-range-val" id="rp-range-val">±${rpRange}</span>
+        </label>
+      </div>
+      <div class="rp-hint">scroll to zoom · drag to pan · double-click chart to reset · double-click title to expand</div>
+      <div class="rp-canvas-wrap">
+        <canvas id="rp-canvas"></canvas>
+        <div class="rp-empty" id="rp-empty">Collecting snapshots…</div>
+      </div>`;
+
+    const q = sel => div.querySelector(sel);
+    q('#rp-window').addEventListener('change', e => {
+      rpWindow = Number(e.target.value);
+      save('rpWindow', rpWindow);
+      fetchRollingProfile();
+    });
+    q('#rp-range').addEventListener('input', e => {
+      rpRange = Number(e.target.value);
+      save('rpRange', rpRange);
+      q('#rp-range-val').textContent = `±${rpRange}`;
+      resetView(rpChart);
+    });
+    q('#rp-range').addEventListener('dblclick', e => e.stopPropagation());
+    q('#rp-window').addEventListener('dblclick', e => e.stopPropagation());
+    q('#rp-header').addEventListener('dblclick', expandRollingProfile);
+    q('#rp-canvas').addEventListener('dblclick', () => resetView(rpChart));
+    return div;
+  }
+
+  // ── Chart ──────────────────────────────────────────────────────────
+  const rpSpotLine = {
+    id: 'rpSpotLine',
+    afterDatasetsDraw(chart) {
+      if (rpSpot == null) return;
+      const y = chart.scales.y.getPixelForValue(rpSpot);
+      const { left, right, top, bottom } = chart.chartArea;
+      if (y < top || y > bottom) return;
+      const c = chart.ctx;
+      c.save();
+      c.setLineDash([6, 4]);
+      c.strokeStyle = 'rgba(255,255,255,0.85)';
+      c.lineWidth = 1.5;
+      c.beginPath(); c.moveTo(left, y); c.lineTo(right, y); c.stroke();
+      c.restore();
+    },
+  };
+
+  function makeRollingChart(canvas, big = false) {
+    const line = (color, fillRgba) => ({
+      data: [], borderColor: color, backgroundColor: fillRgba, fill: 'origin',
+      borderWidth: 1.6, pointRadius: 0, tension: 0.15,
+    });
+    const markZoomed = ({ chart }) => { chart._rpZoomed = true; };
+    return new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: { datasets: [
+        { label: 'Calls', ...line('#00e676', 'rgba(0,230,118,0.10)') },
+        { label: 'Puts',  ...line('#ff5252', 'rgba(255,82,82,0.10)') },
+      ]},
+      options: {
+        indexAxis: 'y',                      // strikes vertical, volume horizontal
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'nearest', axis: 'y', intersect: false },
+        scales: {
+          y: {
+            type: 'linear', position: 'right',
+            // every 5-pt strike gets a label while they fit; zoomed out, labels thin to avoid overlap
+            ticks: { stepSize: 5, autoSkip: true, autoSkipPadding: 2, color: '#888', callback: v => String(v),
+                     font: { family: "'Courier New', monospace", size: big ? 11 : 10 } },
+            grid: { color: '#1a1a2a' },
+          },
+          x: {
+            type: 'linear', beginAtZero: true, reverse: true,   // mirrored: volume grows leftward from the strike axis
+            ticks: { color: '#555', maxTicksLimit: big ? 6 : 4, callback: fmtK,
+                     font: { family: "'Courier New', monospace", size: 10 } },
+            grid: { color: '#1a1a2a' },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: items => `Strike ${items[0].parsed.y}`,
+              label: item => `${item.dataset.label}: ${item.parsed.x.toLocaleString('en-US')}`,
+            },
+          },
+          zoom: {
+            zoom:   { wheel: { enabled: true, speed: 0.1 }, pinch: { enabled: true }, mode: 'y',
+                      onZoomComplete: markZoomed },
+            pan:    { enabled: true, mode: 'y', onPanComplete: markZoomed },
+            limits: { y: { minRange: 20 } },
+          },
+        },
+      },
+      plugins: [rpSpotLine],
+    });
+  }
+
+  // Push data into a chart. The strike window follows spot unless the user has
+  // zoomed or panned, in which case their view is kept until they reset it.
+  function applyData(chart, calls, puts) {
+    if (!chart) return;
+    if (!chart._rpZoomed) {
+      const [lo, hi] = viewBounds();
+      chart.options.scales.y.min = lo;
+      chart.options.scales.y.max = hi;
+    }
+    chart.data.datasets[0].data = calls;
+    chart.data.datasets[1].data = puts;
+    chart.update('none');
+  }
+
+  function resetView(chart) {
+    if (!chart) return;
+    if (chart.resetZoom) chart.resetZoom('none');
+    chart._rpZoomed = false;
+    if (rpLast) renderRollingProfile(rpLast);
+  }
+
+  function renderRollingProfile(d) {
+    rpLast = d;
+    const empty = document.getElementById('rp-empty');
+    rpSpot = d.spot;
+    if (!d.strikes.length || rpSpot == null) {
+      empty.style.display = 'flex';
+      empty.textContent = d.spot == null ? 'Waiting for 0DTE data…' : 'Collecting snapshots…';
+      [rpChart, rpModal].forEach(c => { if (c) { c.data.datasets.forEach(ds => ds.data = []); c.update('none'); } });
+      document.getElementById('rp-span').textContent = '—';
+      return;
+    }
+    empty.style.display = 'none';
+
+    const [lo, hi] = viewBounds();
+    const calls = [], puts = [];
+    let cTot = 0, pTot = 0;
+    d.strikes.forEach((k, i) => {
+      if (Math.abs(k - rpSpot) > RP_DATA_PTS) return;
+      calls.push({ x: d.call[i], y: k });
+      puts.push({ x: d.put[i], y: k });
+      if (k >= lo && k <= hi) { cTot += d.call[i]; pTot += d.put[i]; }
+    });
+
+    if (!rpChart) rpChart = makeRollingChart(document.getElementById('rp-canvas'));
+    applyData(rpChart, calls, puts);
+    if (rpModal && typeof modalCJSChart !== 'undefined' && modalCJSChart === rpModal) {
+      applyData(rpModal, calls, puts);
+    } else {
+      rpModal = null;                      // modal was closed
+    }
+
+    document.getElementById('rp-call-tot').textContent = fmtK(cTot);
+    document.getElementById('rp-put-tot').textContent  = fmtK(pTot);
+    const span = document.getElementById('rp-span');
+    span.className = d.partial ? 'rp-warn' : '';
+    span.textContent = d.partial
+      ? `only ${fmtDur(d.covered_sec)} of history`
+      : `actual ${fmtDur(d.covered_sec)} · ${d.updated} ET`;
+  }
+
+  // ── Full screen (reuses the dashboard's modal) ─────────────────────
+  function expandRollingProfile() {
+    if (typeof openModal !== 'function') return;
+    const label = (RP_WINDOWS.find(([s]) => s === rpWindow) || [0, ''])[1];
+    openModal(`
+      <div style="margin-bottom:8px">
+        <div style="font-size:0.65rem;color:#444;letter-spacing:2px">ROLLING PROFILE · 0DTE VOLUME · ${label}</div>
+        <div style="font-size:1.4rem;color:#fff;font-weight:bold">${RP_SYMBOL}</div>
+        <div style="font-size:0.8rem;color:#555">Scroll to zoom · drag to pan · double-click to reset · ESC to close</div>
+      </div>`);
+    const container = document.getElementById('modal-chart-container');
+    container.innerHTML = '<canvas id="rp-modal-canvas"></canvas>';
+    const canvas = document.getElementById('rp-modal-canvas');
+    rpModal = makeRollingChart(canvas, true);
+    modalCJSChart = rpModal;               // closeModal() destroys it
+    canvas.addEventListener('dblclick', () => resetView(rpModal));
+    if (rpLast) renderRollingProfile(rpLast);
+  }
+
+  async function fetchRollingProfile() {
+    try {
+      const r = await fetch(`/api/rolling_profile/${RP_SYMBOL}?window=${rpWindow}`);
+      if (r.ok) renderRollingProfile(await r.json());
+    } catch (e) { console.warn('[rolling profile]', e); }
+  }
+
+  // ── Init: own section right after the GEX grid ─────────────────────
+  const gexGrid = document.getElementById('gex-grid');
+  if (gexGrid) {
+    const label = document.createElement('div');
+    label.className = 'section-label';
+    label.textContent = 'ROLLING PROFILE';
+    const grid = document.createElement('div');
+    grid.className = 'grid rp-grid';
+    grid.id = 'rp-grid';
+    grid.appendChild(createRollingProfileDiv());
+    gexGrid.parentNode.insertBefore(label, gexGrid.nextSibling);
+    gexGrid.parentNode.insertBefore(grid, label.nextSibling);
+    fetchRollingProfile();
+    setInterval(fetchRollingProfile, RP_POLL_MS);
+  } else {
+    console.warn('[rolling profile] #gex-grid not found');
+  }
+})();
+</script>

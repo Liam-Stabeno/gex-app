@@ -26,6 +26,25 @@ _cached_token = {'access_token': None, 'expires_at': 0.0}
 TOKEN_TTL     = 25 * 60   # seconds before we refresh (25 of 30 min)
 
 
+class SchwabAuthError(Exception):
+    """Raised when Schwab OAuth needs manual re-authentication (expired refresh token)."""
+
+
+def _print_reauth_banner() -> None:
+    """Print a clear, actionable message when the refresh token has lapsed."""
+    print()
+    print("=" * 70)
+    print("  SCHWAB LOGIN EXPIRED")
+    print("  Your Schwab refresh token is invalid, expired, or revoked.")
+    print("  (Refresh tokens are only valid for 7 days.)")
+    print()
+    print("  To fix, just run:   reauth.bat")
+    print("  (double-click it, or run it from the project folder)")
+    print("  Then start the app again with start.bat")
+    print("=" * 70)
+    print()
+
+
 def load_tokens() -> dict:
     with open(TOKENS_FILE, 'r') as f:
         return json.load(f)
@@ -49,7 +68,16 @@ def refresh_access_token(refresh_token: str) -> dict:
     )
 
     if not response.ok:
-        print(f"Token refresh failed: {response.text}")
+        body = response.text
+        # A 400 with invalid_grant means the 7-day refresh token has lapsed.
+        # Retrying can't fix it — the user must re-run auth.py. Surface a clear
+        # message instead of a raw HTTPError traceback.
+        if response.status_code == 400 and "invalid_grant" in body:
+            _print_reauth_banner()
+            raise SchwabAuthError(
+                "Schwab refresh token expired — run 'python src\\auth.py' to re-authenticate."
+            )
+        print(f"Token refresh failed: {body}")
         response.raise_for_status()
 
     tokens = response.json()
@@ -395,3 +423,29 @@ def print_summary(levels: dict, gex_by_strike: pd.DataFrame, symbol: str = "SPX"
     print(f"  Call Wall: {levels.get('call_wall')}")
     print(f"  Pin:       {levels.get('pin')}")
     print(f"{'='*50}\n")
+
+
+# ── ROLLING PROFILE HOOK START (install_rolling_profile.py) ──
+# Wraps fetch_option_chain so each fetched chain is also snapshotted for the
+# rolling 0DTE volume profile. Remove with: install_rolling_profile.py --uninstall
+try:
+    import functools as _rp_functools
+    import inspect as _rp_inspect
+    from rolling_profile import record_chain as _rp_record
+
+    _rp_orig_fetch = fetch_option_chain
+    _rp_first_param = next(iter(_rp_inspect.signature(_rp_orig_fetch).parameters), None)
+
+    @_rp_functools.wraps(_rp_orig_fetch)
+    def fetch_option_chain(*args, **kwargs):
+        chain = _rp_orig_fetch(*args, **kwargs)
+        try:
+            symbol = args[0] if args else kwargs.get(_rp_first_param)
+            if isinstance(symbol, str):
+                _rp_record(symbol, chain)
+        except Exception as _rp_e:  # never break the GEX loop
+            print(f"[rolling_profile] record failed: {_rp_e}")
+        return chain
+except ImportError as _rp_e:
+    print(f"[rolling_profile] hook disabled: {_rp_e}")
+# ── ROLLING PROFILE HOOK END ──

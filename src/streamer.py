@@ -25,8 +25,11 @@ import threading
 import requests
 import websocket
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from gex import get_access_token
+
+_ET = ZoneInfo('America/New_York')
 
 # ── Price streaming ─────────────────────────────────────────────────────────────
 # STREAM_CHART_EQUITY: symbols that get CHART_EQUITY bars (tradeable ETFs only).
@@ -122,19 +125,22 @@ def _parse_levelone(msg: dict) -> list:
 
 
 def _parse_options(msg: dict) -> list:
-    """Parse LEVELONE_OPTIONS content into quote dicts."""
+    """Parse LEVELONE_OPTIONS content into quote dicts.
+
+    Schwab only sends the fields that changed, so a field missing from this tick
+    is None here; the streamer fills it from the contract's last known value.
+    """
     quotes = []
     for item in msg.get('content', []):
         symbol = item.get('key', '')
-        vol    = item.get('8')
-        if vol is None:
+        if not symbol:
             continue
         quotes.append({
             'symbol': symbol,
-            'bid':    float(item.get('2', 0)),
-            'ask':    float(item.get('3', 0)),
-            'last':   float(item.get('4', 0)),
-            'volume': int(vol),
+            'bid':    float(item['2']) if '2' in item else None,
+            'ask':    float(item['3']) if '3' in item else None,
+            'last':   float(item['4']) if '4' in item else None,
+            'volume': int(item['8'])   if '8' in item else None,
         })
     return quotes
 
@@ -169,6 +175,12 @@ class SchwabStreamer:
         self._contract_info  = {}    # symbol -> metadata dict
         self._volume_cache   = {}    # symbol -> last known day volume
         self._pending_update = False # flag: watch list changed, need re-subscribe
+
+        # Last known bid/ask/last/volume per contract. Ticks carry only the fields
+        # that changed; missing ones are filled from here. Kept across watch-list
+        # updates (contracts persist), cleared when the ET date changes.
+        self._last_quote     = {}    # symbol -> {'bid', 'ask', 'last', 'volume'}
+        self._last_quote_day = None
 
     # ── Public API ──────────────────────────────────────────────────────────────
 
@@ -381,25 +393,43 @@ class SchwabStreamer:
         2. Compares volume to baseline and fires on_flow_alert when threshold crossed.
         """
         symbol  = quote['symbol']
+        traded  = quote['volume'] is not None   # volume only arrives when it changed
 
         with self._watch_lock:
             meta = self._contract_info.get(symbol)
             if meta is None:
                 return   # not in our watch list
-            prev_vol = self._volume_cache.get(symbol)
-            self._volume_cache[symbol] = quote['volume']
 
-        # ── Live GEX: fire on every bid/ask tick ─────────────────────────────
-        if self.on_options_quote and (quote['bid'] > 0 or quote['ask'] > 0):
+            today = datetime.now(_ET).date()
+            if self._last_quote_day != today:
+                self._last_quote_day = today
+                self._last_quote     = {}
+            known = self._last_quote.setdefault(symbol, {})
+            for field in ('bid', 'ask', 'last', 'volume'):
+                if quote[field] is not None:
+                    known[field] = quote[field]
+            quote = {'symbol': symbol,
+                     'bid':    known.get('bid', 0.0),
+                     'ask':    known.get('ask', 0.0),
+                     'last':   known.get('last', 0.0),
+                     'volume': known.get('volume')}
+
+            prev_vol = self._volume_cache.get(symbol)
+            if traded:
+                self._volume_cache[symbol] = quote['volume']
+
+        # ── Live GEX: fire on every tick, with gaps filled from memory ───────
+        if self.on_options_quote:
             try:
                 self.on_options_quote({'symbol': symbol,
                                        'bid':    quote['bid'],
-                                       'ask':    quote['ask']})
+                                       'ask':    quote['ask'],
+                                       'volume': quote['volume']})
             except Exception as exc:
                 print(f'[STREAMER] on_options_quote error: {exc}')
 
-        if prev_vol is None:
-            return   # first data point — establish baseline, don't alert yet
+        if not traded or prev_vol is None:
+            return   # quote-only tick, or first data point — establish baseline, don't alert yet
 
         delta = quote['volume'] - prev_vol
         if delta <= 0:

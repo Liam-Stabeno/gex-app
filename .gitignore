@@ -30,3 +30,4 @@ Thumbs.db
 *.xlsx
 *.xls
 ~$*
+.rp_backups/

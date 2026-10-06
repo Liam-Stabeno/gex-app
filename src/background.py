@@ -16,10 +16,11 @@ Public API:
 """
 
 import csv
+import json
 import os
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 from gex import get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts
@@ -27,7 +28,9 @@ from price_history import fetch_candles, append_candles, load_candles
 import bs
 import delta_flow
 import flow_alerts
+import rolling_profile
 import sse
+import tos_rtd
 
 _SRC_DIR     = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.dirname(_SRC_DIR)
@@ -51,6 +54,86 @@ def _append_gex_snapshot(sym: str, tag: str, row: dict):
         if new_file:
             writer.writeheader()
         writer.writerow(row)
+
+
+# ── Strike × expiration GEX history ──────────────────────────────────────────
+# One JSONL file per ET day, one line per snapshot:
+#   {"ts", "spot", "exp": [expiries], "rows": [[strike, exp_idx, call_oi, put_oi, net_gex], ...]}
+# Cells with no OI on either side are left out. The first line of each day
+# records the opening OI (it only changes overnight).
+_ET               = ZoneInfo('America/New_York')
+GRID_INTERVAL_SEC = 300      # snapshot every 5 min (the GEX refresh runs every 60 s)
+GRID_KEEP_DAYS    = 90       # day files older than this are deleted; None = keep all
+_grid_last_ts: dict = {}     # sym -> time.time() of last snapshot
+_grid_cleaned_day: dict = {} # sym -> ET date of last cleanup
+
+
+def _record_gex_grid(sym: str, raw_df, spot: float):
+    now = time.time()
+    if now - _grid_last_ts.get(sym, 0) < GRID_INTERVAL_SEC:
+        return
+    et = datetime.now(_ET)
+    if et.weekday() >= 5 or not (dtime(9, 30) <= et.time() < dtime(16, 15)):
+        return
+    if raw_df is None or raw_df.empty:
+        return
+    _grid_last_ts[sym] = now
+
+    df   = raw_df.assign(call_oi=raw_df['oi'].where(raw_df['type'] == 'call', 0),
+                         put_oi=raw_df['oi'].where(raw_df['type'] == 'put', 0))
+    cell = (df.groupby(['expiration', 'strike'])[['call_oi', 'put_oi', 'gex']]
+              .sum().reset_index())
+    cell = cell[(cell['call_oi'] > 0) | (cell['put_oi'] > 0)]
+    exps = sorted(cell['expiration'].unique())
+    idx  = {e: i for i, e in enumerate(exps)}
+    rows = [[float(r.strike), idx[r.expiration], int(r.call_oi), int(r.put_oi), round(float(r.gex))]
+            for r in cell.itertuples(index=False)]
+
+    day  = et.date().isoformat()
+    path = os.path.join(_DATA_DIR, f'gex_grid_{sym}_{day}.jsonl')
+    try:
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps({'ts': et.isoformat(timespec='seconds'), 'spot': float(spot),
+                                'exp': exps, 'rows': rows}, separators=(',', ':')) + '\n')
+    except OSError as e:
+        print(f'[GEX grid] {sym}: write failed: {e}')
+
+    if GRID_KEEP_DAYS is not None and _grid_cleaned_day.get(sym) != day:
+        _grid_cleaned_day[sym] = day
+        prefix = f'gex_grid_{sym}_'
+        for name in os.listdir(_DATA_DIR):
+            if not (name.startswith(prefix) and name.endswith('.jsonl')):
+                continue
+            try:
+                d = datetime.strptime(name[len(prefix):-len('.jsonl')], '%Y-%m-%d').date()
+                if (et.date() - d).days > GRID_KEEP_DAYS:
+                    os.remove(os.path.join(_DATA_DIR, name))
+            except (ValueError, OSError):
+                continue
+
+
+def _last_session_path(sym: str) -> str:
+    return os.path.join(_DATA_DIR, f'gex_last_session_{sym}.json')
+
+
+def _save_last_session(sym: str, data: dict):
+    """Keep the latest in-session GEX/DDOI result so it can be shown after the close."""
+    path = _last_session_path(sym)
+    tmp  = path + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, default=float)
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as e:
+        print(f'[GEX] {sym}: could not save last session: {e}')
+
+
+def _load_last_session(sym: str):
+    try:
+        with open(_last_session_path(sym), encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
 
 
 def _append_watchlist(sym: str, ts: str, contracts: list):
@@ -153,7 +236,7 @@ def refresh_gex(symbol: str):
         token        = get_access_token()
         strike_count = 150 if symbol in ('$SPX', 'SPX') else 200
         chain        = fetch_option_chain(symbol, token, strike_count=strike_count)
-        gex_all, gex_0dte, gex_multi, spot, _ = parse_gex(chain)
+        gex_all, gex_0dte, gex_multi, spot, raw_df = parse_gex(chain)
         levels       = find_key_levels(gex_all, spot)
         total_gex    = float(gex_all['net_gex'].sum())
 
@@ -172,6 +255,35 @@ def refresh_gex(symbol: str):
         multi_dict = _gex_to_dict(gex_multi, spot)
         zero_dict  = _gex_to_dict(gex_0dte,  spot)
 
+        # ── DDOI: per-strike call/put OI across all expiries ─────────────────
+        # Assumes dealers are net short options (standard for SPX market makers).
+        # Call DDOI = call OI per strike → dealer short calls → buy pressure above spot
+        # Put  DDOI = put  OI per strike → dealer short puts  → sell pressure below spot
+        ddoi_calls = {}   # strike -> total call OI
+        ddoi_puts  = {}   # strike -> total put OI
+        lo_ddoi = spot * 0.94
+        hi_ddoi = spot * 1.06
+        for exp_key, strikes in chain.get('callExpDateMap', {}).items():
+            for strike_str, opts in strikes.items():
+                strike = float(strike_str)
+                if not (lo_ddoi <= strike <= hi_ddoi):
+                    continue
+                oi = int(opts[0].get('openInterest') or 0) if opts else 0
+                ddoi_calls[strike] = ddoi_calls.get(strike, 0) + oi
+        for exp_key, strikes in chain.get('putExpDateMap', {}).items():
+            for strike_str, opts in strikes.items():
+                strike = float(strike_str)
+                if not (lo_ddoi <= strike <= hi_ddoi):
+                    continue
+                oi = int(opts[0].get('openInterest') or 0) if opts else 0
+                ddoi_puts[strike] = ddoi_puts.get(strike, 0) + oi
+        all_ddoi_strikes = sorted(set(ddoi_calls) | set(ddoi_puts))
+        ddoi_dict = {
+            'strikes':  all_ddoi_strikes,
+            'call_oi':  [ddoi_calls.get(k, 0) for k in all_ddoi_strikes],
+            'put_oi':   [ddoi_puts.get(k, 0)  for k in all_ddoi_strikes],
+        }
+
         data = {
             'symbol':       symbol.replace('$', '').replace('/', ''),
             'spot':         spot,
@@ -183,6 +295,7 @@ def refresh_gex(symbol: str):
             'zero':         zero_dict,
             'has_0dte':     not gex_0dte.empty,
             'odte_date':    odte_date,
+            'ddoi':         ddoi_dict,
             'updated':      datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
 
@@ -197,54 +310,79 @@ def refresh_gex(symbol: str):
             'side':        c['side'],
             'expiry_date': c.get('expiry_date', ''),
             'is_0dte':     c.get('is_0dte', False),
+            'underlying':  c.get('underlying') or display_sym,
         } for c in watch}
         _oi_cache.update(new_oi)
         _contract_meta.update(new_meta)
 
+        # ── Subscribe contracts to TOS RTD (always subscribe when registered,
+        #    so quotes are ready the moment the user toggles RTD on) ──────────
+        if tos_rtd.is_available():
+            tos_syms = [tos_rtd.contract_to_tos(c) for c in watch
+                        if c.get('expiry_date')]
+            tos_rtd.add_symbols(tos_syms)
+            # Store TOS symbol on meta so live_gex_loop can look it up
+            for c in watch:
+                if c.get('expiry_date') and c['symbol'] in _contract_meta:
+                    _contract_meta[c['symbol']]['tos_symbol'] = tos_rtd.contract_to_tos(c)
+
         # ── Detect post-market CLOSED state (OI zeroed after expiry) ────────
-        all_oi_zero = all(c['oi'] == 0 for c in watch)
+        # Schwab zeroes SPX open interest after the close. OI only changes
+        # overnight, so fall back to the last in-session result instead.
+        all_oi_zero = all(c['oi'] == 0 for c in watch) and             not any(ddoi_dict['call_oi']) and not any(ddoi_dict['put_oi'])
         if all_oi_zero:
-            data['regime'] = 'CLOSED'
+            last = _load_last_session(display_sym)
+            if last:
+                data = {**last, 'spot': spot, 'regime': 'CLOSED',
+                        'last_session': last.get('updated')}
+            else:
+                data['regime'] = 'CLOSED'
+        else:
+            _save_last_session(display_sym, data)
 
         with _cache_lock:
             _cache[symbol] = data
 
         # ── Persist snapshots ────────────────────────────────────────────────
-        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # Skipped after the close: zero-OI refreshes would log GEX as 0 and
+        # skew the history.
+        if not all_oi_zero:
+            ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        def _lvl(lvl_dict, key):
-            v = lvl_dict.get(key)
-            return float(v) if v is not None else ''
+            def _lvl(lvl_dict, key):
+                v = lvl_dict.get(key)
+                return float(v) if v is not None else ''
 
-        _append_gex_snapshot(display_sym, 'snapshots', {
-            'timestamp':  ts,
-            'spot':       spot,
-            'total_gex':  total_gex,
-            'regime':     'POSITIVE' if total_gex > 0 else 'NEGATIVE',
-            'flip_level': _lvl(levels_multi, 'flip_level'),
-            'put_wall':   _lvl(levels_multi, 'put_wall'),
-            'call_wall':  _lvl(levels_multi, 'call_wall'),
-            'pin':        _lvl(levels_multi, 'pin'),
-            'strike_min': multi_dict.get('strike_min', ''),
-            'strike_max': multi_dict.get('strike_max', ''),
-        })
-
-        if not gex_0dte.empty:
-            total_0dte = float(gex_0dte['net_gex'].sum())
-            _append_gex_snapshot(display_sym, '0dte_snapshots', {
+            _append_gex_snapshot(display_sym, 'snapshots', {
                 'timestamp':  ts,
                 'spot':       spot,
-                'total_gex':  total_0dte,
-                'regime':     'POSITIVE' if total_0dte > 0 else 'NEGATIVE',
-                'flip_level': _lvl(levels_0dte, 'flip_level'),
-                'put_wall':   _lvl(levels_0dte, 'put_wall'),
-                'call_wall':  _lvl(levels_0dte, 'call_wall'),
-                'pin':        _lvl(levels_0dte, 'pin'),
-                'strike_min': zero_dict.get('strike_min', ''),
-                'strike_max': zero_dict.get('strike_max', ''),
+                'total_gex':  total_gex,
+                'regime':     'POSITIVE' if total_gex > 0 else 'NEGATIVE',
+                'flip_level': _lvl(levels_multi, 'flip_level'),
+                'put_wall':   _lvl(levels_multi, 'put_wall'),
+                'call_wall':  _lvl(levels_multi, 'call_wall'),
+                'pin':        _lvl(levels_multi, 'pin'),
+                'strike_min': multi_dict.get('strike_min', ''),
+                'strike_max': multi_dict.get('strike_max', ''),
             })
 
-        _append_watchlist(display_sym, ts, watch)
+            if not gex_0dte.empty:
+                total_0dte = float(gex_0dte['net_gex'].sum())
+                _append_gex_snapshot(display_sym, '0dte_snapshots', {
+                    'timestamp':  ts,
+                    'spot':       spot,
+                    'total_gex':  total_0dte,
+                    'regime':     'POSITIVE' if total_0dte > 0 else 'NEGATIVE',
+                    'flip_level': _lvl(levels_0dte, 'flip_level'),
+                    'put_wall':   _lvl(levels_0dte, 'put_wall'),
+                    'call_wall':  _lvl(levels_0dte, 'call_wall'),
+                    'pin':        _lvl(levels_0dte, 'pin'),
+                    'strike_min': zero_dict.get('strike_min', ''),
+                    'strike_max': zero_dict.get('strike_max', ''),
+                })
+
+            _append_watchlist(display_sym, ts, watch)
+            _record_gex_grid(display_sym, raw_df, spot)
         # ─────────────────────────────────────────────────────────────────────
 
         if display_sym == 'SPX':
@@ -403,6 +541,12 @@ def on_options_quote(quote: dict):
         _quote_cache[sym] = (bid, ask)
         _gex_dirty.set()
 
+    # Streamed cumulative volume feeds the rolling 0DTE profile in near real time
+    meta = _contract_meta.get(sym)
+    if meta and meta.get('is_0dte') and quote.get('volume') is not None:
+        rolling_profile.record_stream_volume(meta.get('underlying') or 'SPX', sym,
+                                             meta['strike'], meta['side'], quote['volume'])
+
 
 def live_gex_loop():
     """
@@ -450,8 +594,23 @@ def live_gex_loop():
         charm_abs = {}   # strike -> sum(|charm| * oi * 100 * spot)
         vanna_abs = {}   # strike -> sum(|vanna| * oi * 100 * spot)
 
+        use_rtd = tos_rtd.is_enabled() and tos_rtd._connected
+        rtd_hits = 0
+        schwab_hits = 0
+
         for sym, meta in meta_snap.items():
-            bid, ask = quote_snap.get(sym, (0.0, 0.0))
+            # Prefer TOS RTD bid/ask (lower latency) over Schwab streamer cache
+            if use_rtd and meta.get('tos_symbol'):
+                bid, ask = tos_rtd.get_quote(meta['tos_symbol'])
+                # Fall back to Schwab cache if RTD hasn't received a quote yet
+                if ask <= 0.0:
+                    bid, ask = quote_snap.get(sym, (0.0, 0.0))
+                    schwab_hits += 1
+                else:
+                    rtd_hits += 1
+            else:
+                bid, ask = quote_snap.get(sym, (0.0, 0.0))
+                schwab_hits += 1
             oi       = oi_snap.get(sym, 0)
             if oi == 0 or ask <= 0.0:
                 continue
@@ -546,12 +705,15 @@ def live_gex_loop():
 
         with _cache_lock:
             existing = _cache.get('$SPX', {})
-            # Preserve odte_date from the chain refresh
+            # Preserve odte_date and DDOI from the chain refresh
             data['odte_date'] = existing.get('odte_date')
+            data['ddoi']      = existing.get('ddoi')
             _cache['$SPX'] = data
 
         sse.push({'type': 'gex', 'symbol': 'SPX', **data})
         last_push = time.time()
+        src = f'RTD:{rtd_hits} Schwab:{schwab_hits}' if use_rtd else f'Schwab:{schwab_hits}'
+        print(f'[GEX live] quote sources — {src}')
 
 
 # ── Streamer callbacks ────────────────────────────────────────────────────────
@@ -563,6 +725,8 @@ def on_streamer_candle(candle: dict):
     """
     raw_symbol = candle['symbol']
     ts_ms      = candle['datetime']
+    if raw_symbol == '$SPX':
+        rolling_profile.update_spot('SPX', candle.get('close'))
     is_final   = candle.get('is_final', False)
 
     push_sse  = False
