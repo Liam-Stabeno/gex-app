@@ -158,6 +158,23 @@
             display: inline-block;
         }
         .gex-drag-handle:active { cursor: grabbing; }
+        /* ── SPX price panel: resizable, full screen in place, gamma zones ── */
+        .price-panel {
+            display: flex; flex-direction: column;
+            height: 560px; min-height: 320px; min-width: 380px;
+            resize: both; overflow: hidden;
+        }
+        .price-panel .chart-container { height: auto; flex: 1; min-height: 200px; }
+        .price-panel.fullscreen {
+            position: fixed; inset: 12px; z-index: 900;
+            width: auto !important; height: auto !important; resize: none;
+            box-shadow: 0 0 0 100vmax rgba(0,0,0,0.85);
+        }
+        .zone-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+                    font-size: 0.62rem; color: #666; margin: 2px 0 6px; }
+        .zone-bar .tf-btn { padding: 1px 7px; }
+        .zone-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
+
 
         /* Strike range slider — vertical, left of canvas */
         .gex-chart-row {
@@ -549,10 +566,10 @@
         const LWC = window.LightweightCharts;
 
         const GEX_SYMBOLS    = ['SPX' /*, 'SPY', 'QQQ' */];
-        const PRICE_SYMBOLS  = ['SPX', 'ES', 'VIX'];
+        const PRICE_SYMBOLS  = ['SPX'];   // one chart: SPX price with trailing GEX levels
         // Streamed symbols get live updates via SSE; poll them infrequently as a fallback.
         // Non-streamed symbols (SPX) still depend on the 30s GEX poll for price.
-        const STREAM_SYMBOLS = new Set([/* 'SPY', 'QQQ', */ 'ES']);  // match streamer.py
+        const STREAM_SYMBOLS = new Set([/* 'SPY', 'QQQ', 'ES' */]);  // streamed symbols that are charted
         const GEX_REFRESH_MS   = 30000;   // GEX: 30 s
         const PRICE_REFRESH_MS = 300000;  // Price: 5 min (streaming covers live updates)
 
@@ -744,7 +761,7 @@
 
         function createPriceDiv(symbol) {
             const div = document.createElement('div');
-            div.className = 'chart-div';
+            div.className = 'chart-div' + (symbol === 'SPX' ? ' price-panel' : '');
             div.id = `price-div-${symbol}`;
             div.innerHTML = `
                 <div class="chart-div-header">
@@ -767,25 +784,41 @@
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #00ff88"></span>CALL WALL</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #cc44ff"></span>PIN LT</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #00e5ff"></span>TRUE PIN</span>
-                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px solid rgba(255,165,0,0.6)"></span>VIX</span>
                         </div>` : `<div class="gex-key">
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px solid rgba(255,165,0,0.6)"></span>VIX</span>
                         </div>`}
                     </div>
                 </div>
+                ${symbol === 'SPX' ? `<div class="zone-bar" id="zone-bar-${symbol}">
+                    <span>GAMMA ZONES</span>
+                    <button class="tf-btn active" data-zone="all" title="Net GEX at each strike, all expirations">All</button>
+                    <button class="tf-btn" data-zone="odte" title="Net GEX at each strike, 0DTE only">0DTE</button>
+                    <button class="tf-btn" data-zone="off">Off</button>
+                    <span><span class="zone-swatch" style="background:rgba(0,200,120,0.55)"></span> positive gamma: dealers lean against moves, price <b style="color:#00c878">slows / sticks</b></span>
+                    <span><span class="zone-swatch" style="background:rgba(255,60,80,0.55)"></span> negative gamma: dealers chase moves, price <b style="color:#ff3c50">speeds up</b></span>
+                    <span style="margin-left:auto;color:#444">double-click: full screen · drag corner: resize</span>
+                </div>` : ''}
                 <div class="chart-container" id="price-canvas-${symbol}"></div>
             `;
             // Wire up TF buttons — stopPropagation so dblclick on a button doesn't open modal
-            div.querySelectorAll('.tf-btn').forEach(btn => {
+            div.querySelectorAll('.tf-btn[data-tf]').forEach(btn => {
                 btn.addEventListener('click', e => {
                     e.stopPropagation();
                     const tf = parseInt(btn.dataset.tf);
-                    div.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+                    div.querySelectorAll('.tf-btn[data-tf]').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
                     setTimeframe(symbol, tf);
                 });
             });
-            div.addEventListener('dblclick', () => expandPrice(symbol));
+            div.addEventListener('dblclick', e => {
+                if (e.target.closest('button')) return;
+                if (symbol === 'SPX') togglePriceFullscreen(div);   // same chart, everything kept
+                else expandPrice(symbol);
+            });
+            div.querySelectorAll('[data-zone]').forEach(btn => btn.addEventListener('click', e => {
+                e.stopPropagation();
+                setZoneMode(btn.dataset.zone);
+            }));
             return div;
         }
 
@@ -824,12 +857,50 @@
             return wrapper;
         }
 
+        // Price charts that show the levels as trailing lines instead of flat
+        // full-width price lines (the trail chart always does).
+        const TRAIL_ON_PRICE = new Set(['SPX']);
+
+        // The five level lines as LW line series on a chart.
+        function addTrailSeries(chart) {
+            const make = (color, lineWidth, lineStyle, title) => chart.addSeries(LWC.LineSeries, {
+                color, lineWidth, lineStyle, title,
+                lastValueVisible: true,
+                priceLineVisible: false,
+                crosshairMarkerVisible: false,
+                priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+                // levels never stretch the price scale; off-screen ones keep their axis label
+                autoscaleInfoProvider: () => null,
+            });
+            return {
+                flipSeries:     make('#ffff00', 1, LWC.LineStyle.Dashed,      'FLIP'),
+                putWallSeries:  make('#ff4444', 1, LWC.LineStyle.Dotted,      'PUT WALL'),
+                callWallSeries: make('#00ff88', 1, LWC.LineStyle.Dotted,      'CALL WALL'),
+                pinSeries:      make('#cc44ff', 2, LWC.LineStyle.LargeDashed, 'PIN LT'),
+                truePinSeries:  make('#00e5ff', 2, LWC.LineStyle.Solid,       'TRUE PIN'),
+            };
+        }
+
+        // Every series set currently showing trails for a symbol.
+        function trailTargets(symbol) {
+            return [trailCharts[symbol], priceCharts[symbol]?.trail].filter(Boolean);
+        }
+
+        function setTrailData(target, symbol) {
+            target.flipSeries.setData(_flipTrail[symbol] || []);
+            target.putWallSeries.setData(_putWallTrail[symbol] || []);
+            target.callWallSeries.setData(_callWallTrail[symbol] || []);
+            target.pinSeries.setData(_pinTrail[symbol] || []);
+            target.truePinSeries.setData(_truePinTrail[symbol] || []);
+        }
+
         // Initialise or update the trail chart for a symbol.
         // Call whenever rawCandles[symbol] changes (same timing as renderPriceChart).
         function renderTrailChart(symbol, candles) {
+            rebuildTrails(symbol);   // re-bucket server history for the current timeframe (all targets)
             if (!candles.length) return;
             const container = document.getElementById(`trail-canvas-${symbol}`);
-            if (!container) return;   // VIX has no trail chart
+            if (!container) return;   // no separate trail chart for this symbol
 
             // Only show today's candles so trail lines span a meaningful portion of the chart
             const nowEt = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
@@ -840,50 +911,18 @@
             const display = aggregateCandles(todayCandles.length ? todayCandles : candles, selectedTF[symbol] || 1);
             if (!display.length) return;
 
-            // Helper — create a trail line series with shared options
-            function _makeTrailSeries(chart, color, lineWidth, lineStyle, label) {
-                return chart.addSeries(LWC.LineSeries, {
-                    color, lineWidth,
-                    lineStyle: lineStyle ?? LWC.LineStyle.Solid,
-                    lastValueVisible: true,
-                    priceLineVisible: false,
-                    crosshairMarkerVisible: false,
-                    title: label || '',
-                    priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
-                });
-            }
-
-            rebuildTrails(symbol);   // re-bucket server history for the current timeframe
-
             if (trailCharts[symbol]) {
                 const e = trailCharts[symbol];
                 _setSeriesData(e.candleSeries, e.volumeSeries, display);
-                // Re-apply accumulated trail data on TF change
-                if (_flipTrail[symbol]?.length)     e.flipSeries.setData(_flipTrail[symbol]);
-                if (_putWallTrail[symbol]?.length)   e.putWallSeries.setData(_putWallTrail[symbol]);
-                if (_callWallTrail[symbol]?.length)  e.callWallSeries.setData(_callWallTrail[symbol]);
-                if (_pinTrail[symbol]?.length)       e.pinSeries.setData(_pinTrail[symbol]);
-                if (_truePinTrail[symbol]?.length)   e.truePinSeries.setData(_truePinTrail[symbol]);
+                setTrailData(e, symbol);   // re-apply on TF change
                 e.chart.timeScale().scrollToRealTime();
             } else {
                 container.innerHTML = '';
                 const chart = makePriceChart(container);
                 const { candleSeries, volumeSeries } = buildCandleSeries(chart, display);
 
-                const flipSeries     = _makeTrailSeries(chart, '#ffff00', 1, LWC.LineStyle.Dashed,      'FLIP');
-                const putWallSeries  = _makeTrailSeries(chart, '#ff4444', 1, LWC.LineStyle.Dotted,      'PUT WALL');
-                const callWallSeries = _makeTrailSeries(chart, '#00ff88', 1, LWC.LineStyle.Dotted,      'CALL WALL');
-                const pinSeries      = _makeTrailSeries(chart, '#cc44ff', 2, LWC.LineStyle.LargeDashed, 'PIN LT');
-                const truePinSeries  = _makeTrailSeries(chart, '#00e5ff', 2, LWC.LineStyle.Solid,       'TRUE PIN');
-
-                if (_flipTrail[symbol]?.length)     flipSeries.setData(_flipTrail[symbol]);
-                if (_putWallTrail[symbol]?.length)   putWallSeries.setData(_putWallTrail[symbol]);
-                if (_callWallTrail[symbol]?.length)  callWallSeries.setData(_callWallTrail[symbol]);
-                if (_pinTrail[symbol]?.length)       pinSeries.setData(_pinTrail[symbol]);
-                if (_truePinTrail[symbol]?.length)   truePinSeries.setData(_truePinTrail[symbol]);
-
-                trailCharts[symbol] = { chart, candleSeries, volumeSeries,
-                    flipSeries, putWallSeries, callWallSeries, pinSeries, truePinSeries };
+                trailCharts[symbol] = { chart, candleSeries, volumeSeries, ...addTrailSeries(chart) };
+                setTrailData(trailCharts[symbol], symbol);
                 chart.timeScale().scrollToRealTime();
             }
         }
@@ -913,9 +952,9 @@
             // Use the candle bucket time when available — this ensures one trail point
             // per candle instead of one per wall-clock second (which produces noisy steps).
             const now = candleTime ?? Math.floor(Date.now() / 1000);
-            const tc  = trailCharts[symbol];   // may be null at startup — buffer anyway
+            const targets = trailTargets(symbol);   // may be empty at startup — buffer anyway
 
-            function _append(trailArr, series, value) {
+            function _append(trailArr, key, value) {
                 if (value == null || isNaN(value) || value <= 0) return;
                 // Sanity: reject values more than 500 pts from previous (basis calc blowup)
                 const last = trailArr[trailArr.length - 1];
@@ -924,19 +963,19 @@
                     // Same bucket — update in place (value may have changed)
                     if (last.value !== value) {
                         trailArr[trailArr.length - 1] = { time: now, value };
-                        if (series) series.update({ time: now, value });
+                        targets.forEach(t => t[key].update({ time: now, value }));
                     }
                 } else if (!last || now > last.time) {
                     trailArr.push({ time: now, value });
-                    if (series) series.update({ time: now, value });
+                    targets.forEach(t => t[key].update({ time: now, value }));
                 }
             }
 
-            _append(_flipTrail[symbol],     tc?.flipSeries,     src?.flip_level   != null ? src.flip_level   + basis : null);
-            _append(_putWallTrail[symbol],  tc?.putWallSeries,  src?.put_wall     != null ? src.put_wall     + basis : null);
-            _append(_callWallTrail[symbol], tc?.callWallSeries, src?.call_wall    != null ? src.call_wall    + basis : null);
-            _append(_pinTrail[symbol],      tc?.pinSeries,      src?.pin          != null ? src.pin          + basis : null);
-            _append(_truePinTrail[symbol],  tc?.truePinSeries,  src?.pin_enhanced != null ? src.pin_enhanced + basis : null);
+            _append(_flipTrail[symbol],     'flipSeries',     src?.flip_level   != null ? src.flip_level   + basis : null);
+            _append(_putWallTrail[symbol],  'putWallSeries',  src?.put_wall     != null ? src.put_wall     + basis : null);
+            _append(_callWallTrail[symbol], 'callWallSeries', src?.call_wall    != null ? src.call_wall    + basis : null);
+            _append(_pinTrail[symbol],      'pinSeries',      src?.pin          != null ? src.pin          + basis : null);
+            _append(_truePinTrail[symbol],  'truePinSeries',  src?.pin_enhanced != null ? src.pin_enhanced + basis : null);
         }
 
         // ── Trail history from the server ─────────────────────────────────────
@@ -967,13 +1006,10 @@
                 const t = Math.floor(row.time / bucket) * bucket;
                 for (const [k] of keys) if (row[k] != null) built[k].set(t, row[k] + basis);   // last row in a bucket wins
             }
-            const tc = trailCharts[symbol];
-            const seriesFor = { flip_level: 'flipSeries', put_wall: 'putWallSeries', call_wall: 'callWallSeries',
-                                pin: 'pinSeries', pin_enhanced: 'truePinSeries' };
             for (const [k, store] of keys) {
                 store[symbol] = [...built[k]].map(([time, value]) => ({ time, value })).sort((a, b) => a.time - b.time);
-                if (tc) tc[seriesFor[k]].setData(store[symbol]);
             }
+            trailTargets(symbol).forEach(t => setTrailData(t, symbol));
         }
 
         async function fetchLevelHistory() {
@@ -982,9 +1018,90 @@
                 if (!res.ok) return;
                 _levelHistory = await res.json();
                 rebuildTrails('SPX');
-                rebuildTrails('ES');
             } catch (e) { console.warn('[trail history]', e); }
         }
+
+        // ── Gamma zones: net GEX by strike over time, drawn behind the candles ──
+        // Green = positive gamma (dealer hedging dampens moves: price slows / sticks),
+        // red = negative gamma (hedging amplifies: price speeds up). Columns are the
+        // 5-min snapshots in data/gex_grid_*.jsonl; the last one runs to the right edge.
+        class GammaZones {
+            constructor(bucketSec) {
+                this._bucketSec = bucketSec;
+                this._data = null; this._mode = 'all';
+                this._view = { zOrder: () => 'bottom', renderer: () => ({ draw: t => this._draw(t) }) };
+            }
+            attached({ chart, series, requestUpdate }) { this._chart = chart; this._series = series; this._req = requestUpdate; }
+            detached() { this._chart = this._series = null; }
+            updateAllViews() {}
+            paneViews() { return [this._view]; }
+            setData(data, mode) {
+                this._data = data; this._mode = mode;
+                const cols = (data && data[mode]) || [];
+                // one scale for the day; sqrt so weaker zones stay visible next to big ones
+                this._max = Math.max(1, ...cols.flat().map(Math.abs));
+                this._req && this._req();
+            }
+            _draw(target) {
+                const d = this._data, cols = d && d[this._mode];
+                if (!cols || !cols.length || !this._chart) return;
+                const ts = this._chart.timeScale(), series = this._series;
+                const bucket = this._bucketSec();
+                const xs = d.times.map(t => ts.timeToCoordinate(Math.floor(t / bucket) * bucket));
+                const ks = d.strikes;
+                target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr }) => {
+                    for (let c = 0; c < cols.length; c++) {
+                        if (xs[c] == null) continue;
+                        let xEnd = null;
+                        for (let n = c + 1; n < xs.length && xEnd == null; n++) xEnd = xs[n];
+                        const x0 = Math.round(xs[c] * hr);
+                        const x1 = xEnd == null ? bitmapSize.width : Math.round(xEnd * hr);
+                        for (let i = 0; i < ks.length; i++) {
+                            const g = cols[c][i];
+                            if (!g) continue;
+                            const a = 0.05 + 0.5 * Math.sqrt(Math.abs(g) / this._max);
+                            if (a < 0.08) continue;
+                            const top = series.priceToCoordinate(i + 1 < ks.length ? (ks[i] + ks[i + 1]) / 2 : ks[i] + 2.5);
+                            const bot = series.priceToCoordinate(i > 0 ? (ks[i - 1] + ks[i]) / 2 : ks[i] - 2.5);
+                            if (top == null || bot == null) continue;
+                            ctx.fillStyle = g > 0 ? `rgba(0,200,120,${a.toFixed(3)})` : `rgba(255,60,80,${a.toFixed(3)})`;
+                            ctx.fillRect(x0, Math.round(top * vr), Math.max(1, x1 - x0), Math.max(1, Math.round((bot - top) * vr)));
+                        }
+                    }
+                });
+            }
+        }
+
+        let _heatmap  = null;
+        let _zoneMode = 'all';
+        try { _zoneMode = localStorage.getItem('zoneMode') || 'all'; } catch (_) {}
+
+        async function fetchHeatmap() {
+            try {
+                const res = await fetch('/api/gex_heatmap/SPX');
+                if (!res.ok) return;
+                _heatmap = await res.json();
+                priceCharts.SPX?.zones?.setData(_zoneMode === 'off' ? null : _heatmap, _zoneMode);
+            } catch (e) { console.warn('[gamma zones]', e); }
+        }
+
+        function setZoneMode(mode) {
+            _zoneMode = mode;
+            try { localStorage.setItem('zoneMode', mode); } catch (_) {}
+            document.querySelectorAll('[data-zone]').forEach(b => b.classList.toggle('active', b.dataset.zone === mode));
+            priceCharts.SPX?.zones?.setData(mode === 'off' ? null : _heatmap, mode);
+        }
+
+        function togglePriceFullscreen(div, force) {
+            const on = force ?? !div.classList.contains('fullscreen');
+            div.classList.toggle('fullscreen', on);
+            document.body.style.overflow = on ? 'hidden' : '';
+        }
+        document.addEventListener('keydown', e => {
+            if (e.key !== 'Escape') return;
+            const fs = document.querySelector('.price-panel.fullscreen');
+            if (fs) togglePriceFullscreen(fs, false);
+        });
 
         // ── GEX chart (Chart.js — horizontal bars, strikes on Y axis) ────────────
 
@@ -1373,7 +1490,7 @@
             // timeframe, so they keep moving even when price ticks are sparse.
             // Skipped after the close (the levels are then last session's).
             if (symbol === 'SPX' && !data.last_session) {
-                for (const s of ['SPX', 'ES']) {
+                for (const s of PRICE_SYMBOLS) {
                     const b = (selectedTF[s] || 1) * 60;
                     appendTrailPoint(s, gexLevels['SPX'], Math.floor(Date.now() / 1000 / b) * b);
                 }
@@ -1535,6 +1652,15 @@
                 const chart = makePriceChart(container);
                 const { candleSeries, volumeSeries, markersPrimitive } = buildCandleSeries(chart, display);
                 priceCharts[symbol] = { chart, candleSeries, volumeSeries, markersPrimitive };
+                if (TRAIL_ON_PRICE.has(symbol)) {
+                    priceCharts[symbol].trail = addTrailSeries(chart);
+                    setTrailData(priceCharts[symbol].trail, symbol);
+                }
+                if (symbol === 'SPX') {
+                    priceCharts.SPX.zones = new GammaZones(() => (selectedTF.SPX || 1) * 60);
+                    candleSeries.attachPrimitive(priceCharts.SPX.zones);
+                    if (_heatmap) priceCharts.SPX.zones.setData(_heatmap, _zoneMode);
+                }
             }
 
             const last = rawCandles[symbol][rawCandles[symbol].length - 1];
@@ -1597,7 +1723,14 @@
                 });
             }
 
-            _drawLines(priceCharts[symbol], _gexPriceLines);
+            if (TRAIL_ON_PRICE.has(symbol)) {
+                // trailing lines instead: just clear any flat lines drawn earlier
+                const e = priceCharts[symbol];
+                (_gexPriceLines[symbol] || []).forEach(l => { try { e?.candleSeries.removePriceLine(l); } catch (_) {} });
+                _gexPriceLines[symbol] = [];
+            } else {
+                _drawLines(priceCharts[symbol], _gexPriceLines);
+            }
             // Trail chart gets moving line series instead of static price lines
             // (_gexTrailLines kept as empty store; trail history comes from appendTrailPoint)
         }
@@ -1644,11 +1777,7 @@
             _setSeriesData(entry.candleSeries, entry.volumeSeries, display);
             entry.chart.timeScale().fitContent();
             applySessionMarkers(symbol);
-            if (symbol === 'SPX') {
-                _vixSeries = null;   // reset so applyVix re-attaches to this chart instance
-                fetchPrice('VIX');
-                applyGexLevels('SPX');
-            }
+            if (symbol === 'SPX') applyGexLevels('SPX');
 
             // Re-render trail chart at new TF
             renderTrailChart(symbol, raw);
@@ -2446,11 +2575,7 @@
         });
         PRICE_SYMBOLS.forEach(s => {
             selectedTF[s] = 1;   // default to 1m
-            // SPX and ES get trail+lines pair; VIX is single chart
-            const div = (s === 'SPX' || s === 'ES')
-                ? createPricePairDiv(s)
-                : createPriceDiv(s);
-            priceGrid.appendChild(div);
+            priceGrid.appendChild(createPriceDiv(s));
         });
 
         // Initial full load
@@ -2500,6 +2625,9 @@
         // Trail history: load now, then re-sync each minute (the server logs levels once per refresh)
         fetchLevelHistory();
         setInterval(fetchLevelHistory, 60000);
+        fetchHeatmap();
+        setInterval(fetchHeatmap, 60000);
+        setZoneMode(_zoneMode);
 
         // Expected move to the close for the current regime (server table rebuilt hourly)
         async function fetchExpectedMove() {

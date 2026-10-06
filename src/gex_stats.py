@@ -118,3 +118,47 @@ def expected_move_now(total_gex: float, now: datetime | None = None,
     r = table.loc[key]
     return {'regime': regime, 'from': key[1], 'median': round(float(r['median']), 1),
             'p80': round(float(r['p80']), 1), 'n': int(r['n']), 'days': days}
+
+
+def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
+                 data_dir: str = _DATA_DIR) -> dict:
+    """Net GEX per strike over time, from gex_grid_<sym>_<date>.jsonl (5-min snapshots).
+
+    Returns {'times': [epoch s], 'strikes': [...], 'all': [[gex per strike] per time],
+             'odte': [...]} for strikes within `band` pts of the day's spot range.
+    Positive = dealers long gamma (hedging dampens moves); negative = amplifies.
+    """
+    import json
+    day = day or datetime.now(ET).date()
+    path = os.path.join(data_dir, f'gex_grid_{sym}_{day.isoformat()}.jsonl')
+    empty = {'times': [], 'strikes': [], 'all': [], 'odte': []}
+    if not os.path.exists(path):
+        return empty
+    snaps = []
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            try:
+                snaps.append(json.loads(line))
+            except ValueError:
+                continue
+    if not snaps:
+        return empty
+    spots = [s['spot'] for s in snaps if s.get('spot')]
+    lo, hi = min(spots) - band, max(spots) + band
+    strikes = sorted({r[0] for s in snaps for r in s['rows'] if lo <= r[0] <= hi})
+    idx = {k: i for i, k in enumerate(strikes)}
+    out = {'times': [], 'strikes': strikes, 'all': [], 'odte': []}
+    for s in snaps:
+        today_i = s['exp'].index(day.isoformat()) if day.isoformat() in s['exp'] else -1
+        all_col, odte_col = [0.0] * len(strikes), [0.0] * len(strikes)
+        for k, exp_i, _c, _p, gex in s['rows']:
+            i = idx.get(k)
+            if i is None:
+                continue
+            all_col[i] += gex
+            if exp_i == today_i:
+                odte_col[i] += gex
+        out['times'].append(int(datetime.fromisoformat(s['ts']).timestamp()))
+        out['all'].append([round(v) for v in all_col])
+        out['odte'].append([round(v) for v in odte_col])
+    return out

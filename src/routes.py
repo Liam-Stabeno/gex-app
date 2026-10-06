@@ -51,6 +51,12 @@ def register(app):
             return jsonify({'error': 'No data yet'}), 202
         return jsonify(data)
 
+    @app.route('/api/gex_heatmap/<symbol>')
+    def api_gex_heatmap(symbol):
+        """Today's net GEX by strike over time (5-min snapshots) for the gamma-zone heatmap."""
+        import gex_stats
+        return jsonify(gex_stats.load_heatmap(symbol.upper().replace('$', '')))
+
     @app.route('/api/expected_move/<symbol>')
     def api_expected_move(symbol):
         """Typical distance to the close for the current GEX regime, from saved history."""

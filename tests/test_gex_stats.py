@@ -56,3 +56,22 @@ def test_now_lookup(history):
     assert gs.expected_move_now(-5e8, at(15, 10), history)["median"] == 30
     assert gs.expected_move_now(5e8, at(17, 0), history) is None     # after the close
     assert gs.expected_move_now(5e8, at(12, 30), history) is None    # no 12:00 history
+
+
+def test_heatmap_sums_expiries_and_splits_0dte(tmp_path):
+    import json
+    from datetime import date
+    day = date(2026, 10, 6)
+    snaps = [{"ts": "2026-10-06T10:00:00-04:00", "spot": 7800.0,
+              "exp": ["2026-10-06", "2026-10-07"],
+              "rows": [[7800.0, 0, 10, 5, 100.0], [7800.0, 1, 3, 1, 50.0],
+                       [7750.0, 0, 0, 9, -40.0], [9000.0, 1, 1, 0, 7.0]]},   # 9000: outside band
+             {"ts": "2026-10-06T10:05:00-04:00", "spot": 7805.0,
+              "exp": ["2026-10-06", "2026-10-07"], "rows": [[7800.0, 1, 3, 1, 60.0]]}]
+    (tmp_path / "gex_grid_SPX_2026-10-06.jsonl").write_text("\n".join(json.dumps(s) for s in snaps))
+    h = gs.load_heatmap("SPX", day=day, data_dir=tmp_path)
+    assert h["strikes"] == [7750.0, 7800.0]
+    assert h["all"] == [[-40, 150], [0, 60]]
+    assert h["odte"] == [[-40, 100], [0, 0]]
+    assert h["times"][1] - h["times"][0] == 300
+    assert gs.load_heatmap("SPX", day=date(2026, 1, 2), data_dir=tmp_path)["times"] == []
