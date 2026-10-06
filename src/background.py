@@ -24,7 +24,7 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 from gex import (get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts,
-                 TRUE_PIN_WEIGHTS, pick_with_hysteresis)
+                 TRUE_PIN_WEIGHTS, pick_with_hysteresis, sticky_levels)
 from price_history import fetch_candles, append_candles, load_candles
 import bs
 import delta_flow
@@ -42,6 +42,33 @@ _GEX_SNAPSHOT_FIELDS  = ['timestamp', 'spot', 'total_gex', 'regime',
                           'strike_min', 'strike_max', 'true_pin', 'charm_flow']
 _last_true_pin: dict = {}   # display symbol -> latest TRUE PIN from the live loop
 _last_charm_flow: dict = {} # display symbol -> latest charm hedge flow, $/hr
+_level_state: dict = {}     # (display symbol, 'multi'|'0dte') -> last published levels (sticky)
+_level_seeded: set = set()
+
+
+def _seed_level_state(sym: str):
+    """After a restart, continue from the last saved levels instead of starting
+    fresh (a fresh start re-picks between near-equal strikes and the trail jumps)."""
+    if sym in _level_seeded:
+        return
+    _level_seeded.add(sym)
+    day = datetime.now().strftime('%Y-%m-%d')
+    for tag, kind in (('snapshots', 'multi'), ('0dte_snapshots', '0dte')):
+        path = os.path.join(_DATA_DIR, f'gex_{tag}_{sym}_{day}.csv')
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, newline='') as f:
+                rows = list(csv.DictReader(f))
+        except OSError:
+            continue
+        if not rows:
+            continue
+        last = rows[-1]
+        num = lambda v: float(v) if v not in (None, '') else None
+        _level_state[(sym, kind)] = {k: num(last.get(k)) for k in ('put_wall', 'call_wall', 'pin')}
+        if kind == 'multi' and num(last.get('true_pin')) is not None:
+            _last_true_pin.setdefault(sym, num(last.get('true_pin')))
 _WATCHLIST_FIELDS     = ['timestamp', 'symbol', 'strike', 'side',
                           'expiry_label', 'delta', 'oi']
 
@@ -175,8 +202,11 @@ def daily_jobs_loop():
         try:
             for d in gex_stats.summary_days_missing('SPX'):
                 gex_stats.write_daily_summary(d, 'SPX')
+            for d in gex_stats.scorecard_days_missing('SPX'):
+                gex_stats.write_scorecard(d, 'SPX')
             if write_today:
                 gex_stats.write_daily_summary(datetime.now(_ET).date(), 'SPX')
+                gex_stats.write_scorecard(datetime.now(_ET).date(), 'SPX')
             done = gex_stats.archive_old_files('SPX')
             if done:
                 print(f'[daily] archived {len(done)} file(s)')
@@ -375,11 +405,19 @@ def refresh_gex(symbol: str):
         strike_count = 150 if symbol in ('$SPX', 'SPX') else 200
         chain        = fetch_option_chain(symbol, token, strike_count=strike_count)
         gex_all, gex_0dte, gex_multi, spot, raw_df = parse_gex(chain)
+        display_sym  = symbol.replace('$', '').replace('/', '')
+        _seed_level_state(display_sym)
         levels       = find_key_levels(gex_all, spot)
         total_gex    = float(gex_all['net_gex'].sum())
 
         levels_multi = find_key_levels(gex_multi, spot) if not gex_multi.empty else levels
         levels_0dte  = find_key_levels(gex_0dte,  spot) if not gex_0dte.empty  else {}
+        # sticky: near-equal strikes don't swap every refresh
+        levels_multi = sticky_levels(levels_multi, _level_state.get((display_sym, 'multi')), gex_multi, spot)
+        _level_state[(display_sym, 'multi')] = dict(levels_multi)
+        if levels_0dte:
+            levels_0dte = sticky_levels(levels_0dte, _level_state.get((display_sym, '0dte')), gex_0dte, spot)
+            _level_state[(display_sym, '0dte')] = dict(levels_0dte)
 
         def serialize_levels(lvl):
             return {k: (float(v) if v is not None else None) for k, v in lvl.items()}
@@ -692,6 +730,13 @@ def on_options_quote(quote: dict):
                                              meta['strike'], meta['side'], quote['volume'])
 
 
+def _sticky_0dte(levels: dict, df, spot: float) -> dict:
+    """Live 0DTE levels share stickiness with the chain refresh's 0DTE levels."""
+    out = sticky_levels(levels, _level_state.get(('SPX', '0dte')), df, spot)
+    _level_state[('SPX', '0dte')] = dict(out)
+    return out
+
+
 def live_gex_loop():
     """
     Recomputes GEX from live streamer bid/ask every ~2 s when quotes change.
@@ -865,7 +910,7 @@ def live_gex_loop():
             'total_gex':    total_gex,
             'regime':       'POSITIVE' if total_gex > 0 else 'NEGATIVE',
             'levels_multi': levels_multi_ser,
-            'levels_0dte':  _ser(find_key_levels(df_0dte, spot)),
+            'levels_0dte':  _ser(_sticky_0dte(find_key_levels(df_0dte, spot), df_0dte, spot)),
             'multi':        multi_dict,
             'zero':         zero_dict,
             'has_0dte':     True,

@@ -31,3 +31,4 @@ Thumbs.db
 *.xls
 ~$*
 .rp_backups/
+.venv_old/

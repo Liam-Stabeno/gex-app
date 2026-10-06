@@ -167,7 +167,9 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
 
 # ── Trading levels from one GEX-by-strike profile ──────────────────────────────
 # Thresholds are fractions of the profile's largest |GEX| (or largest positive).
-NEG_MIN        = 0.03   # a strike counts as negative gamma below -3% of max |GEX|
+NEG_MIN        = 0.10   # trapdoor / squeeze: net GEX <= -10% of max |GEX| (was 3%: small
+                        # negatives kept swapping places, 7745/7700/7720 on 2026-10-06)
+SWITCH_MARGIN  = 0.15   # a level only moves when the new strike beats the current one by 15%
 SUPPORT_MIN    = 0.25   # support / resistance must be >= 25% of the largest positive strike
 SR_MIN_PTS     = 7.5    # ...and at least this far from spot (skip the strikes price sits on)
 AIR_MAX        = 0.05   # air pocket: |GEX| under 5% of max for at least AIR_MIN_PTS
@@ -176,7 +178,7 @@ LEVEL_BAND_PTS = 150    # only look this far from spot
 BRAKES_STRONG, BRAKES_WEAK = 0.50, 0.20
 
 
-def gamma_levels(strikes: list, gex: list, spot: float, n_walls: int = 3) -> dict:
+def gamma_levels(strikes: list, gex: list, spot: float, n_walls: int = 3, prev: dict | None = None) -> dict:
     """Walls, trapdoor / squeeze, support / resistance, air pockets and the brakes
     reading at spot, from net GEX per strike (positive = dealers long gamma).
 
@@ -188,6 +190,11 @@ def gamma_levels(strikes: list, gex: list, spot: float, n_walls: int = 3) -> dic
     air_pockets : runs of near-zero GEX near spot, where price travels easily
     brakes   : GEX at spot vs the largest positive strike (strong / moderate / weak,
                or 'accelerator' when negative)
+
+    prev: the previous snapshot's {support, resistance, trapdoor, squeeze} strikes.
+    A previous level is kept while it still qualifies, unless (support / resist) a
+    new strike is more than SWITCH_MARGIN bigger — near-equal strikes otherwise
+    swap every snapshot.
     """
     pts = sorted((float(k), float(g)) for k, g in zip(strikes, gex) if abs(float(k) - spot) <= LEVEL_BAND_PTS)
     if not pts:
@@ -223,13 +230,41 @@ def gamma_levels(strikes: list, gex: list, spot: float, n_walls: int = 3) -> dic
     label = ('accelerator' if g_spot < 0 else 'strong' if ratio >= BRAKES_STRONG
              else 'moderate' if ratio >= BRAKES_WEAK else 'weak')
 
+    by_k = dict(pts)
+    sup_c = [p for p in below if spot - p[0] >= SR_MIN_PTS]
+    res_c = [p for p in above if p[0] - spot >= SR_MIN_PTS]
+    picks = {
+        'trapdoor': first(below, lambda g: g <= -NEG_MIN * max_abs),
+        'squeeze': first(above, lambda g: g <= -NEG_MIN * max_abs),
+        'support': biggest(sup_c),
+        'resistance': biggest(res_c),
+    }
+    if prev:
+        def still(key, k):
+            g = by_k.get(k)
+            if g is None:
+                return False
+            if key == 'trapdoor':
+                return k < spot and g <= -NEG_MIN * max_abs
+            if key == 'squeeze':
+                return k > spot and g <= -NEG_MIN * max_abs
+            side_ok = (spot - k >= SR_MIN_PTS) if key == 'support' else (k - spot >= SR_MIN_PTS)
+            return side_ok and g >= SUPPORT_MIN * max_pos
+        for key, new in picks.items():
+            k = prev.get(key)
+            if k is None or not still(key, k) or (new and new[0] == k):
+                continue
+            if key in ('support', 'resistance') and new and new[1] > by_k[k] * (1 + SWITCH_MARGIN):
+                continue                      # clearly bigger wall: move
+            picks[key] = (k, by_k[k])
+
     return {
         'spot': spot,
         'walls': [lvl(p) for p in walls],
-        'trapdoor': lvl(first(below, lambda g: g <= -NEG_MIN * max_abs)),
-        'squeeze': lvl(first(above, lambda g: g <= -NEG_MIN * max_abs)),
-        'support': lvl(biggest([p for p in below if spot - p[0] >= SR_MIN_PTS])),
-        'resistance': lvl(biggest([p for p in above if p[0] - spot >= SR_MIN_PTS])),
+        'trapdoor': lvl(picks['trapdoor']),
+        'squeeze': lvl(picks['squeeze']),
+        'support': lvl(picks['support']),
+        'resistance': lvl(picks['resistance']),
         'air_pockets': air,
         'brakes': {'label': label, 'pct': round(100 * ratio), 'gex': g_spot},
     }
@@ -246,16 +281,18 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
         spot = next((s for s in reversed(h['spots']) if s), None)
         if spot is None:
             return None
-    out = gamma_levels(h['strikes'], h[mode][-1], spot)
+    # the same levels for every 5-min snapshot of the day, in order, each one sticky
+    # to the one before — so the chart can trail them
+    history, prev = [], None
+    for t, col, sp in zip(h['times'], h[mode], h['spots']):
+        if not sp:
+            continue
+        L = gamma_levels(h['strikes'], col, float(sp), prev=prev)
+        prev = {k: (L[k]['strike'] if L.get(k) else None) for k in ('support', 'resistance', 'trapdoor', 'squeeze')}
+        history.append({'time': t, **prev})
+    out = gamma_levels(h['strikes'], h[mode][-1], spot, prev=prev)
     if out:
-        # the same levels for every 5-min snapshot today, so the chart can trail them
-        out['history'] = []
-        for t, col, sp in zip(h['times'], h[mode], h['spots']):
-            if not sp:
-                continue
-            L = gamma_levels(h['strikes'], col, float(sp))
-            out['history'].append({'time': t, **{k: (L[k]['strike'] if L.get(k) else None)
-                                                  for k in ('support', 'resistance', 'trapdoor', 'squeeze')}})
+        out['history'] = history
         # air pockets are about total gamma: 0DTE alone looks empty away from spot
         # even where other expiries hold plenty
         if mode != 'all':
@@ -418,3 +455,181 @@ def history_days(sym: str = 'SPX', data_dir: str = _DATA_DIR) -> list:
         days.setdefault(f[-15:-5], {})['flow'] = True
     return [{'date': d, **{k: v.get(k, False) for k in ('levels', 'heatmap', 'es_split', 'flow')}}
             for d, v in sorted(days.items(), reverse=True)]
+
+
+# ── Daily scorecard: did the levels work? ──────────────────────────────────────
+# One row per day in data/scorecard_<sym>.csv, written after the close. Over weeks
+# it shows which levels hold, which pins land near the close, whether bright heatmap
+# bands really slow price, and whether charm flow called the move into the close.
+TOUCH_PTS = 3.0     # a wall is "touched" when price comes within this many points
+BREAK_PTS = 2.0     # ...and "broken" when a 1-min close goes this far through it
+
+SCORECARD_FIELDS = [
+    'date', 'close', 'high', 'low', 'regime_close',
+    'resist', 'resist_touch', 'resist_break', 'resist_gap_at_high',
+    'support', 'support_touch', 'support_break', 'support_gap_at_low',
+    'call_wall', 'call_wall_touch', 'call_wall_break',
+    'put_wall', 'put_wall_touch', 'put_wall_break',
+    'trapdoor', 'trapdoor_break',
+    'pin_lt_dist', 'true_pin_dist', 'pin_0dte_dist', 'true_pin_dist_1400', 'pin_0dte_dist_1400',
+    'em_1400_move', 'em_1400_median', 'em_1400_p80', 'em_1400_in_median', 'em_1400_in_p80',
+    'speed_dim', 'speed_bright', 'speed_ratio', 'speed_hours_slower', 'speed_hours',
+    'charm_hits', 'charm_calls',
+]
+
+
+def wall_reaction(px: pd.DataFrame, level: float, side: str) -> dict:
+    """Touch / break / closest gap for a wall above ('up') or below ('down') price."""
+    if level is None or px.empty:
+        return {'touch': '', 'break': '', 'gap': ''}
+    if side == 'up':
+        gap = level - float(px['high'].max())
+        broke = bool((px['close'] > level + BREAK_PTS).any())
+    else:
+        gap = float(px['low'].min()) - level
+        broke = bool((px['close'] < level - BREAK_PTS).any())
+    return {'touch': int(gap <= TOUCH_PTS), 'break': int(broke), 'gap': round(gap, 2)}
+
+
+def _level_at(df: pd.DataFrame, col: str, when) -> float | None:
+    """Value of a level column in force at time `when` (last row at or before it)."""
+    if df is None or df.empty or col not in df:
+        return None
+    prior = df[df['et'] <= when][col].dropna()
+    if prior.empty:
+        prior = df[col].dropna()
+    return float(prior.iloc[-1]) if not prior.empty else None
+
+
+def build_scorecard(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | None:
+    import numpy as np
+    ph_path = os.path.join(data_dir, f'price_history_{sym}.csv')
+    snap_path = os.path.join(data_dir, f'gex_snapshots_{sym}_{day.isoformat()}.csv')
+    if not (os.path.exists(ph_path) and os.path.exists(snap_path)):
+        return None
+    ph = pd.read_csv(ph_path)
+    ph['dt'] = pd.to_datetime(ph['datetime'], unit='ms', utc=True).dt.tz_convert(ET)
+    t = ph['dt'].dt.time
+    px = ph[(ph['dt'].dt.date == day) & (t >= dtime(9, 30)) & (t <= dtime(15, 59))].reset_index(drop=True)
+    if len(px) < 30:
+        return None
+    s = pd.read_csv(snap_path)
+    s['et'] = s['timestamp'].map(_to_et)
+    s = s[s['et'].map(lambda x: dtime(9, 30) <= x.time() <= dtime(16, 0))]
+    if s.empty:
+        return None
+    p0 = os.path.join(data_dir, f'gex_0dte_snapshots_{sym}_{day.isoformat()}.csv')
+    s0 = pd.read_csv(p0) if os.path.exists(p0) else None
+    if s0 is not None and not s0.empty:
+        s0['et'] = s0['timestamp'].map(_to_et)
+
+    close, hi, lo = float(px['close'].iloc[-1]), float(px['high'].max()), float(px['low'].min())
+    t_hi = px['dt'][px['high'].idxmax()]
+    t_lo = px['dt'][px['low'].idxmin()]
+    at = lambda h, m: datetime.combine(day, dtime(h, m), ET)
+    row = {k: '' for k in SCORECARD_FIELDS}
+    row.update(date=day.isoformat(), close=close, high=hi, low=lo,
+               regime_close='POSITIVE' if s['total_gex'].iloc[-1] > 0 else 'NEGATIVE')
+
+    # chain walls (ex-0DTE): the level in force when price got closest to it
+    cw, pw = _level_at(s, 'call_wall', t_hi), _level_at(s, 'put_wall', t_lo)
+    r = wall_reaction(px, cw, 'up')
+    row.update(call_wall=cw, call_wall_touch=r['touch'], call_wall_break=r['break'])
+    r = wall_reaction(px, pw, 'down')
+    row.update(put_wall=pw, put_wall_touch=r['touch'], put_wall_break=r['break'])
+
+    # gamma levels from the heatmap history (support / resist / trapdoor)
+    L = current_gamma_levels(None, 'all', sym, data_dir, day=day)
+    if L and L.get('history'):
+        H = pd.DataFrame(L['history'])
+        H['et'] = pd.to_datetime(H['time'], unit='s', utc=True).dt.tz_convert(ET)
+        res, sup, trap = _level_at(H, 'resistance', t_hi), _level_at(H, 'support', t_lo), _level_at(H, 'trapdoor', t_lo)
+        r = wall_reaction(px, res, 'up')
+        row.update(resist=res, resist_touch=r['touch'], resist_break=r['break'], resist_gap_at_high=r['gap'])
+        r = wall_reaction(px, sup, 'down')
+        row.update(support=sup, support_touch=r['touch'], support_break=r['break'], support_gap_at_low=r['gap'])
+        if trap is not None:
+            row.update(trapdoor=trap, trapdoor_break=int(bool((px['close'] < trap).any())))
+
+    # pins: distance from the close (final value, and the value in force at 14:00)
+    d = lambda v: round(abs(v - close), 2) if v is not None else ''
+    row.update(pin_lt_dist=d(_level_at(s, 'pin', at(15, 59))),
+               true_pin_dist=d(_level_at(s, 'true_pin', at(15, 59))) if 'true_pin' in s else '',
+               true_pin_dist_1400=d(_level_at(s, 'true_pin', at(14, 0))) if 'true_pin' in s else '')
+    if s0 is not None and not s0.empty:
+        row.update(pin_0dte_dist=d(_level_at(s0, 'pin', at(15, 59))),
+                   pin_0dte_dist_1400=d(_level_at(s0, 'pin', at(14, 0))))
+
+    # expected move from 14:00
+    spot14 = _level_at(s, 'spot', at(14, 0))
+    g14 = _level_at(s, 'total_gex', at(14, 0))
+    if spot14 is not None and g14 is not None:
+        table, _ = expected_move_table(data_dir)
+        key = ('POSITIVE' if g14 > 0 else 'NEGATIVE', '14:00')
+        mv = abs(close - spot14)
+        row['em_1400_move'] = round(mv, 2)
+        if key in table.index:
+            med, p80 = float(table.loc[key, 'median']), float(table.loc[key, 'p80'])
+            row.update(em_1400_median=round(med, 1), em_1400_p80=round(p80, 1),
+                       em_1400_in_median=int(mv <= med), em_1400_in_p80=int(mv <= p80))
+
+    # heatmap: is price slower where GEX at the price is higher?
+    h = load_heatmap(sym, day=day, data_dir=data_dir)
+    if h['times']:
+        times, ks, cols = np.array(h['times']), np.array(h['strikes']), np.array(h['all'], float)
+        tt = (px['datetime'] // 1000).to_numpy()
+        idx = np.searchsorted(times, tt, side='right') - 1
+        ok = idx >= 0
+        g = np.full(len(px), np.nan)
+        g[ok] = [np.interp(p, ks, cols[i]) for p, i in zip(px['close'].to_numpy()[ok], idx[ok])]
+        q = pd.DataFrame({'g': g, 'move': px['close'].diff().abs(), 'hour': px['dt'].dt.hour}).dropna()
+        if len(q) >= 60:
+            q['band'] = pd.qcut(q['g'], 3, labels=False, duplicates='drop')
+            dim, bright = q[q['band'] == q['band'].min()]['move'].mean(), q[q['band'] == q['band'].max()]['move'].mean()
+            slower = hours = 0
+            for _, hq in q.groupby('hour'):          # within each hour, so time of day doesn't drive it
+                if len(hq) < 20:
+                    continue
+                med = hq['g'].median()
+                hours += 1
+                slower += int(hq[hq['g'] > med]['move'].mean() < hq[hq['g'] <= med]['move'].mean())
+            row.update(speed_dim=round(dim, 3), speed_bright=round(bright, 3),
+                       speed_ratio=round(dim / bright, 2) if bright else '',
+                       speed_hours_slower=slower, speed_hours=hours)
+
+    # charm flow: did its sign at 13:00 / 14:00 / 15:00 match the move into the close?
+    if 'charm_flow' in s:
+        hits = calls = 0
+        for hh in (13, 14, 15):
+            cf, sp = _level_at(s, 'charm_flow', at(hh, 0)), _level_at(s, 'spot', at(hh, 0))
+            if cf is None or sp is None or cf == 0 or abs(close - sp) < 2:
+                continue
+            calls += 1
+            hits += int((cf > 0) == (close > sp))
+        if calls:
+            row.update(charm_hits=hits, charm_calls=calls)
+    return row
+
+
+def write_scorecard(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | None:
+    """Insert or replace the day's row in scorecard_<sym>.csv (sorted by date)."""
+    row = build_scorecard(day, sym, data_dir)
+    if not row:
+        return None
+    path = os.path.join(data_dir, f'scorecard_{sym}.csv')
+    df = pd.read_csv(path, dtype=str) if os.path.exists(path) else pd.DataFrame(columns=SCORECARD_FIELDS)
+    df = df[df['date'] != row['date']]
+    df = pd.concat([df, pd.DataFrame([row]).astype(str)], ignore_index=True).sort_values('date')
+    tmp = path + '.tmp'
+    df.reindex(columns=SCORECARD_FIELDS).replace('None', '').to_csv(tmp, index=False)
+    os.replace(tmp, path)
+    return row
+
+
+def scorecard_days_missing(sym: str = 'SPX', data_dir: str = _DATA_DIR) -> list:
+    path = os.path.join(data_dir, f'scorecard_{sym}.csv')
+    have = set(pd.read_csv(path, dtype=str)['date']) if os.path.exists(path) else set()
+    today = datetime.now(ET).date()
+    days = sorted({datetime.strptime(f[-14:-4], '%Y-%m-%d').date()
+                   for f in glob.glob(os.path.join(data_dir, f'gex_snapshots_{sym}_2*.csv'))})
+    return [d for d in days if d < today and d.isoformat() not in have]

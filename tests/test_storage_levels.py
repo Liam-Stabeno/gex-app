@@ -22,7 +22,7 @@ def test_gamma_levels_finds_each_level():
     gex = [-30, -5, 0.5, 0.5, 40, 100, 20, 60, 90, 10, 0.2, 0.3, -12]
     L = gs.gamma_levels(strikes, gex, spot=7825)
     assert [w["strike"] for w in L["walls"]] == [7800, 7830, 7820]
-    assert L["trapdoor"]["strike"] == 7720          # first below spot at or past -3% of max |GEX|
+    assert L["trapdoor"]["strike"] == 7700          # 7720 (-5) is under the 10% bar; 7700 (-30) counts
     assert L["squeeze"]["strike"] == 7900           # first clearly negative above spot
     assert L["support"]["strike"] == 7800           # 7820 is within 7.5 pts of spot
     assert L["resistance"] is None                  # 7830 too close; 7840 (10) < 25% of max
@@ -91,3 +91,37 @@ def test_daily_summary_row_is_replaced_not_duplicated(tmp_path):
     assert (r["regime_open"], r["regime_close"]) == ("NEGATIVE", "POSITIVE")
     assert r["call_wall"] == 7850 and r["true_pin"] == 7820 and r["wall1"] == 7800.0
     assert gs.summary_days_missing("SPX", tmp_path) == []
+
+
+# ── stickiness and scorecard helpers ─────────────────────────────────
+
+def test_sticky_chain_levels_hold_near_equal_strikes():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from gex import sticky_levels
+    df = pd.DataFrame({"strike": [7500.0, 7700.0, 7850.0, 7860.0], "net_gex": [-25.0, -24.0, 100.0, 108.0]})
+    prev = {"put_wall": 7700.0, "call_wall": 7850.0, "pin": 7850.0}
+    new = {"put_wall": 7500.0, "call_wall": 7860.0, "pin": 7860.0, "flip_level": 7800.0}
+    out = sticky_levels(new, prev, df, spot=7820)
+    assert (out["put_wall"], out["call_wall"], out["pin"]) == (7700.0, 7850.0, 7850.0)   # within 15%: keep
+    df.loc[df.strike == 7860.0, "net_gex"] = 130.0
+    assert sticky_levels(new, prev, df, spot=7820)["call_wall"] == 7860.0              # 30% bigger: move
+    assert sticky_levels(new, None, df, spot=7820) == new
+
+
+def test_gamma_levels_prev_keeps_support_and_trapdoor():
+    strikes = [7680, 7700, 7720, 7790, 7800, 7810, 7830, 7850]
+    gex     = [-30,  -28,  -2,   90,   100,  20,   60,   95]
+    first = gs.gamma_levels(strikes, gex, spot=7825)
+    assert first["support"]["strike"] == 7800 and first["trapdoor"]["strike"] == 7700
+    gex2 = [-30, -27, -2, 104, 100, 20, 60, 95]                      # 7790 now slightly bigger than 7800
+    assert gs.gamma_levels(strikes, gex2, 7825)["support"]["strike"] == 7790
+    kept = gs.gamma_levels(strikes, gex2, 7825, prev={"support": 7800, "trapdoor": 7700})
+    assert kept["support"]["strike"] == 7800 and kept["trapdoor"]["strike"] == 7700
+
+
+def test_wall_reaction_touch_and_break():
+    px = pd.DataFrame({"high": [7840, 7848.5, 7845], "low": [7830, 7838, 7832], "close": [7838, 7846, 7840]})
+    assert gs.wall_reaction(px, 7850, "up") == {"touch": 1, "break": 0, "gap": 1.5}
+    assert gs.wall_reaction(px, 7845, "up")["break"] == 0      # closes 7846: only 1 pt through
+    assert gs.wall_reaction(px, 7843, "up")["break"] == 1
+    assert gs.wall_reaction(px, 7800, "down")["touch"] == 0

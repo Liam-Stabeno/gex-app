@@ -22,6 +22,29 @@ TRUE_PIN_WEIGHTS = {'gamma': 0.90, 'charm': 0.10, 'vanna': 0.00}
 TRUE_PIN_SWITCH_MARGIN = 0.10
 
 
+LEVEL_SWITCH_MARGIN = 0.15   # put / call wall and pin move only for a strike 15% bigger
+
+
+def sticky_levels(new: dict, prev: dict | None, gex_by_strike, spot: float,
+                  margin: float = LEVEL_SWITCH_MARGIN) -> dict:
+    """Keep the previous put wall / call wall / pin unless the new strike is clearly
+    bigger. Two near-equal strikes otherwise swap every refresh (the put wall flipped
+    7500/7700 twelve times on 2026-10-06)."""
+    if not prev or gex_by_strike is None or gex_by_strike.empty:
+        return new
+    g = dict(zip(gex_by_strike['strike'].astype(float), gex_by_strike['net_gex'].astype(float)))
+    out = dict(new)
+    for key, side_ok in (('call_wall', lambda k: k > spot), ('put_wall', lambda k: k < spot),
+                         ('pin', lambda k: True)):
+        p, n = prev.get(key), new.get(key)
+        if p is None or n is None or float(p) == float(n):
+            continue
+        p = float(p)
+        if p in g and side_ok(p) and abs(g[p]) * (1 + margin) >= abs(g.get(float(n), 0.0)):
+            out[key] = p
+    return out
+
+
 def pick_with_hysteresis(scores: dict, current, margin: float = TRUE_PIN_SWITCH_MARGIN):
     """Highest-scoring key, unless the current key is still within `margin` of it."""
     if not scores:
