@@ -18,6 +18,7 @@ from flask import jsonify, render_template, Response, stream_with_context
 import delta_flow
 import flow_alerts
 import sse
+import tos_rtd
 
 ET = ZoneInfo('America/New_York')
 
@@ -89,6 +90,29 @@ def register(app):
     def api_all():
         with _cache_lock:
             return jsonify(list(_cache.values()))
+
+    @app.route('/api/rtd/status')
+    def api_rtd_status():
+        return jsonify(tos_rtd.get_status())
+
+    @app.route('/api/rtd/toggle', methods=['POST'])
+    def api_rtd_toggle():
+        return jsonify(tos_rtd.toggle())
+
+    @app.route('/api/rtd/quotes')
+    def api_rtd_quotes():
+        """Debug: show all live RTD quotes (bid/ask per TOS symbol)."""
+        with tos_rtd._quotes_lock:
+            snapshot = dict(tos_rtd._quotes)
+        rows = []
+        for sym in sorted(snapshot):
+            q = snapshot[sym]
+            bid = q.get('bid', 0.0)
+            ask = q.get('ask', 0.0)
+            rows.append({'symbol': sym, 'bid': bid, 'ask': ask,
+                         'mid': round((bid + ask) / 2, 4) if bid and ask else None})
+        return jsonify({'count': len(rows), 'quotes': rows,
+                        'status': tos_rtd.get_status()})
 
     @app.route('/api/debug/chain')
     def api_debug_chain():
