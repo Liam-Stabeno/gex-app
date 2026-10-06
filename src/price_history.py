@@ -6,6 +6,8 @@ from datetime import datetime, timezone, timedelta, time as dtime
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
+from gex import SCHWAB_TIMEOUT
+
 _SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(_SRC_DIR), 'data')
 ET = ZoneInfo('America/New_York')
@@ -123,6 +125,7 @@ def fetch_candles(symbol: str, token: str, days: int = 1, frequency: int = 1,
 
     response = requests.get(
         'https://api.schwabapi.com/marketdata/v1/pricehistory',
+        timeout=SCHWAB_TIMEOUT,
         headers={'Authorization': f'Bearer {token}'},
         params=params,
     )
@@ -235,6 +238,7 @@ def fetch_candles_range(symbol: str, token: str, start_ms: int, end_ms: int) -> 
     """Fetch 1-min candles for a specific date range using startDate/endDate epoch ms."""
     response = requests.get(
         'https://api.schwabapi.com/marketdata/v1/pricehistory',
+        timeout=SCHWAB_TIMEOUT,
         headers={'Authorization': f'Bearer {token}'},
         params={
             'symbol':               symbol,

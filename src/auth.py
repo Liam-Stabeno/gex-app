@@ -23,6 +23,7 @@ def exchange_code_for_token(auth_code: str) -> dict:
 
     response = requests.post(
         "https://api.schwabapi.com/v1/oauth/token",
+        timeout=(5, 20),
         headers={
             "Authorization": f"Basic {encoded}",
             "Content-Type": "application/x-www-form-urlencoded"

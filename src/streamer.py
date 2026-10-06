@@ -27,7 +27,7 @@ import websocket
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from gex import get_access_token
+from gex import get_access_token, SCHWAB_TIMEOUT
 
 _ET = ZoneInfo('America/New_York')
 
@@ -55,6 +55,7 @@ def get_streamer_info(access_token: str) -> dict:
     """Fetch WebSocket URL and session credentials from Schwab user preferences."""
     resp = requests.get(
         'https://api.schwabapi.com/trader/v1/userPreference',
+        timeout=SCHWAB_TIMEOUT,
         headers={'Authorization': f'Bearer {access_token}'}
     )
     if not resp.ok:

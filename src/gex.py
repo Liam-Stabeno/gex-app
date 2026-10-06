@@ -8,6 +8,10 @@ import numpy as np
 from datetime import datetime
 from dotenv import load_dotenv
 
+# (connect, read) seconds for every Schwab REST call. Without it a request that
+# never gets an answer blocks its loop forever (seen 2026-10-06: 37 min freeze).
+SCHWAB_TIMEOUT = (5, 20)
+
 load_dotenv()
 
 CLIENT_ID = os.environ['SCHWAB_CLIENT_ID']
@@ -57,6 +61,7 @@ def refresh_access_token(refresh_token: str) -> dict:
 
     response = requests.post(
         "https://api.schwabapi.com/v1/oauth/token",
+        timeout=SCHWAB_TIMEOUT,
         headers={
             "Authorization": f"Basic {encoded}",
             "Content-Type": "application/x-www-form-urlencoded"
@@ -128,6 +133,7 @@ def fetch_option_chain(symbol: str, access_token: str,
 
     response = requests.get(
         "https://api.schwabapi.com/marketdata/v1/chains",
+        timeout=SCHWAB_TIMEOUT,
         headers={"Authorization": f"Bearer {access_token}"},
         params=params
     )
@@ -137,6 +143,7 @@ def fetch_option_chain(symbol: str, access_token: str,
         params["fromDate"] = tomorrow
         response = requests.get(
             "https://api.schwabapi.com/marketdata/v1/chains",
+            timeout=SCHWAB_TIMEOUT,
             headers={"Authorization": f"Bearer {access_token}"},
             params=params
         )
