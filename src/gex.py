@@ -17,6 +17,19 @@ SCHWAB_TIMEOUT = (5, 20)
 # 35 days (tools/pin_backtest.py, 2026-10-06) found charm/vanna made it worse: median
 # distance to the close 25.6 pts vs 18.8 with mostly gamma. Re-run before changing.
 TRUE_PIN_WEIGHTS = {'gamma': 0.90, 'charm': 0.10, 'vanna': 0.00}
+# TRUE PIN only moves to a new strike when that strike's score beats the current
+# one by this margin; near-equal strikes otherwise flip it every update (noise).
+TRUE_PIN_SWITCH_MARGIN = 0.10
+
+
+def pick_with_hysteresis(scores: dict, current, margin: float = TRUE_PIN_SWITCH_MARGIN):
+    """Highest-scoring key, unless the current key is still within `margin` of it."""
+    if not scores:
+        return None
+    best = max(scores, key=scores.get)
+    if current in scores and scores[best] < scores[current] * (1.0 + margin):
+        return current
+    return best
 
 load_dotenv()
 

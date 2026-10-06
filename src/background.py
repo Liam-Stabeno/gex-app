@@ -23,7 +23,8 @@ import threading
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
-from gex import get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts, TRUE_PIN_WEIGHTS
+from gex import (get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts,
+                 TRUE_PIN_WEIGHTS, pick_with_hysteresis)
 from price_history import fetch_candles, append_candles, load_candles
 import bs
 import delta_flow
@@ -342,7 +343,9 @@ def refresh_gex(symbol: str):
             'spot':         spot,
             'total_gex':    total_gex,
             'regime':       'POSITIVE' if total_gex > 0 else 'NEGATIVE',
-            'levels_multi': serialize_levels(levels_multi),
+            # keep the live loop's TRUE PIN through the chain refresh (it isn't recomputed here)
+            'levels_multi': {**serialize_levels(levels_multi),
+                             'pin_enhanced': _last_true_pin.get(symbol.replace('$', '').replace('/', ''))},
             'levels_0dte':  serialize_levels(levels_0dte),
             'multi':        multi_dict,
             'zero':         zero_dict,
@@ -745,20 +748,17 @@ def live_gex_loop():
         # Normalize each greek to [0,1] by dividing by its total across
         # all strikes, then combine with TRUE_PIN_WEIGHTS (gex.py; backtested,
         # see tools/pin_backtest.py).
-        pin_enhanced = None
         gamma_total = sum(abs(v) for v in gex_watch.values()) or 1.0
         charm_total = sum(charm_abs.values()) or 1.0
         vanna_total = sum(vanna_abs.values()) or 1.0
-        best_score = -1.0
-        for k in gex_watch:
-            g_norm = abs(gex_watch.get(k, 0.0)) / gamma_total
-            c_norm = charm_abs.get(k, 0.0)      / charm_total
-            v_norm = vanna_abs.get(k, 0.0)      / vanna_total
-            score  = (TRUE_PIN_WEIGHTS['gamma'] * g_norm + TRUE_PIN_WEIGHTS['charm'] * c_norm
-                      + TRUE_PIN_WEIGHTS['vanna'] * v_norm)
-            if score > best_score:
-                best_score   = score
-                pin_enhanced = k
+        scores = {
+            k: (TRUE_PIN_WEIGHTS['gamma'] * abs(gex_watch.get(k, 0.0)) / gamma_total
+                + TRUE_PIN_WEIGHTS['charm'] * charm_abs.get(k, 0.0) / charm_total
+                + TRUE_PIN_WEIGHTS['vanna'] * vanna_abs.get(k, 0.0) / vanna_total)
+            for k in gex_watch
+        }
+        # sticky: only move when a new strike clearly beats the current one
+        pin_enhanced = pick_with_hysteresis(scores, _last_true_pin.get('SPX'))
 
         with _cache_lock:
             existing = dict(_cache.get('$SPX', {}))

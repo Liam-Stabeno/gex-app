@@ -59,3 +59,13 @@ def test_t_to_close_decays_intraday():
     assert t_close == pytest.approx(300 / (365 * 24 * 3600))   # 5-minute floor
     assert bs.t_to_close("2026-10-07", at(13, 0)) == pytest.approx(27.0 / (365 * 24))
     assert bs.t_to_close("2026-10-05", at(13, 0)) == 0.0        # already expired
+
+
+def test_true_pin_hysteresis():
+    from gex import pick_with_hysteresis
+    s = {7810.0: 1.00, 7845.0: 1.05}
+    assert pick_with_hysteresis(s, None) == 7845.0                 # no current: plain argmax
+    assert pick_with_hysteresis(s, 7810.0) == 7810.0               # +5% is not enough to move
+    assert pick_with_hysteresis({7810.0: 1.0, 7845.0: 1.2}, 7810.0) == 7845.0   # +20% moves it
+    assert pick_with_hysteresis(s, 7700.0) == 7845.0               # current strike gone
+    assert pick_with_hysteresis({}, 7810.0) is None
