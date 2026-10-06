@@ -311,6 +311,7 @@ def refresh_gex(symbol: str):
             'expiry_date': c.get('expiry_date', ''),
             'is_0dte':     c.get('is_0dte', False),
             'underlying':  c.get('underlying') or display_sym,
+            'gamma':       c.get('gamma', 0.0),
         } for c in watch}
         _oi_cache.update(new_oi)
         _contract_meta.update(new_meta)
@@ -586,18 +587,11 @@ def live_gex_loop():
         if not meta_snap or not quote_snap:
             continue
 
-        # ── Compute per-contract GEX, charm, and vanna ───────────────────
-        gex_all   = {}   # strike -> net_gex (signed: calls+, puts-)
-        gex_0dte  = {}
-        gex_multi = {}
-        # For TRUE PIN: absolute dealer rehedging magnitude per greek per strike
-        charm_abs = {}   # strike -> sum(|charm| * oi * 100 * spot)
-        vanna_abs = {}   # strike -> sum(|vanna| * oi * 100 * spot)
-
+        # ── Quotes per (expiry, strike) ──────────────────────────────────
         use_rtd = tos_rtd.is_enabled() and tos_rtd._connected
         rtd_hits = 0
         schwab_hits = 0
-
+        cells = {}       # (expiry, strike) -> {'call': (sym, meta, bid, ask), 'put': ...}
         for sym, meta in meta_snap.items():
             # Prefer TOS RTD bid/ask (lower latency) over Schwab streamer cache
             if use_rtd and meta.get('tos_symbol'):
@@ -611,36 +605,68 @@ def live_gex_loop():
             else:
                 bid, ask = quote_snap.get(sym, (0.0, 0.0))
                 schwab_hits += 1
-            oi       = oi_snap.get(sym, 0)
-            if oi == 0 or ask <= 0.0:
+            if not meta.get('expiry_date'):
+                continue
+            cells.setdefault((meta['expiry_date'], meta['strike']), {})[meta['side']] = (sym, meta, bid, ask)
+
+        # ── Per-contract GEX, charm, vanna ───────────────────────────────
+        # One vol per strike, solved from the OTM side (calls above spot, puts
+        # below): OTM quotes are liquid and all time value, ITM ones are mostly
+        # intrinsic and often fail to invert. Calls and puts at a strike share
+        # gamma, so the same vol serves both. If neither side inverts, fall back
+        # to Schwab's chain gamma (charm/vanna 0) rather than dropping the strike.
+        gex_0dte  = {}   # strike -> net_gex (signed: calls+, puts-)
+        gex_watch = {}   # all watched contracts (0DTE + nearest expiry) — TRUE PIN input
+        charm_abs = {}   # strike -> sum(|charm| * oi * 100 * spot)
+        vanna_abs = {}   # strike -> sum(|vanna| * oi * 100 * spot)
+        n_solved = n_fallback = 0
+        T_by_exp = {}
+
+        for (expiry_str, k), sides in cells.items():
+            if expiry_str not in T_by_exp:
+                try:
+                    T_by_exp[expiry_str] = bs.t_to_close(expiry_str)
+                except Exception:
+                    T_by_exp[expiry_str] = 0.0
+            T = T_by_exp[expiry_str]
+            if T <= 0.0:
                 continue
 
-            expiry_str = meta.get('expiry_date', '')
-            if not expiry_str:
-                continue
-            try:
-                T = bs.dte_to_t(expiry_str, today.isoformat())
-            except Exception:
-                continue
+            sigma = None
+            otm, itm = ('call', 'put') if k >= spot else ('put', 'call')
+            for side in (otm, itm):
+                q = sides.get(side)
+                if not q or q[3] <= 0.0:
+                    continue
+                bid, ask = q[2], q[3]
+                mid = (bid + ask) * 0.5 if bid > 0.0 else ask * 0.5
+                sigma = bs.iv(mid, spot, k, T, _RISK_FREE, side[0])
+                if sigma is not None:
+                    break
 
-            flag = 'c' if meta['side'] == 'call' else 'p'
-            g, c, v = bs.greeks_from_mid(bid, ask, spot, meta['strike'], T, _RISK_FREE, flag)
-            sign = 1 if meta['side'] == 'call' else -1
-            k    = meta['strike']
-
-            gex  = g * oi * 100 * spot * sign
-            gex_all[k]  = gex_all.get(k, 0.0) + gex
-            if meta.get('is_0dte'):
-                gex_0dte[k]  = gex_0dte.get(k, 0.0) + gex
+            if sigma is not None:
+                g, c, v = bs.greeks(spot, k, T, _RISK_FREE, sigma)
+                n_solved += 1
             else:
-                gex_multi[k] = gex_multi.get(k, 0.0) + gex
+                g = c = v = None
+                n_fallback += 1
 
-            # Charm and vanna: absolute value — both calls and puts drive
-            # rehedging flows toward the pinned strike regardless of sign.
-            charm_abs[k] = charm_abs.get(k, 0.0) + abs(c) * oi * 100 * spot
-            vanna_abs[k] = vanna_abs.get(k, 0.0) + abs(v) * oi * 100 * spot
+            for side, (sym, meta, _, _) in sides.items():
+                oi = oi_snap.get(sym, 0)
+                if oi == 0:
+                    continue
+                gamma = g if g is not None else float(meta.get('gamma') or 0.0)
+                sign  = 1 if side == 'call' else -1
+                gex   = gamma * oi * 100 * spot * sign
+                gex_watch[k] = gex_watch.get(k, 0.0) + gex
+                if meta.get('is_0dte'):
+                    gex_0dte[k] = gex_0dte.get(k, 0.0) + gex
+                # Charm and vanna: absolute value — both calls and puts drive
+                # rehedging flows toward the pinned strike regardless of sign.
+                charm_abs[k] = charm_abs.get(k, 0.0) + abs(c or 0.0) * oi * 100 * spot
+                vanna_abs[k] = vanna_abs.get(k, 0.0) + abs(v or 0.0) * oi * 100 * spot
 
-        if not gex_all:
+        if not gex_0dte:
             continue
 
         def _to_df(d):
@@ -649,19 +675,12 @@ def live_gex_loop():
             df = pd.DataFrame(list(d.items()), columns=['strike', 'net_gex'])
             return df.sort_values('strike').reset_index(drop=True)
 
-        df_all   = _to_df(gex_all)
-        df_0dte  = _to_df(gex_0dte)
-        df_multi = _to_df(gex_multi)
-
-        total_gex    = float(df_all['net_gex'].sum())
-        levels       = find_key_levels(df_all, spot)
-        levels_multi = find_key_levels(df_multi, spot) if not df_multi.empty else levels
+        df_0dte = _to_df(gex_0dte)
 
         def _ser(lvl):
             return {k: (float(v) if v is not None else None) for k, v in lvl.items()}
 
-        multi_dict = _gex_to_dict(df_multi, spot)
-        zero_dict  = _gex_to_dict(df_0dte,  spot)
+        zero_dict = _gex_to_dict(df_0dte, spot)
 
         # ── TRUE PIN — charm + vanna weighted composite ───────────────────
         # Normalize each greek to [0,1] by dividing by its total across
@@ -670,50 +689,52 @@ def live_gex_loop():
         # contribution to TRUE PIN grows automatically on 0DTE afternoons
         # without any explicit time weighting.
         pin_enhanced = None
-        gamma_total = sum(abs(v) for v in gex_all.values()) or 1.0
+        gamma_total = sum(abs(v) for v in gex_watch.values()) or 1.0
         charm_total = sum(charm_abs.values()) or 1.0
         vanna_total = sum(vanna_abs.values()) or 1.0
+        best_score = -1.0
+        for k in gex_watch:
+            g_norm = abs(gex_watch.get(k, 0.0)) / gamma_total
+            c_norm = charm_abs.get(k, 0.0)      / charm_total
+            v_norm = vanna_abs.get(k, 0.0)      / vanna_total
+            score  = 0.40 * g_norm + 0.35 * c_norm + 0.25 * v_norm
+            if score > best_score:
+                best_score   = score
+                pin_enhanced = k
 
-        if gex_all:
-            best_score = -1.0
-            for k in gex_all:
-                g_norm = abs(gex_all.get(k, 0.0)) / gamma_total
-                c_norm = charm_abs.get(k, 0.0)    / charm_total
-                v_norm = vanna_abs.get(k, 0.0)    / vanna_total
-                score  = 0.40 * g_norm + 0.35 * c_norm + 0.25 * v_norm
-                if score > best_score:
-                    best_score   = score
-                    pin_enhanced = k
-
-        # Inject into levels_multi so the frontend can read it alongside pin
-        levels_multi_ser = _ser(levels_multi)
+        with _cache_lock:
+            existing = dict(_cache.get('$SPX', {}))
+        # Only 0DTE is recomputed live: the stream covers just today's book plus
+        # the top strikes of one other expiry, so ALL EXPIRATIONS keeps the full
+        # chain from the 60 s refresh. TRUE PIN is injected into its levels.
+        multi_dict       = existing.get('multi') or {'strikes': [], 'net_gex': []}
+        levels_multi_ser = dict(existing.get('levels_multi') or {})
         levels_multi_ser['pin_enhanced'] = float(pin_enhanced) if pin_enhanced is not None else None
+        total_gex = float(sum(multi_dict.get('net_gex') or [])) + float(df_0dte['net_gex'].sum())
 
         data = {
+            **existing,                     # keeps ddoi, odte_date and other chain fields
             'symbol':       'SPX',
             'spot':         spot,
             'total_gex':    total_gex,
             'regime':       'POSITIVE' if total_gex > 0 else 'NEGATIVE',
             'levels_multi': levels_multi_ser,
-            'levels_0dte':  _ser(find_key_levels(df_0dte, spot)) if not df_0dte.empty else {},
+            'levels_0dte':  _ser(find_key_levels(df_0dte, spot)),
             'multi':        multi_dict,
             'zero':         zero_dict,
-            'has_0dte':     not df_0dte.empty,
+            'has_0dte':     True,
             'updated':      datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'live':         True,   # flag so dashboard knows this is BS-derived
+            'live':         True,   # flag so dashboard knows 0DTE is BS-derived
         }
+        data.pop('last_session', None)  # live data is never the after-hours fallback
 
         with _cache_lock:
-            existing = _cache.get('$SPX', {})
-            # Preserve odte_date and DDOI from the chain refresh
-            data['odte_date'] = existing.get('odte_date')
-            data['ddoi']      = existing.get('ddoi')
             _cache['$SPX'] = data
 
         sse.push({'type': 'gex', 'symbol': 'SPX', **data})
         last_push = time.time()
         src = f'RTD:{rtd_hits} Schwab:{schwab_hits}' if use_rtd else f'Schwab:{schwab_hits}'
-        print(f'[GEX live] quote sources — {src}')
+        print(f'[GEX live] quote sources — {src}  vol solved {n_solved} / Schwab gamma fallback {n_fallback}')
 
 
 # ── Streamer callbacks ────────────────────────────────────────────────────────

@@ -14,10 +14,16 @@ Public API:
         Returns 0.0 if IV cannot be found (deep ITM, zero price, etc.)
 
     iv(mkt_price, S, K, T, r, flag) -> float | None
-        Implied volatility via Newton-Raphson.
+        Implied volatility via bisection.
+
+    greeks(S, K, T, r, v) -> (gamma, charm, vanna)
+        Greeks for a known vol (same for calls and puts).
+
+    t_to_close(expiry_str, now=None) -> float
+        Years until 16:00 ET on the expiry date (decays intraday).
 
     dte_to_t(expiry_str, today_str=None) -> float
-        Convert 'YYYY-MM-DD' expiry to T in years.
+        Convert 'YYYY-MM-DD' expiry to T in years (whole days; legacy).
 
 Greeks reference:
     gamma  = d²V/dS²            — curvature of option value w.r.t. spot
@@ -90,36 +96,60 @@ def _bs_vanna(S: float, K: float, T: float, r: float, v: float) -> float:
     return -_npdf(d1) * d2 / v
 
 
+IV_MIN, IV_MAX = 0.005, 5.0     # search range for implied vol (0.5% – 500%)
+
+
 def iv(mkt_price: float, S: float, K: float, T: float, r: float, flag: str,
-       max_iter: int = 150, tol: float = 1e-7) -> float | None:
+       max_iter: int = 100, tol: float = 1e-6) -> float | None:
     """
-    Implied volatility via Newton-Raphson.
-    Returns sigma (annualised) or None if no convergent solution.
+    Implied volatility by bisection on log-vol.
+    Returns sigma (annualised) or None when the price is outside what any vol in
+    [IV_MIN, IV_MAX] can produce (below intrinsic, or no time value left).
+
+    Bisection, not Newton: for cheap OTM / deep ITM 0DTE options vega is close to
+    zero at any reasonable starting guess, and Newton stalls on the guess itself.
     """
     if T <= 0.0 or mkt_price <= 0.0:
         return None
-
-    # Enforce no-arb floor so we never feed a negative time-value to the solver
-    intrinsic = max(0.0, (S - K) if flag == 'c' else (K - S))
-    effective = max(mkt_price, intrinsic + 1e-6)
-
-    # Brenner-Subrahmanyam initial guess
-    v = math.sqrt(2.0 * math.pi / T) * effective / S
-    v = max(0.005, min(v, 8.0))
-
+    lo, hi = IV_MIN, IV_MAX
+    p_lo = _bs_price(S, K, T, r, lo, flag)
+    p_hi = _bs_price(S, K, T, r, hi, flag)
+    if not (p_lo <= mkt_price <= p_hi):
+        return None
     for _ in range(max_iter):
-        p    = _bs_price(S, K, T, r, v, flag)
-        vega = S * _npdf(_d1(S, K, T, r, v)) * math.sqrt(T)
-        if vega < 1e-12:
+        mid = math.sqrt(lo * hi)
+        p = _bs_price(S, K, T, r, mid, flag)
+        if abs(p - mkt_price) < tol:
+            return mid
+        if p < mkt_price:
+            lo = mid
+        else:
+            hi = mid
+        if hi / lo < 1 + 1e-9:
             break
-        step = (p - effective) / vega
-        v   -= step
-        if v < 1e-6:
-            v = 1e-6
-        if abs(step) < tol:
-            break
+    return math.sqrt(lo * hi)
 
-    return v if 1e-4 <= v <= 10.0 else None
+
+def greeks(S: float, K: float, T: float, r: float, v: float) -> tuple[float, float, float]:
+    """(gamma, charm, vanna) for a given vol — identical for calls and puts."""
+    return _bs_gamma(S, K, T, r, v), _bs_charm(S, K, T, r, v), _bs_vanna(S, K, T, r, v)
+
+
+def t_to_close(expiry_str: str, now=None) -> float:
+    """Years (calendar, /365) from now until 16:00 ET on the expiry date.
+
+    Floors at 5 minutes so gamma stays finite into the close. Unlike dte_to_t,
+    0DTE time decays through the session instead of being a fixed constant.
+    """
+    from datetime import datetime, time as dtime, date
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo('America/New_York')
+    now = now or datetime.now(et)
+    close = datetime.combine(date.fromisoformat(expiry_str), dtime(16, 0), et)
+    secs = (close - now).total_seconds()
+    if secs < 0 and close.date() < now.date():
+        return 0.0
+    return max(secs, 300.0) / (365.0 * 24 * 3600)
 
 
 def greeks_from_mid(bid: float, ask: float,
