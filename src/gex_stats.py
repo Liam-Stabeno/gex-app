@@ -235,12 +235,17 @@ def gamma_levels(strikes: list, gex: list, spot: float, n_walls: int = 3) -> dic
     }
 
 
-def current_gamma_levels(spot: float, mode: str = 'all', sym: str = 'SPX',
-                         data_dir: str = _DATA_DIR) -> dict | None:
-    """gamma_levels() on the latest 5-min snapshot of today's heatmap."""
-    h = load_heatmap(sym, data_dir=data_dir)
+def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX',
+                         data_dir: str = _DATA_DIR, day=None) -> dict | None:
+    """gamma_levels() on the latest 5-min snapshot of a day's heatmap (default today).
+    For a past day, spot defaults to that day's last snapshot."""
+    h = load_heatmap(sym, day=day, data_dir=data_dir)
     if not h['times'] or mode not in ('all', 'odte'):
         return None
+    if spot is None:
+        spot = next((s for s in reversed(h['spots']) if s), None)
+        if spot is None:
+            return None
     out = gamma_levels(h['strikes'], h[mode][-1], spot)
     if out:
         # the same levels for every 5-min snapshot today, so the chart can trail them
@@ -398,3 +403,18 @@ def summary_days_missing(sym: str = 'SPX', data_dir: str = _DATA_DIR) -> list:
     days = sorted({datetime.strptime(f[-14:-4], '%Y-%m-%d').date()
                    for f in glob.glob(os.path.join(data_dir, f'gex_snapshots_{sym}_2*.csv'))})
     return [d for d in days if d < today and d.isoformat() not in have]
+
+
+def history_days(sym: str = 'SPX', data_dir: str = _DATA_DIR) -> list:
+    """Days that can be replayed, newest first, with what each one has saved."""
+    days = {}
+    for f in glob.glob(os.path.join(data_dir, f'gex_snapshots_{sym}_2*.csv')):
+        days.setdefault(f[-14:-4], {})['levels'] = True
+    for f in glob.glob(os.path.join(data_dir, f'gex_grid_{sym}_2*.jsonl*')):
+        days.setdefault(os.path.basename(f)[len(f'gex_grid_{sym}_'):][:10], {})['heatmap'] = True
+    for f in glob.glob(os.path.join(data_dir, 'volume_split_ES_2*.csv')):
+        days.setdefault(f[-14:-4], {})['es_split'] = True
+    for f in glob.glob(os.path.join(data_dir, 'flow_alerts_2*.json')):
+        days.setdefault(f[-15:-5], {})['flow'] = True
+    return [{'date': d, **{k: v.get(k, False) for k in ('levels', 'heatmap', 'es_split', 'flow')}}
+            for d, v in sorted(days.items(), reverse=True)]

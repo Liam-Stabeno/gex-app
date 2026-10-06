@@ -9,6 +9,7 @@ Public API:
     register(app)                          — register all routes on the Flask app
 """
 
+import os
 import time
 from datetime import datetime
 from queue import Queue, Empty
@@ -38,6 +39,17 @@ def init(cache, candle_cache, cache_lock):
 def register(app):
     """Attach all routes to the Flask app instance."""
 
+    def _req_day():
+        """?date=YYYY-MM-DD -> date, None when absent; raises ValueError when malformed."""
+        d = request.args.get('date')
+        return datetime.strptime(d, '%Y-%m-%d').date() if d else None
+
+    @app.route('/api/history_days')
+    def api_history_days():
+        """Days with saved data for replay, newest first."""
+        import gex_stats
+        return jsonify(gex_stats.history_days('SPX'))
+
     @app.route('/')
     def index():
         return render_template('dashboard.html')
@@ -50,6 +62,16 @@ def register(app):
         if not data:
             return jsonify({'error': 'No data yet'}), 202
         return jsonify(data)
+
+    @app.route('/api/volume_split/<symbol>')
+    def api_volume_split(symbol):
+        """Futures buy/sell volume per minute (tick rule), today and the previous day."""
+        from background import load_volume_split
+        try:
+            day = _req_day()
+        except ValueError:
+            return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+        return jsonify(load_volume_split(symbol.upper().replace('/', ''), day=day))
 
     @app.route('/api/gex_heatmap/<symbol>')
     def api_gex_heatmap(symbol):
@@ -67,12 +89,18 @@ def register(app):
     def api_gamma_levels(symbol):
         """Walls, trapdoor, squeeze, support/resistance, air pockets, brakes at spot."""
         import gex_stats
+        mode = request.args.get('mode', 'all')
+        try:
+            day = _req_day()
+        except ValueError:
+            return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+        if day is not None and day != datetime.now(ET).date():      # replay: that day's own spot
+            return jsonify(gex_stats.current_gamma_levels(None, mode, symbol.upper().replace('$', ''), day=day))
         key = f'${symbol}' if symbol == 'SPX' else symbol
         with _cache_lock:
             spot = (_cache.get(key) or {}).get('spot')
         if not spot:
             return jsonify(None)
-        mode = request.args.get('mode', 'all')
         return jsonify(gex_stats.current_gamma_levels(float(spot), mode, symbol.upper().replace('$', '')))
 
     @app.route('/api/expected_move/<symbol>')
@@ -90,7 +118,11 @@ def register(app):
     def api_gex_levels(symbol):
         """Today's level history (flip, walls, pin, true pin) for the trail charts."""
         from background import load_level_history
-        return jsonify(load_level_history(symbol.upper().replace('$', '')))
+        try:
+            day = _req_day()
+        except ValueError:
+            return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+        return jsonify(load_level_history(symbol.upper().replace('$', ''), day))
 
     @app.route('/api/price/<symbol>')
     def api_price(symbol):
@@ -99,7 +131,18 @@ def register(app):
         with _cache_lock:
             candles = list(_candle_cache.get(key, []))
 
-        if symbol == 'ES':
+        try:
+            day = _req_day()
+        except ValueError:
+            return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+        if day is not None:
+            sel = []
+            for c in candles:
+                dt = datetime.fromtimestamp(c['datetime'] / 1000, tz=ET)
+                if dt.date() == day and (symbol == 'ES' or dtime(9, 30) <= dt.time() <= dtime(16, 0)):
+                    sel.append(c)
+            candles = sel
+        elif symbol == 'ES':
             cutoff_ms = (time.time() - 2 * 86400) * 1000
             candles = [c for c in candles if c['datetime'] >= cutoff_ms]
         else:
@@ -220,7 +263,18 @@ def register(app):
 
     @app.route('/api/flow_alerts')
     def api_flow_alerts():
-        return jsonify(flow_alerts.get_all())
+        try:
+            day = _req_day()
+        except ValueError:
+            return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+        if day is None or day == datetime.now(ET).date():
+            return jsonify(flow_alerts.get_all())
+        import json as _json
+        path = flow_alerts._path(day.isoformat())
+        if not os.path.exists(path):
+            return jsonify([])
+        with open(path) as f:
+            return jsonify(_json.load(f))
 
     @app.route('/api/delta_flow')
     def api_delta_flow():

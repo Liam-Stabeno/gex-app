@@ -114,6 +114,7 @@ if __name__ == '__main__':
         on_candle=background.on_streamer_candle,
         on_flow_alert=background.on_flow_alert,
         on_options_quote=background.on_options_quote,
+        on_volume_split=background.on_volume_split,
     )
     _streamer_ref[0] = _streamer
     _streamer.start()

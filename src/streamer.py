@@ -40,7 +40,7 @@ STREAM_CHART_EQUITY = []       # no CHART_EQUITY subscriptions needed right now
 STREAM_LEVELONE_EQUITY = ['$SPX']  # LEVELONE — real-time last price if available
 STREAM_FUTURES = ['/ES']
 CHART_FIELDS        = '0,1,2,3,4,5,6,7,8'
-LEVELONE_FIELDS     = '3,8'    # field 3 = last price, field 8 = total volume
+LEVELONE_FIELDS     = '0,3,8'  # 0 = symbol, 3 = last price, 8 = total volume
 
 # ── Options flow ────────────────────────────────────────────────────────────────
 # LEVELONE_OPTIONS fields we care about:
@@ -111,16 +111,20 @@ def _floor_minute_ms() -> int:
 
 
 def _parse_levelone(msg: dict) -> list:
-    """Parse LEVELONE_EQUITIES / LEVELONE_FUTURES into tick dicts."""
+    """Parse LEVELONE_EQUITIES / LEVELONE_FUTURES into tick dicts.
+
+    Schwab sends only changed fields: a trade at an unchanged price carries
+    volume but no last. Missing fields are None; the streamer fills them in.
+    """
     ticks = []
     for item in msg.get('content', []):
-        last = item.get('3')
-        if last is None:
+        key = item.get('key', '')
+        if not key or ('3' not in item and '8' not in item):
             continue
         ticks.append({
-            'symbol': item.get('key', ''),
-            'last':   float(last),
-            'volume': int(item.get('8', 0)),
+            'symbol': key,
+            'last':   float(item['3']) if '3' in item else None,
+            'volume': int(item['8'])   if '8' in item else None,
         })
     return ticks
 
@@ -152,10 +156,15 @@ class SchwabStreamer:
     Handles price candles and options flow monitoring in a single connection.
     """
 
-    def __init__(self, on_candle, on_flow_alert=None, on_options_quote=None):
+    def __init__(self, on_candle, on_flow_alert=None, on_options_quote=None, on_volume_split=None):
         self.on_candle         = on_candle
         self.on_flow_alert     = on_flow_alert
         self.on_options_quote  = on_options_quote  # called on every bid/ask tick
+        self.on_volume_split   = on_volume_split   # (symbol, minute_ms, buy, sell) for futures
+
+        # Last known last/volume/tick direction per price symbol (ticks are partial)
+        self._tick_mem   = {}   # symbol -> {'last', 'volume', 'dir'}
+        self._vol_split  = {}   # symbol -> {minute_ms: [buy, sell]}
 
         self._running  = False
         self._ws       = None
@@ -264,6 +273,11 @@ class SchwabStreamer:
                         self._pending_update = False
                     else:
                         print(f'[STREAMER] Login FAILED code={code}')
+                elif resp.get('command') in ('SUBS', 'ADD'):
+                    code = resp.get('content', {}).get('code', 0)
+                    if code != 0:   # a rejected subscription used to fail silently
+                        print(f"[STREAMER] {resp.get('service')} {resp.get('command')} rejected "
+                              f"code={code}: {resp.get('content', {}).get('msg', '')}")
 
             # Price candle data
             for notify in data.get('data', []):
@@ -280,7 +294,9 @@ class SchwabStreamer:
                 elif service in ('LEVELONE_EQUITIES', 'LEVELONE_FUTURES'):
                     for tick in _parse_levelone(notify):
                         try:
-                            self._handle_tick(tick)
+                            tick = self._merge_tick(tick)
+                            if tick:
+                                self._handle_tick(tick)
                         except Exception as exc:
                             print(f'[STREAMER] tick error: {exc}')
 
@@ -386,6 +402,41 @@ class SchwabStreamer:
             self.on_candle(dict(self._live_candles[symbol]))
         except Exception as exc:
             print(f'[STREAMER] on_candle error: {exc}')
+
+    def _merge_tick(self, tick: dict):
+        """Fill a partial price tick from memory and, for futures, split each
+        volume increment into buy/sell by the tick rule: an uptick is a buy, a
+        downtick a sell, an unchanged price keeps the last direction."""
+        sym = tick['symbol']
+        m = self._tick_mem.setdefault(sym, {'last': None, 'volume': None, 'dir': 0})
+        prev_last, prev_vol = m['last'], m['volume']
+        last = tick['last'] if tick['last'] is not None else prev_last
+        vol  = tick['volume'] if tick['volume'] is not None else prev_vol
+        if last is None:
+            return None
+        if prev_last is not None and last != prev_last:
+            m['dir'] = 1 if last > prev_last else -1
+        if (sym in STREAM_FUTURES and self.on_volume_split and vol is not None
+                and prev_vol is not None and vol > prev_vol):
+            dv     = vol - prev_vol
+            minute = _floor_minute_ms()
+            acc    = self._vol_split.setdefault(sym, {})
+            b      = acc.setdefault(minute, [0.0, 0.0])
+            if m['dir'] > 0:
+                b[0] += dv
+            elif m['dir'] < 0:
+                b[1] += dv
+            else:                       # no direction yet: split evenly
+                b[0] += dv / 2
+                b[1] += dv / 2
+            for k in [k for k in acc if k < minute - 3_600_000]:
+                del acc[k]
+            try:
+                self.on_volume_split(sym, minute, b[0], b[1])
+            except Exception as exc:
+                print(f'[STREAMER] on_volume_split error: {exc}')
+        m['last'], m['volume'] = last, vol      # volume drops at the session reset: no split then
+        return {'symbol': sym, 'last': last, 'volume': vol if vol is not None else 0}
 
     def _handle_options_quote(self, quote: dict):
         """

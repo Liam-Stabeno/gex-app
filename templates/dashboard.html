@@ -173,6 +173,8 @@
         .zone-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
                     font-size: 0.62rem; color: #666; margin: 2px 0 6px; }
         .zone-bar .tf-btn { padding: 1px 7px; }
+        .price-panel.replaying { border-color: #ffb300; }
+        .price-panel.replaying .chart-title { color: #ffb300; }
         .zone-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
 
 
@@ -790,6 +792,9 @@
                     </div>
                 </div>
                 ${symbol === 'SPX' ? `<div class="zone-bar" id="zone-bar-${symbol}">
+                    <span id="replay-wrap" title="Load a past day: candles, level trails, heatmap, gamma levels, ES volume and flow markers as saved that day">
+                        REPLAY <select id="replay-date" class="rp-select" style="font-size:0.62rem;padding:1px 4px"><option value="">LIVE</option></select>
+                    </span>
                     <span>GAMMA ZONES</span>
                     <button class="tf-btn active" data-zone="all" title="Net GEX at each strike, all expirations">All</button>
                     <button class="tf-btn" data-zone="odte" title="Net GEX at each strike, 0DTE only">0DTE</button>
@@ -798,6 +803,12 @@
                     <span><span class="zone-swatch" style="background:rgba(255,60,80,0.55)"></span> negative gamma: dealers chase moves, price <b style="color:#ff3c50">speeds up</b></span>
                     <span title="Stronger colour = bigger GEX at that strike (linear). Thin or clear bands slow price only a little."><span class="zone-swatch" style="border:1px solid rgba(120,255,190,0.85)"></span> outlined: 3 strongest strikes (walls)</span>
                     <span style="margin-left:auto;color:#444">double-click: full screen · drag corner: resize</span>
+                </div>
+                <div class="zone-bar" title="ES futures volume per bar, aligned to the SPX candles. Buy/sell split by the tick rule from the live stream (uptick = buy, downtick = sell). Faded bars are estimated from where the candle closed in its range (no tick data for them).">
+                    <span>ES VOLUME (bottom pane)</span>
+                    <span><span class="zone-swatch" style="background:rgba(0,230,118,0.85)"></span> buy</span>
+                    <span><span class="zone-swatch" style="background:rgba(255,82,82,0.85)"></span> sell</span>
+                    <span style="color:#555">faded = estimated (before tick data)</span>
                 </div>
                 <div class="zone-bar" id="gamma-levels-${symbol}" title="From the latest 5-min GEX snapshot. Brakes = GEX at the current price vs today's biggest wall.">—</div>` : ''}
                 <div class="chart-container" id="price-canvas-${symbol}"></div>
@@ -817,6 +828,8 @@
                 if (symbol === 'SPX') togglePriceFullscreen(div);   // same chart, everything kept
                 else expandPrice(symbol);
             });
+            div.querySelector('#replay-date')?.addEventListener('change', e => setReplayDate(e.target.value));
+            div.querySelector('#replay-wrap')?.addEventListener('dblclick', e => e.stopPropagation());
             div.querySelectorAll('[data-zone]').forEach(btn => btn.addEventListener('click', e => {
                 e.stopPropagation();
                 setZoneMode(btn.dataset.zone);
@@ -1016,7 +1029,7 @@
 
         async function fetchLevelHistory() {
             try {
-                const res = await fetch('/api/gex_levels/SPX');
+                const res = await fetch('/api/gex_levels/SPX' + replayQ('?'));
                 if (!res.ok) return;
                 _levelHistory = await res.json();
                 rebuildTrails('SPX');
@@ -1140,11 +1153,95 @@
 
         async function fetchHeatmap() {
             try {
-                const res = await fetch('/api/gex_heatmap/SPX');
+                const res = await fetch('/api/gex_heatmap/SPX' + replayQ('?'));
                 if (!res.ok) return;
                 _heatmap = await res.json();
                 priceCharts.SPX?.zones?.setData(_zoneMode === 'off' ? null : _heatmap, _zoneMode);
             } catch (e) { console.warn('[gamma zones]', e); }
+        }
+
+        // ── Replay a past day on the SPX chart ────────────────────────────────
+        // Everything the chart shows is saved per day; picking a date reloads it
+        // and pauses live drawing on this chart. LIVE returns to today.
+        let _replayDate = null;
+        const replayQ = sep => _replayDate ? `${sep}date=${_replayDate}` : '';
+
+        async function loadReplayDays() {
+            const sel = document.getElementById('replay-date');
+            if (!sel) return;
+            try {
+                const res = await fetch('/api/history_days');
+                const days = res.ok ? await res.json() : [];
+                const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+                sel.innerHTML = '<option value="">LIVE</option>' + days.filter(d => d.date !== today).map(d => {
+                    const has = [d.heatmap && 'heatmap', d.es_split && 'ES split', d.flow && 'flow'].filter(Boolean).join(', ');
+                    return `<option value="${d.date}">${d.date}${has ? ' · ' + has : ''}</option>`;
+                }).join('');
+                sel.value = _replayDate || '';
+            } catch (_) {}
+        }
+
+        async function setReplayDate(date) {
+            _replayDate = date || null;
+            const panel = document.getElementById('price-div-SPX');
+            panel?.classList.toggle('replaying', !!_replayDate);
+            document.querySelector('#price-div-SPX .chart-title').textContent = _replayDate ? `PRICE · REPLAY ${_replayDate}` : 'PRICE';
+            rawCandles.SPX = [];                      // don't merge one day's candles into another
+            const flows = await fetch('/api/flow_alerts' + replayQ('?')).then(r => r.ok ? r.json() : []).catch(() => []);
+            _flowMarkers.length = 0;
+            flows.forEach(a => _flowMarkers.push(a));
+            await fetchPrice('SPX');
+            await Promise.all([fetchLevelHistory(), fetchHeatmap(), fetchGammaLevels(), fetchEsVolume()]);
+            applyFlowMarkers();
+            priceCharts.SPX?.chart.timeScale().fitContent();
+        }
+
+        // ── ES volume under the SPX chart ─────────────────────────────────────
+        let _esCandles = [];      // ES 1-min candles {time, open, high, low, close, volume}
+        let _esSplit   = {};      // epoch sec -> [buy, sell] from the tick rule
+
+        async function fetchEsVolume() {
+            try {
+                const [c, sp] = await Promise.all([fetch('/api/price/ES' + replayQ('?')), fetch('/api/volume_split/ES' + replayQ('?'))]);
+                if (c.ok)  _esCandles = await c.json();
+                if (sp.ok) _esSplit   = await sp.json();
+                drawEsVolume();
+            } catch (e) { console.warn('[ES volume]', e); }
+        }
+
+        // Bucket ES volume to the SPX timeframe, only at times the SPX chart has bars
+        // (so overnight ES doesn't add empty time points to the candles).
+        function drawEsVolume() {
+            const e = priceCharts.SPX;
+            if (!e?.esVolTotal || !_esCandles.length) return;
+            const bucket  = (selectedTF.SPX || 1) * 60;
+            const spxTimes = new Set(aggregateCandles(rawCandles.SPX || [], selectedTF.SPX || 1).map(c => c.time));
+            const agg = new Map();    // t -> {vol, buy, sell, measured}
+            for (const c of _esCandles) {
+                const t = Math.floor(c.time / bucket) * bucket;
+                if (!spxTimes.has(t)) continue;
+                const a = agg.get(t) || { vol: 0, buy: 0, sell: 0, measured: true };
+                const split = _esSplit[c.time];
+                let buy, sell;
+                if (split && split[0] + split[1] > 0) {
+                    const k = c.volume / (split[0] + split[1]);       // scale to the candle's volume
+                    buy = split[0] * k; sell = split[1] * k;
+                } else {
+                    const range = c.high - c.low;
+                    const f = range > 0 ? (c.close - c.low) / range : 0.5;   // close location in the bar
+                    buy = c.volume * f; sell = c.volume - buy; a.measured = false;
+                }
+                a.vol += c.volume; a.buy += buy; a.sell += sell;
+                agg.set(t, a);
+            }
+            // Full bar in the dominant side's colour, the smaller side drawn from 0 over it:
+            // minority at the bottom, dominant on top.
+            const pts = [...agg].sort((x, y) => x[0] - y[0]);
+            const col = (buy, a) => buy ? (a.measured ? 'rgba(0,230,118,0.85)' : 'rgba(0,230,118,0.3)')
+                                        : (a.measured ? 'rgba(255,82,82,0.85)' : 'rgba(255,82,82,0.3)');
+            e.esVolTotal.setData(pts.map(([time, a]) => ({ time, value: a.vol, color: col(a.buy >= a.sell, a) })));
+            e.esVolSell.setData(pts.map(([time, a]) => ({ time, value: Math.min(a.buy, a.sell),
+                                                            color: col(a.buy < a.sell, a) })));
         }
 
         // ── Trading levels from the gamma profile ─────────────────────────────
@@ -1196,7 +1293,7 @@
             if (!el || !e) return;
             let L = null;
             try {
-                const res = await fetch(`/api/gamma_levels/SPX?mode=${_zoneMode === 'odte' ? 'odte' : 'all'}`);
+                const res = await fetch(`/api/gamma_levels/SPX?mode=${_zoneMode === 'odte' ? 'odte' : 'all'}` + replayQ('&'));
                 L = res.ok ? await res.json() : null;
             } catch (_) {}
             _gammaLines.forEach(l => { try { e.candleSeries.removePriceLine(l); } catch (_) {} });
@@ -1627,7 +1724,7 @@
             // Extend the trails on every GEX update, bucketed to each chart's candle
             // timeframe, so they keep moving even when price ticks are sparse.
             // Skipped after the close (the levels are then last session's).
-            if (symbol === 'SPX' && !data.last_session) {
+            if (symbol === 'SPX' && !data.last_session && !_replayDate) {
                 for (const s of PRICE_SYMBOLS) {
                     const b = (selectedTF[s] || 1) * 60;
                     appendTrailPoint(s, gexLevels['SPX'], Math.floor(Date.now() / 1000 / b) * b);
@@ -1795,6 +1892,13 @@
                     setTrailData(priceCharts[symbol].trail, symbol);
                 }
                 if (symbol === 'SPX') {
+                    // ES volume pane under the candles: dominant side on top, smaller side at the bottom
+                    const volOpts = { priceFormat: { type: 'volume' }, lastValueVisible: false,
+                                      priceLineVisible: false, base: 0 };
+                    priceCharts.SPX.esVolTotal = chart.addSeries(LWC.HistogramSeries, volOpts, 1);
+                    priceCharts.SPX.esVolSell  = chart.addSeries(LWC.HistogramSeries, volOpts, 1);   // smaller side, drawn over the bottom
+                    try { chart.panes()[1].setHeight(110); } catch (_) {}
+                    fetchEsVolume();
                     priceCharts.SPX.zones = new GammaZones(() => (selectedTF.SPX || 1) * 60);
                     candleSeries.attachPrimitive(priceCharts.SPX.zones);
                     if (_heatmap) priceCharts.SPX.zones.setData(_heatmap, _zoneMode);
@@ -1916,7 +2020,7 @@
             _setSeriesData(entry.candleSeries, entry.volumeSeries, display);
             entry.chart.timeScale().fitContent();
             applySessionMarkers(symbol);
-            if (symbol === 'SPX') { applyGexLevels('SPX'); drawLevelTrails(); }
+            if (symbol === 'SPX') { applyGexLevels('SPX'); drawLevelTrails(); drawEsVolume(); }
 
             // Re-render trail chart at new TF
             renderTrailChart(symbol, raw);
@@ -1988,6 +2092,7 @@
 
         function updatePriceCandle(symbol, candle) {
             // candle: { symbol, time (sec), open, high, low, close, volume }
+            if (_replayDate && symbol === 'SPX') return;   // replaying a past day
             const entry = priceCharts[symbol];
             if (!entry) return;   // chart not yet loaded — polling will catch it
 
@@ -2175,6 +2280,7 @@
         const _flowMarkers = [];   // raw alert dicts — rendered via applySessionMarkers
 
         function addFlowMarker(a) {
+            if (_replayDate) return;          // keep the replayed day's markers
             _flowMarkers.push(a);
             applyFlowMarkers();
         }
@@ -2685,7 +2791,7 @@
 
         async function fetchPrice(symbol) {
             try {
-                const res = await fetch(`/api/price/${symbol}`);
+                const res = await fetch(`/api/price/${symbol}${symbol === 'SPX' ? replayQ('?') : ''}`);
                 if (!res.ok) return;
                 const candles = await res.json();
                 renderPriceChart(symbol, candles);
@@ -2767,6 +2873,9 @@
         fetchHeatmap();
         setInterval(fetchHeatmap, 60000);
         setInterval(fetchGammaLevels, 30000);
+        setInterval(fetchEsVolume, 15000);
+        loadReplayDays();
+        setInterval(loadReplayDays, 10 * 60000);
         setZoneMode(_zoneMode);
 
         // Expected move to the close for the current regime (server table rebuilt hourly)

@@ -39,8 +39,9 @@ _DATA_DIR    = os.path.join(_PROJECT_DIR, 'data')
 
 _GEX_SNAPSHOT_FIELDS  = ['timestamp', 'spot', 'total_gex', 'regime',
                           'flip_level', 'put_wall', 'call_wall', 'pin',
-                          'strike_min', 'strike_max', 'true_pin']
+                          'strike_min', 'strike_max', 'true_pin', 'charm_flow']
 _last_true_pin: dict = {}   # display symbol -> latest TRUE PIN from the live loop
+_last_charm_flow: dict = {} # display symbol -> latest charm hedge flow, $/hr
 _WATCHLIST_FIELDS     = ['timestamp', 'symbol', 'strike', 'side',
                           'expiry_label', 'delta', 'oi']
 
@@ -133,14 +134,14 @@ def _upgrade_snapshot_header(path: str, fields: list):
     os.replace(tmp, path)
 
 
-def load_level_history(sym: str) -> list:
-    """Today's GEX level history (all expirations) for the price trail charts.
+def load_level_history(sym: str, day=None) -> list:
+    """A day's GEX level history (default today) for the price trail charts.
 
     Rows come from gex_snapshots_<sym>_<date>.csv, written once per chain refresh
     during market hours. Timestamps there are naive local time; returned 'time'
     is epoch seconds to match the candle data.
     """
-    date = datetime.now().strftime('%Y-%m-%d')
+    date = day.isoformat() if day else datetime.now().strftime('%Y-%m-%d')
     path = os.path.join(_DATA_DIR, f'gex_snapshots_{sym}_{date}.csv')
     if not os.path.exists(path):
         return []
@@ -190,6 +191,63 @@ def daily_jobs_loop():
         if now.weekday() < 5 and now.time() >= dtime(16, 20) and written_for != now.date():
             run(write_today=True)
             written_for = now.date()
+
+
+# ── Futures buy/sell volume (tick rule, from the streamer) ────────────────────
+_vol_split: dict = {}        # display sym -> {minute_ms: (buy, sell)} for the live session
+_vol_split_last: dict = {}   # display sym -> latest minute seen (to persist on rollover)
+_vol_split_lock = threading.Lock()
+
+
+def _vol_split_path(sym: str, minute_ms: int) -> str:
+    day = datetime.fromtimestamp(minute_ms / 1000, _ET).date().isoformat()
+    return os.path.join(_DATA_DIR, f'volume_split_{sym}_{day}.csv')
+
+
+def on_volume_split(symbol: str, minute_ms: int, buy: float, sell: float):
+    """Streamer callback: running buy/sell volume for the current minute."""
+    sym = symbol.replace('/', '').replace('$', '')
+    with _vol_split_lock:
+        prev = _vol_split_last.get(sym)
+        book = _vol_split.setdefault(sym, {})
+        if prev is not None and minute_ms > prev and prev in book:
+            b, s = book[prev]
+            path = _vol_split_path(sym, prev)
+            new = not os.path.exists(path)
+            try:
+                with open(path, 'a', newline='') as f:
+                    if new:
+                        f.write('time,buy,sell\n')
+                    f.write(f'{prev // 1000},{round(b)},{round(s)}\n')
+            except OSError as e:
+                print(f'[volume split] write failed: {e}')
+        book[minute_ms] = (buy, sell)
+        _vol_split_last[sym] = max(prev or 0, minute_ms)
+        for k in [k for k in book if k < minute_ms - 6 * 3_600_000]:
+            del book[k]
+
+
+def load_volume_split(sym: str = 'ES', days: int = 2, day=None) -> dict:
+    """{epoch_sec: [buy, sell]} from the saved day files plus the live minute.
+    With `day`, only that day's file (for replay)."""
+    import glob as _glob
+    out = {}
+    paths = ([os.path.join(_DATA_DIR, f'volume_split_{sym}_{day.isoformat()}.csv')] if day else
+             sorted(_glob.glob(os.path.join(_DATA_DIR, f'volume_split_{sym}_*.csv')))[-days:])
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, newline='') as f:
+                for r in csv.DictReader(f):
+                    out[int(r['time'])] = [float(r['buy']), float(r['sell'])]
+        except (OSError, ValueError, KeyError):
+            continue
+    if day is None:
+        with _vol_split_lock:
+            for m, (b, s) in _vol_split.get(sym, {}).items():
+                out[m // 1000] = [b, s]
+    return out
 
 
 def _last_session_path(sym: str) -> str:
@@ -448,6 +506,7 @@ def refresh_gex(symbol: str):
                 'strike_min': multi_dict.get('strike_min', ''),
                 'strike_max': multi_dict.get('strike_max', ''),
                 'true_pin':   _last_true_pin.get(display_sym, ''),
+                'charm_flow': round(_last_charm_flow[display_sym]) if display_sym in _last_charm_flow else '',
             })
 
             if not gex_0dte.empty:
@@ -796,6 +855,7 @@ def live_gex_loop():
         levels_multi_ser['pin_enhanced'] = float(pin_enhanced) if pin_enhanced is not None else None
         if pin_enhanced is not None:
             _last_true_pin['SPX'] = float(pin_enhanced)
+        _last_charm_flow['SPX'] = charm_flow / (365.0 * 24)
         total_gex = float(sum(multi_dict.get('net_gex') or [])) + float(df_0dte['net_gex'].sum())
 
         data = {
