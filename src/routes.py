@@ -51,6 +51,23 @@ def register(app):
             return jsonify({'error': 'No data yet'}), 202
         return jsonify(data)
 
+    @app.route('/api/expected_move/<symbol>')
+    def api_expected_move(symbol):
+        """Typical distance to the close for the current GEX regime, from saved history."""
+        import gex_stats
+        key = f'${symbol}' if symbol == 'SPX' else symbol
+        with _cache_lock:
+            data = _cache.get(key) or {}
+        if data.get('total_gex') is None or data.get('last_session'):
+            return jsonify(None)
+        return jsonify(gex_stats.expected_move_now(data['total_gex']))
+
+    @app.route('/api/gex_levels/<symbol>')
+    def api_gex_levels(symbol):
+        """Today's level history (flip, walls, pin, true pin) for the trail charts."""
+        from background import load_level_history
+        return jsonify(load_level_history(symbol.upper().replace('$', '')))
+
     @app.route('/api/price/<symbol>')
     def api_price(symbol):
         from datetime import time as dtime

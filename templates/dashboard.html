@@ -685,7 +685,12 @@
 
         function createGexDiv(symbol, slot) {
             const id    = `${symbol}-${slot}`;
-            const label = slot === 'zero' ? '0DTE' : 'ALL EXPIRATIONS';
+            // The non-0DTE panel is built from every expiry except today's (gex_multi).
+            const label = slot === 'zero' ? '0DTE' : 'ALL EXPIRATIONS EX-0DTE';
+            const pinLabel = slot === 'zero' ? 'Pin' : 'Pin (long-dated)';
+            const pinTip   = slot === 'zero'
+                ? 'Strike with the largest 0DTE GEX'
+                : 'Strike with the largest GEX across longer-dated expiries. A multi-day reference, not a same-day target: the close moved away from it 60% of the time in the backtest.';
             const div   = document.createElement('div');
             div.className = 'chart-div';
             div.id = `gex-div-${id}`;
@@ -704,13 +709,16 @@
                     <div style="text-align:right">
                         <div class="regime" id="regime-${id}">—</div>
                         <div class="total-gex">GEX: <span id="gex-${id}">—</span></div>
+                        ${slot === 'zero' ? `
+                        <div class="total-gex" title="Typical distance from now to the 16:00 close on past days in the same GEX regime (median, and the 80th percentile). From saved history; see tools/pin_backtest.py.">Move to close: <span id="em-${symbol}">—</span></div>
+                        <div class="total-gex" title="Dealer hedge flow from charm alone (time decay of their option delta), assuming dealers long calls / short puts. In the backtest its sign matched the direction of the move into the close on 71-76% of days at 13:00-15:00 (~22 days, 2026-06 to 10). Promising, not proven.">Charm flow: <span id="cf-${symbol}">—</span></div>` : ''}
                     </div>
                 </div>
                 <div class="levels">
                     <div class="level-item">Flip: <span id="flip-${id}">—</span></div>
                     <div class="level-item">Put Wall: <span id="put-${id}">—</span></div>
                     <div class="level-item">Call Wall: <span id="call-${id}">—</span></div>
-                    <div class="level-item">Pin: <span id="pin-${id}">—</span></div>
+                    <div class="level-item" title="${pinTip}">${pinLabel}: <span id="pin-${id}">—</span></div>
                     <div class="level-item" style="color:#00e5ff">True Pin: <span id="pin-enhanced-${id}">—</span></div>
                     <div class="level-item" style="color:#888;font-size:0.75em">Strikes: <span id="strikes-${id}">—</span></div>
                 </div>
@@ -757,7 +765,7 @@
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #ffff00"></span>FLIP</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #ff4444"></span>PUT WALL</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #00ff88"></span>CALL WALL</span>
-                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #cc44ff"></span>PIN</span>
+                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #cc44ff"></span>PIN LT</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #00e5ff"></span>TRUE PIN</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px solid rgba(255,165,0,0.6)"></span>VIX</span>
                         </div>` : `<div class="gex-key">
@@ -801,7 +809,7 @@
                         <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #ffff00"></span>FLIP</span>
                         <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #ff4444"></span>PUT WALL</span>
                         <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #00ff88"></span>CALL WALL</span>
-                        <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #cc44ff"></span>PIN</span>
+                        <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #cc44ff"></span>PIN LT</span>
                         <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #00e5ff"></span>TRUE PIN</span>
                     </div>
                 </div>
@@ -845,6 +853,8 @@
                 });
             }
 
+            rebuildTrails(symbol);   // re-bucket server history for the current timeframe
+
             if (trailCharts[symbol]) {
                 const e = trailCharts[symbol];
                 _setSeriesData(e.candleSeries, e.volumeSeries, display);
@@ -863,7 +873,7 @@
                 const flipSeries     = _makeTrailSeries(chart, '#ffff00', 1, LWC.LineStyle.Dashed,      'FLIP');
                 const putWallSeries  = _makeTrailSeries(chart, '#ff4444', 1, LWC.LineStyle.Dotted,      'PUT WALL');
                 const callWallSeries = _makeTrailSeries(chart, '#00ff88', 1, LWC.LineStyle.Dotted,      'CALL WALL');
-                const pinSeries      = _makeTrailSeries(chart, '#cc44ff', 2, LWC.LineStyle.LargeDashed, 'PIN');
+                const pinSeries      = _makeTrailSeries(chart, '#cc44ff', 2, LWC.LineStyle.LargeDashed, 'PIN LT');
                 const truePinSeries  = _makeTrailSeries(chart, '#00e5ff', 2, LWC.LineStyle.Solid,       'TRUE PIN');
 
                 if (_flipTrail[symbol]?.length)     flipSeries.setData(_flipTrail[symbol]);
@@ -927,6 +937,53 @@
             _append(_callWallTrail[symbol], tc?.callWallSeries, src?.call_wall    != null ? src.call_wall    + basis : null);
             _append(_pinTrail[symbol],      tc?.pinSeries,      src?.pin          != null ? src.pin          + basis : null);
             _append(_truePinTrail[symbol],  tc?.truePinSeries,  src?.pin_enhanced != null ? src.pin_enhanced + basis : null);
+        }
+
+        // ── Trail history from the server ─────────────────────────────────────
+        // The server logs the levels with every chain refresh (about once a
+        // minute), so trails survive reloads and don't depend on price ticks.
+        // Rebuilt per symbol and timeframe; live GEX updates extend it.
+        let _levelHistory = [];   // [{time, spot, flip_level, put_wall, call_wall, pin, pin_enhanced}]
+
+        function rebuildTrails(symbol) {
+            if (!_levelHistory.length) return;
+            const bucket = (selectedTF[symbol] || 1) * 60;
+            // ES: shift SPX levels by the ES–SPX basis at that moment (ES 1-min close − SPX spot)
+            let esClose = null, basisNow = 0;
+            if (symbol === 'ES') {
+                esClose = new Map((rawCandles['ES'] || []).map(c => [c.time, c.close]));
+                const esLast = rawCandles['ES']?.at(-1)?.close, spxSpot = gexLevels['SPX']?.spot;
+                if (esLast && spxSpot) basisNow = esLast - spxSpot;
+            }
+            const keys = [['flip_level', _flipTrail], ['put_wall', _putWallTrail], ['call_wall', _callWallTrail],
+                          ['pin', _pinTrail], ['pin_enhanced', _truePinTrail]];
+            const built = Object.fromEntries(keys.map(([k]) => [k, new Map()]));
+            for (const row of _levelHistory) {
+                let basis = 0;
+                if (symbol === 'ES') {
+                    const es = esClose.get(Math.floor(row.time / 60) * 60);
+                    basis = (es && row.spot) ? es - row.spot : basisNow;
+                }
+                const t = Math.floor(row.time / bucket) * bucket;
+                for (const [k] of keys) if (row[k] != null) built[k].set(t, row[k] + basis);   // last row in a bucket wins
+            }
+            const tc = trailCharts[symbol];
+            const seriesFor = { flip_level: 'flipSeries', put_wall: 'putWallSeries', call_wall: 'callWallSeries',
+                                pin: 'pinSeries', pin_enhanced: 'truePinSeries' };
+            for (const [k, store] of keys) {
+                store[symbol] = [...built[k]].map(([time, value]) => ({ time, value })).sort((a, b) => a.time - b.time);
+                if (tc) tc[seriesFor[k]].setData(store[symbol]);
+            }
+        }
+
+        async function fetchLevelHistory() {
+            try {
+                const res = await fetch('/api/gex_levels/SPX');
+                if (!res.ok) return;
+                _levelHistory = await res.json();
+                rebuildTrails('SPX');
+                rebuildTrails('ES');
+            } catch (e) { console.warn('[trail history]', e); }
         }
 
         // ── GEX chart (Chart.js — horizontal bars, strikes on Y axis) ────────────
@@ -1312,8 +1369,15 @@
             applyGexLevels(symbol);
             if (symbol === 'SPX') applyGexLevels('ES');
 
-            // Trail points are added by updatePriceCandle (candle-driven),
-            // not here — avoids double-points and keeps trails aligned with candles.
+            // Extend the trails on every GEX update, bucketed to each chart's candle
+            // timeframe, so they keep moving even when price ticks are sparse.
+            // Skipped after the close (the levels are then last session's).
+            if (symbol === 'SPX' && !data.last_session) {
+                for (const s of ['SPX', 'ES']) {
+                    const b = (selectedTF[s] || 1) * 60;
+                    appendTrailPoint(s, gexLevels['SPX'], Math.floor(Date.now() / 1000 / b) * b);
+                }
+            }
 
             // Feed 0DTE expiry date into the countdown clock (use SPX as authoritative)
             if (symbol === 'SPX' && data.odte_date) setOdteDate(data.odte_date);
@@ -1340,6 +1404,18 @@
                               zeroTotal, zeroTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
             } else {
                 if (zeroDiv) zeroDiv.style.display = 'none';
+            }
+
+            // Charm flow (0DTE panel): sign is the backtested part; $/hr gives scale
+            const cfEl = document.getElementById(`cf-${symbol}`);
+            if (cfEl) {
+                const cf = data.last_session ? null : data.charm_flow_per_hr;
+                if (cf == null) { cfEl.textContent = '—'; cfEl.style.color = ''; }
+                else {
+                    const m = Math.abs(cf) / 1e6;
+                    cfEl.textContent = `${cf >= 0 ? 'BUY' : 'SELL'} ~$${m >= 10 ? m.toFixed(0) : m.toFixed(1)}M/hr`;
+                    cfEl.style.color = cf >= 0 ? '#00ff88' : '#ff4466';
+                }
             }
 
             // Update DDOI chart if data is present
@@ -1483,7 +1559,7 @@
             flip_level:   { color: '#ffff00', title: 'FLIP',     lineStyle: LWC.LineStyle.Dashed,      lineWidth: 1 },
             put_wall:     { color: '#ff4444', title: 'PUT WALL', lineStyle: LWC.LineStyle.Dotted,      lineWidth: 1 },
             call_wall:    { color: '#00ff88', title: 'CALL WALL',lineStyle: LWC.LineStyle.Dotted,      lineWidth: 1 },
-            pin:          { color: '#cc44ff', title: 'PIN',      lineStyle: LWC.LineStyle.LargeDashed, lineWidth: 1 },
+            pin:          { color: '#cc44ff', title: 'PIN LT',   lineStyle: LWC.LineStyle.LargeDashed, lineWidth: 1 },   // long-dated (ex-0DTE)
             pin_enhanced: { color: '#00e5ff', title: 'TRUE PIN', lineStyle: LWC.LineStyle.Solid,       lineWidth: 2 },
         };
 
@@ -1898,7 +1974,7 @@
             const key   = `${symbol}-${slot}`;
             const entry = gexCharts[key];
             if (!entry || !entry._gexData) return;
-            const label = slot === 'zero' ? '0DTE' : 'ALL EXPIRATIONS';
+            const label = slot === 'zero' ? '0DTE' : 'ALL EXPIRATIONS EX-0DTE';
             openModal(`
                 <div style="margin-bottom:8px">
                     <div style="font-size:0.65rem;color:#444;letter-spacing:2px">GAMMA EXPOSURE · ${label}</div>
@@ -2420,6 +2496,24 @@
                 }, 200);
             } catch(e) { console.error('flow_alerts restore:', e); }
         })();
+
+        // Trail history: load now, then re-sync each minute (the server logs levels once per refresh)
+        fetchLevelHistory();
+        setInterval(fetchLevelHistory, 60000);
+
+        // Expected move to the close for the current regime (server table rebuilt hourly)
+        async function fetchExpectedMove() {
+            const el = document.getElementById('em-SPX');
+            if (!el) return;
+            try {
+                const res = await fetch('/api/expected_move/SPX');
+                const em  = res.ok ? await res.json() : null;
+                el.textContent = em ? `±${em.median.toFixed(0)} pts (80%: ±${em.p80.toFixed(0)})` : '—';
+                el.title = em ? `${em.regime} GEX, from ${em.from} ET, ${em.n} past days` : 'Outside market hours or not enough history';
+            } catch (_) { el.textContent = '—'; }
+        }
+        fetchExpectedMove();
+        setInterval(fetchExpectedMove, 60000);
 
         // GEX refreshes every 30 s; price every 5 min as streaming fallback
         setInterval(fetchGexAll,   GEX_REFRESH_MS);

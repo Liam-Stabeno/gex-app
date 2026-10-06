@@ -12,6 +12,12 @@ from dotenv import load_dotenv
 # never gets an answer blocks its loop forever (seen 2026-10-06: 37 min freeze).
 SCHWAB_TIMEOUT = (5, 20)
 
+# TRUE PIN = argmax over strikes of  w_gamma*|GEX| + w_charm*|charm| + w_vanna*|vanna|,
+# each normalised to its total across strikes. Was (0.40, 0.35, 0.25); a backtest on
+# 35 days (tools/pin_backtest.py, 2026-10-06) found charm/vanna made it worse: median
+# distance to the close 25.6 pts vs 18.8 with mostly gamma. Re-run before changing.
+TRUE_PIN_WEIGHTS = {'gamma': 0.90, 'charm': 0.10, 'vanna': 0.00}
+
 load_dotenv()
 
 CLIENT_ID = os.environ['SCHWAB_CLIENT_ID']

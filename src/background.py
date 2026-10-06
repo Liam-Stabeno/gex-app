@@ -23,7 +23,7 @@ import threading
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
-from gex import get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts
+from gex import get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts, TRUE_PIN_WEIGHTS
 from price_history import fetch_candles, append_candles, load_candles
 import bs
 import delta_flow
@@ -38,7 +38,8 @@ _DATA_DIR    = os.path.join(_PROJECT_DIR, 'data')
 
 _GEX_SNAPSHOT_FIELDS  = ['timestamp', 'spot', 'total_gex', 'regime',
                           'flip_level', 'put_wall', 'call_wall', 'pin',
-                          'strike_min', 'strike_max']
+                          'strike_min', 'strike_max', 'true_pin']
+_last_true_pin: dict = {}   # display symbol -> latest TRUE PIN from the live loop
 _WATCHLIST_FIELDS     = ['timestamp', 'symbol', 'strike', 'side',
                           'expiry_label', 'delta', 'oi']
 
@@ -49,6 +50,8 @@ def _append_gex_snapshot(sym: str, tag: str, row: dict):
     path  = os.path.join(_DATA_DIR, f'gex_{tag}_{sym}_{date}.csv')
     fields = _GEX_SNAPSHOT_FIELDS
     new_file = not os.path.exists(path)
+    if not new_file:
+        _upgrade_snapshot_header(path, fields)
     with open(path, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         if new_file:
@@ -110,6 +113,56 @@ def _record_gex_grid(sym: str, raw_df, spot: float):
                     os.remove(os.path.join(_DATA_DIR, name))
             except (ValueError, OSError):
                 continue
+
+
+def _upgrade_snapshot_header(path: str, fields: list):
+    """Add columns introduced after the file was started (e.g. true_pin) so
+    appended rows line up with the header. Existing rows get blanks."""
+    with open(path, newline='') as f:
+        header = next(csv.reader(f), [])
+    if header == fields or not header:
+        return
+    with open(path, newline='') as f:
+        rows = list(csv.DictReader(f))
+    tmp = path + '.tmp'
+    with open(tmp, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
+        w.writeheader()
+        w.writerows(rows)
+    os.replace(tmp, path)
+
+
+def load_level_history(sym: str) -> list:
+    """Today's GEX level history (all expirations) for the price trail charts.
+
+    Rows come from gex_snapshots_<sym>_<date>.csv, written once per chain refresh
+    during market hours. Timestamps there are naive local time; returned 'time'
+    is epoch seconds to match the candle data.
+    """
+    date = datetime.now().strftime('%Y-%m-%d')
+    path = os.path.join(_DATA_DIR, f'gex_snapshots_{sym}_{date}.csv')
+    if not os.path.exists(path):
+        return []
+
+    def num(v):
+        try:
+            f = float(v)
+            return f if f > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    out = []
+    with open(path, newline='') as f:
+        for r in csv.DictReader(f):
+            try:
+                t = int(datetime.strptime(r['timestamp'], '%Y-%m-%d %H:%M:%S').timestamp())
+            except (KeyError, ValueError):
+                continue
+            out.append({'time': t, 'spot': num(r.get('spot')),
+                        'flip_level': num(r.get('flip_level')), 'put_wall': num(r.get('put_wall')),
+                        'call_wall': num(r.get('call_wall')), 'pin': num(r.get('pin')),
+                        'pin_enhanced': num(r.get('true_pin'))})
+    return out
 
 
 def _last_session_path(sym: str) -> str:
@@ -365,6 +418,7 @@ def refresh_gex(symbol: str):
                 'pin':        _lvl(levels_multi, 'pin'),
                 'strike_min': multi_dict.get('strike_min', ''),
                 'strike_max': multi_dict.get('strike_max', ''),
+                'true_pin':   _last_true_pin.get(display_sym, ''),
             })
 
             if not gex_0dte.empty:
@@ -380,6 +434,7 @@ def refresh_gex(symbol: str):
                     'pin':        _lvl(levels_0dte, 'pin'),
                     'strike_min': zero_dict.get('strike_min', ''),
                     'strike_max': zero_dict.get('strike_max', ''),
+                    'true_pin':   '',
                 })
 
             _append_watchlist(display_sym, ts, watch)
@@ -619,6 +674,7 @@ def live_gex_loop():
         gex_watch = {}   # all watched contracts (0DTE + nearest expiry) — TRUE PIN input
         charm_abs = {}   # strike -> sum(|charm| * oi * 100 * spot)
         vanna_abs = {}   # strike -> sum(|vanna| * oi * 100 * spot)
+        charm_flow = 0.0  # signed dealer charm exposure, $ of delta per year (+ = dealers buy)
         n_solved = n_fallback = 0
         T_by_exp = {}
 
@@ -664,6 +720,9 @@ def live_gex_loop():
                 # Charm and vanna: absolute value — both calls and puts drive
                 # rehedging flows toward the pinned strike regardless of sign.
                 charm_abs[k] = charm_abs.get(k, 0.0) + abs(c or 0.0) * oi * 100 * spot
+                # Dealers long calls / short puts: as time passes their option delta
+                # moves by -charm, so the hedge flow is +sign*charm (buy if > 0).
+                charm_flow  += (c or 0.0) * oi * 100 * spot * sign
                 vanna_abs[k] = vanna_abs.get(k, 0.0) + abs(v or 0.0) * oi * 100 * spot
 
         if not gex_0dte:
@@ -684,10 +743,8 @@ def live_gex_loop():
 
         # ── TRUE PIN — charm + vanna weighted composite ───────────────────
         # Normalize each greek to [0,1] by dividing by its total across
-        # all strikes, then combine with weights: gamma 40%, charm 35%,
-        # vanna 25%.  Charm has a natural 1/T amplification, so its
-        # contribution to TRUE PIN grows automatically on 0DTE afternoons
-        # without any explicit time weighting.
+        # all strikes, then combine with TRUE_PIN_WEIGHTS (gex.py; backtested,
+        # see tools/pin_backtest.py).
         pin_enhanced = None
         gamma_total = sum(abs(v) for v in gex_watch.values()) or 1.0
         charm_total = sum(charm_abs.values()) or 1.0
@@ -697,7 +754,8 @@ def live_gex_loop():
             g_norm = abs(gex_watch.get(k, 0.0)) / gamma_total
             c_norm = charm_abs.get(k, 0.0)      / charm_total
             v_norm = vanna_abs.get(k, 0.0)      / vanna_total
-            score  = 0.40 * g_norm + 0.35 * c_norm + 0.25 * v_norm
+            score  = (TRUE_PIN_WEIGHTS['gamma'] * g_norm + TRUE_PIN_WEIGHTS['charm'] * c_norm
+                      + TRUE_PIN_WEIGHTS['vanna'] * v_norm)
             if score > best_score:
                 best_score   = score
                 pin_enhanced = k
@@ -710,6 +768,8 @@ def live_gex_loop():
         multi_dict       = existing.get('multi') or {'strikes': [], 'net_gex': []}
         levels_multi_ser = dict(existing.get('levels_multi') or {})
         levels_multi_ser['pin_enhanced'] = float(pin_enhanced) if pin_enhanced is not None else None
+        if pin_enhanced is not None:
+            _last_true_pin['SPX'] = float(pin_enhanced)
         total_gex = float(sum(multi_dict.get('net_gex') or [])) + float(df_0dte['net_gex'].sum())
 
         data = {
@@ -725,6 +785,10 @@ def live_gex_loop():
             'has_0dte':     True,
             'updated':      datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'live':         True,   # flag so dashboard knows 0DTE is BS-derived
+            # Hedge flow from charm alone, $ per hour of clock time. Backtest
+            # (tools/pin_backtest.py): its sign matched the move into the close
+            # on 71-76% of days at 13:00-15:00 (2026-06 to 10, ~22 days).
+            'charm_flow_per_hr': charm_flow / (365.0 * 24),
         }
         data.pop('last_session', None)  # live data is never the after-hours fallback
 
