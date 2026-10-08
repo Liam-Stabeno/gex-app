@@ -60,12 +60,22 @@ def save_candles(symbol: str, candles: list, interval: str = '1m'):
         writer.writerows(candles)
 
 
+def finished(candles: list, interval_ms: int = 60_000, now_ms: int | None = None) -> list:
+    """Only bars whose interval has closed. Schwab's pricehistory includes the minute
+    still in progress; saving it froze partial OHLC/volume (append skips existing
+    minutes, so the final values never replaced it)."""
+    now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    return [c for c in candles if c['datetime'] + interval_ms <= now_ms]
+
+
 def append_candles(symbol: str, candles: list, interval: str = '1m'):
-    """Append new candles to existing CSV, skipping duplicates by datetime."""
+    """Append new, finished candles to the CSV, skipping duplicates by datetime."""
     path = csv_path(symbol, interval)
     existing = load_candles(symbol, interval)
     existing_dts = {c['datetime'] for c in existing}
 
+    if interval == '1m':
+        candles = finished(candles)
     new_candles = [c for c in candles if c['datetime'] not in existing_dts]
     if not new_candles:
         return 0
@@ -78,6 +88,33 @@ def append_candles(symbol: str, candles: list, interval: str = '1m'):
         writer.writerows(new_candles)
 
     return len(new_candles)
+
+
+def replace_candles(symbol: str, candles: list, interval: str = '1m') -> int:
+    """Overwrite saved candles that have the same datetime (and add missing ones) with
+    these values, for finished bars only. Atomic rewrite. Returns how many rows changed."""
+    if interval == '1m':
+        candles = finished(candles)
+    if not candles:
+        return 0
+    rows = {c['datetime']: c for c in load_candles(symbol, interval)}
+    changed = 0
+    for c in candles:
+        new = {k: c[k] for k in CANDLE_FIELDS}
+        new['volume'] = int(new['volume'])
+        old = rows.get(new['datetime'])
+        if old is None or any(abs(float(old[k]) - float(new[k])) > 1e-9 for k in CANDLE_FIELDS[1:]):
+            rows[new['datetime']] = new
+            changed += 1
+    if changed:
+        path = csv_path(symbol, interval)
+        tmp = path + '.tmp'
+        with open(tmp, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=CANDLE_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows[k] for k in sorted(rows))
+        os.replace(tmp, path)
+    return changed
 
 
 def sort_and_dedup_csv(symbol: str, interval: str = '1m'):

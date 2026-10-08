@@ -57,6 +57,12 @@ def main():
                          'Call wall (ex-0DTE)': ('call_wall_touch', 'call_wall_break'),
                          'Put wall (ex-0DTE)': ('put_wall_touch', 'put_wall_break')}.items():
         print(f'  {name:30s} {rate(df, t, b)}')
+    for name, gap, brk in (('Resist approached within 10 pts', 'resist_gap_at_high', 'resist_break'),
+                           ('Support approached within 10 pts', 'support_gap_at_low', 'support_break')):
+        gp, bk = num(gap), num(brk)
+        near = gp <= 10
+        k, held = int(near.sum()), int((near & (bk == 0)).sum())
+        print(f'  {name:30s} ' + (f'{k:3d} days, held {held:3d} ({held / k:.0%})' if k else 'never'))
     tb = num('trapdoor_break').dropna()
     print(f'  {"Trapdoor broken":30s} {int(tb.sum())} of {len(tb)} days')
 

@@ -634,12 +634,16 @@ def refresh_price(symbol: str):
         if total_added > 0:
             candles = load_candles(symbol)
             with _cache_lock:
-                _candle_cache[symbol] = candles
+                # Keep live streamed candles newer than the file (the minute just finished
+                # and the one in progress aren't saved yet) instead of dropping them.
+                last_saved = candles[-1]['datetime'] if candles else 0
+                live = [c for c in _candle_cache.get(symbol, []) if c['datetime'] > last_saved]
+                _candle_cache[symbol] = candles + live
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Price updated: {symbol} +{total_added} total")
 
             # Push the latest candle to the browser so it updates without a reload.
             # Map raw CSV symbol → browser chart key (same as on_streamer_candle).
-            _SYM_MAP = {'/ES': 'ES', '$SPX': 'SPX', '$VIX.X': 'VIX'}
+            _SYM_MAP = {'/ES': 'ES', '$SPX': 'SPX'}
             browser_sym = _SYM_MAP.get(symbol, symbol)
             if candles:
                 last = candles[-1]
@@ -688,7 +692,7 @@ def on_streamer_candle(candle: dict):
         $SPX → SPX   (LEVELONE_EQUITIES)
     """
     # Map streamer symbols → browser chart keys
-    _SYM_MAP = {'/ES': 'ES', '$SPX': 'SPX', '$VIX': 'VIX'}
+    _SYM_MAP = {'/ES': 'ES', '$SPX': 'SPX'}
     raw_sym  = candle['symbol']
     browser_sym = _SYM_MAP.get(raw_sym, raw_sym)
 
@@ -958,6 +962,18 @@ def on_streamer_candle(candle: dict):
                 existing.append(candle)
                 push_sse  = True
                 write_csv = is_final
+            elif is_final:
+                # Schwab's completed bar arrives a moment after its minute ends, when
+                # live ticks have already started the next candle. Replace the partial
+                # tick-built candle for that minute instead of dropping the final one.
+                for i in range(len(existing) - 1, max(-1, len(existing) - 11), -1):
+                    if existing[i]['datetime'] == ts_ms:
+                        existing[i] = candle
+                        push_sse  = True
+                        write_csv = True
+                        break
+            if ts_ms == last_ts and is_final:
+                write_csv = True      # the completed bar for the current last minute: persist it
         else:
             existing.append(candle)
             push_sse  = True

@@ -127,7 +127,7 @@ def register(app):
     @app.route('/api/price/<symbol>')
     def api_price(symbol):
         from datetime import time as dtime
-        key = f'${symbol}' if symbol == 'SPX' else f'/{symbol}' if symbol == 'ES' else f'${symbol}.X' if symbol == 'VIX' else symbol
+        key = f'${symbol}' if symbol == 'SPX' else f'/{symbol}' if symbol == 'ES' else symbol
         with _cache_lock:
             candles = list(_candle_cache.get(key, []))
 

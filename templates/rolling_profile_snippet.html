@@ -13,25 +13,25 @@
   }
   .rp-panel .chart-div-header { cursor: zoom-in; }
   .rp-head-right { display: flex; align-items: center; gap: 8px; }
-  .rp-time-label { color: #666; font-size: 11px; }
+  .rp-time-label { color: #b0b0c0; font-size: 11px; }
   .rp-select {
     background: #12121c; color: #ddd; border: 1px solid #2a2a3a; border-radius: 3px;
     font-family: 'Courier New', monospace; font-size: 12px; padding: 3px 6px; cursor: pointer;
   }
   .rp-select:focus { outline: 1px solid #00bcd4; }
   .rp-meta { display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
-             font-size: 11px; color: #666; margin: 6px 0 4px; }
+             font-size: 11px; color: #b0b0c0; margin: 6px 0 4px; }
   .rp-meta .rp-c { color: #00e676; }
   .rp-meta .rp-p { color: #ff5252; }
   .rp-meta .rp-warn { color: #ffb300; }
   .rp-range { display: flex; align-items: center; gap: 6px; margin-left: auto; }
   .rp-range input { width: 120px; accent-color: #00d4ff; cursor: pointer; }
   .rp-range-val { color: #00d4ff; min-width: 44px; }
-  .rp-hint { color: #444; font-size: 10px; }
+  .rp-hint { color: #8a8a9c; font-size: 10px; }
   .rp-canvas-wrap { position: relative; flex: 1; min-height: 200px; }
   .rp-empty {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    color: #444; font-size: 12px; pointer-events: none;
+    color: #8a8a9c; font-size: 12px; pointer-events: none;
   }
 </style>
 
@@ -156,13 +156,13 @@
           y: {
             type: 'linear', position: 'right',
             // every 5-pt strike gets a label while they fit; zoomed out, labels thin to avoid overlap
-            ticks: { stepSize: 5, autoSkip: true, autoSkipPadding: 2, color: '#888', callback: v => String(v),
+            ticks: { stepSize: 5, autoSkip: true, autoSkipPadding: 2, color: '#c8c8d4', callback: v => String(v),
                      font: { family: "'Courier New', monospace", size: big ? 11 : 10 } },
             grid: { color: '#1a1a2a' },
           },
           x: {
             type: 'linear', beginAtZero: true, reverse: true,   // mirrored: volume grows leftward from the strike axis
-            ticks: { color: '#555', maxTicksLimit: big ? 6 : 4, callback: fmtK,
+            ticks: { color: '#a8a8b8', maxTicksLimit: big ? 6 : 4, callback: fmtK,
                      font: { family: "'Courier New', monospace", size: 10 } },
             grid: { color: '#1a1a2a' },
           },
@@ -254,9 +254,9 @@
     const label = (RP_WINDOWS.find(([s]) => s === rpWindow) || [0, ''])[1];
     openModal(`
       <div style="margin-bottom:8px">
-        <div style="font-size:0.65rem;color:#444;letter-spacing:2px">ROLLING PROFILE · 0DTE VOLUME · ${label}</div>
+        <div style="font-size:0.65rem;color:#9a9aac;letter-spacing:2px">ROLLING PROFILE · 0DTE VOLUME · ${label}</div>
         <div style="font-size:1.4rem;color:#fff;font-weight:bold">${RP_SYMBOL}</div>
-        <div style="font-size:0.8rem;color:#555">Scroll to zoom · drag to pan · double-click to reset · ESC to close</div>
+        <div style="font-size:0.8rem;color:#8a8a9c">Scroll to zoom · drag to pan · double-click to reset · ESC to close</div>
       </div>`);
     const container = document.getElementById('modal-chart-container');
     container.innerHTML = '<canvas id="rp-modal-canvas"></canvas>';

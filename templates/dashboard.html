@@ -115,7 +115,7 @@
             margin-bottom: 8px;
         }
 
-        .chart-title { font-size: 0.6rem; color: #444; letter-spacing: 2px; margin-bottom: 2px; }
+        .chart-title { font-size: 0.6rem; color: #9a9aac; letter-spacing: 2px; margin-bottom: 2px; }
         .symbol      { font-size: 1.1rem; font-weight: bold; color: #fff; letter-spacing: 2px; }
         .spot        { font-size: 0.95rem; color: #00d4ff; }
 
@@ -171,7 +171,7 @@
             box-shadow: 0 0 0 100vmax rgba(0,0,0,0.85);
         }
         .zone-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-                    font-size: 0.62rem; color: #666; margin: 2px 0 6px; }
+                    font-size: 0.62rem; color: #b0b0c0; margin: 2px 0 6px; }
         .zone-bar .tf-btn { padding: 1px 7px; }
         .price-panel.replaying { border-color: #ffb300; }
         .price-panel.replaying .chart-title { color: #ffb300; }
@@ -196,7 +196,7 @@
         }
         .gex-strike-slider-wrap span {
             font-size: 0.55rem;
-            color: #444;
+            color: #9a9aac;
             letter-spacing: 0.5px;
             white-space: nowrap;
         }
@@ -226,8 +226,8 @@
 
         .tf-btn {
             background: none;
-            border: 1px solid #222233;
-            color: #444;
+            border: 1px solid #3a3a50;
+            color: #9a9aac;
             font-family: 'Courier New', monospace;
             font-size: 0.58rem;
             padding: 2px 6px;
@@ -238,7 +238,7 @@
             user-select: none;
         }
 
-        .tf-btn:hover { border-color: #444; color: #888; }
+        .tf-btn:hover { border-color: #666; color: #e0e0ea; }
         .tf-btn.active { border-color: #00d4ff; color: #00d4ff; }
 
         /* ── Flow + Delta grid ── */
@@ -265,7 +265,7 @@
             align-items: center;
             gap: 4px;
             font-size: 0.58rem;
-            color: #666;
+            color: #c0c0d0;
             letter-spacing: 0.5px;
             white-space: nowrap;
         }
@@ -377,7 +377,7 @@
         .flow-row.bearish .flow-notional { color: #ff5555; }
         .flow-row.neutral .flow-notional { color: #888; }
         .flow-price      { color: #555; font-size: 0.66rem; }
-        .flow-delta      { color: #666; font-size: 0.65rem; }
+        .flow-delta      { color: #a8a8b8; font-size: 0.65rem; }
 
         /* ── Modal ── */
         #modal-overlay {
@@ -473,7 +473,7 @@
             letter-spacing: 1px;
             font-weight: bold;
         }
-        .phase-premarket  { background: #0a0a1a; color: #444;    border: 1px solid #222; }
+        .phase-premarket  { background: #0a0a1a; color: #9a9aac;    border: 1px solid #222; }
         .phase-open       { background: #0d2b1a; color: #00ff88; border: 1px solid #00ff88; }
         .phase-midday     { background: #1a1a0a; color: #888844; border: 1px solid #555522; }
         .phase-powerhr    { background: #1a0d00; color: #ffaa00; border: 1px solid #ffaa00; }
@@ -491,7 +491,7 @@
             <input type="checkbox" id="rtd-toggle-input" onchange="onRtdToggle()">
             <span class="rtd-slider"></span>
         </label>
-        <span id="rtd-quotes-text" style="color:#444"></span>
+        <span id="rtd-quotes-text" style="color:#8a8a9c"></span>
     </div>
 
     <div id="odte-countdown-bar">
@@ -526,7 +526,7 @@
                         <span id="delta-put-val"  style="color:#d4a017">put: —</span>
                     </div>
                 </div>
-                <div style="font-size:0.65rem;color:#555;text-align:right;line-height:1.7">
+                <div style="font-size:0.65rem;color:#a8a8b8;text-align:right;line-height:1.7">
                     <span style="color:#cc44ff">■</span> CALL<br>
                     <span style="color:#d4a017">■</span> PUT
                 </div>
@@ -546,7 +546,7 @@
                         <span id="delta-0dte-put-val"  style="color:#d4a017">put: —</span>
                     </div>
                 </div>
-                <div style="font-size:0.65rem;color:#555;text-align:right;line-height:1.7">
+                <div style="font-size:0.65rem;color:#a8a8b8;text-align:right;line-height:1.7">
                     <span style="color:#cc44ff">■</span> CALL<br>
                     <span style="color:#d4a017">■</span> PUT
                 </div>
@@ -661,7 +661,7 @@
         const DARK_BASE = {
             layout: {
                 background: { type: 'solid', color: '#12121a' },
-                textColor: '#555',
+                textColor: '#b4b4c4',   // axis text: readable on the dark background
                 fontFamily: "'Courier New', monospace",
                 fontSize: 10,
             },
@@ -694,6 +694,8 @@
                     secondsVisible: false,
                     fixLeftEdge: false,
                     fixRightEdge: false,
+                    rightOffset: 8,                    // room right of the live candle
+                    shiftVisibleRangeOnNewBar: true,   // at the live edge, step one bar per new candle
                     tickMarkFormatter: (utcSecs, tickMarkType) =>
                         tickMarkType <= 2 ? fmtETDate(utcSecs) : fmtET24(utcSecs),
                 },
@@ -720,7 +722,7 @@
                     <div style="display:flex;align-items:center;gap:6px">
                         <span class="gex-drag-handle" title="Drag to move">⠿</span>
                         <div>
-                            <div class="chart-title">GEX · ${label}<span id="odte-date-${id}" style="margin-left:6px;color:#555;font-size:0.6rem;letter-spacing:1px;"></span></div>
+                            <div class="chart-title">GEX · ${label}<span id="odte-date-${id}" style="margin-left:6px;color:#9a9aac;font-size:0.6rem;letter-spacing:1px;"></span></div>
                             <div class="symbol">${symbol}</div>
                             <div class="spot" id="spot-${id}">Loading...</div>
                         </div>
@@ -780,15 +782,13 @@
                             <button class="tf-btn" data-tf="30">30m</button>
                             <button class="tf-btn" data-tf="60">1h</button>
                         </div>
-                        ${symbol !== 'VIX' ? `<div class="gex-key">
+                        <div class="gex-key">
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #ffff00"></span>FLIP</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #ff4444"></span>PUT WALL</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #00ff88"></span>CALL WALL</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #cc44ff"></span>PIN LT</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #00e5ff"></span>TRUE PIN</span>
-                        </div>` : `<div class="gex-key">
-                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px solid rgba(255,165,0,0.6)"></span>VIX</span>
-                        </div>`}
+                        </div>
                     </div>
                 </div>
                 ${symbol === 'SPX' ? `<div class="zone-bar" id="zone-bar-${symbol}">
@@ -802,13 +802,13 @@
                     <span><span class="zone-swatch" style="background:rgba(0,200,120,0.55)"></span> positive gamma: dealers lean against moves, price <b style="color:#00c878">slows / sticks</b></span>
                     <span><span class="zone-swatch" style="background:rgba(255,60,80,0.55)"></span> negative gamma: dealers chase moves, price <b style="color:#ff3c50">speeds up</b></span>
                     <span title="Stronger colour = bigger GEX at that strike (linear). Thin or clear bands slow price only a little."><span class="zone-swatch" style="border:1px solid rgba(120,255,190,0.85)"></span> outlined: 3 strongest strikes (walls)</span>
-                    <span style="margin-left:auto;color:#444">double-click: full screen · drag corner: resize</span>
+                    <span style="margin-left:auto;color:#8a8a9c">double-click: full screen · drag corner: resize</span>
                 </div>
                 <div class="zone-bar" title="ES futures volume per bar, aligned to the SPX candles. Buy/sell split by the tick rule from the live stream (uptick = buy, downtick = sell). Faded bars are estimated from where the candle closed in its range (no tick data for them).">
                     <span>ES VOLUME (bottom pane)</span>
-                    <span><span class="zone-swatch" style="background:rgba(0,230,118,0.85)"></span> buy</span>
-                    <span><span class="zone-swatch" style="background:rgba(255,82,82,0.85)"></span> sell</span>
-                    <span style="color:#555">faded = estimated (before tick data)</span>
+                    <span><span class="zone-swatch" style="background:#00e676"></span> buy</span>
+                    <span><span class="zone-swatch" style="background:#ff5252"></span> sell</span>
+                    <span style="color:#8a8a9c">darker = estimated (no tick data)</span>
                 </div>
                 <div class="zone-bar" id="gamma-levels-${symbol}" title="From the latest 5-min GEX snapshot. Brakes = GEX at the current price vs today's biggest wall.">—</div>` : ''}
                 <div class="chart-container" id="price-canvas-${symbol}"></div>
@@ -838,7 +838,7 @@
         }
 
         // Returns a wrapper div with trail chart (left) + lines chart (right)
-        // Used for SPX and ES — VIX stays as a single chart.
+        // Trail chart + price chart pair (no longer used: SPX has one chart with trails).
         function createPricePairDiv(symbol) {
             const wrapper = document.createElement('div');
             wrapper.className = 'price-pair-wrapper';
@@ -901,12 +901,30 @@
             return [trailCharts[symbol], priceCharts[symbol]?.trail].filter(Boolean);
         }
 
+        // Overlay lines may only use times that have a candle. LW reserves a slot on the
+        // time axis for every time any series has, so a level point at a candle-less time
+        // (pre-market snapshots, after-close snapshots, "now" before its candle exists)
+        // shows as a hole in the candles and shifts the chart when it comes and goes.
+        // Each point moves to the latest candle at or before it (as-of); last one wins.
+        function snapToCandles(points, symbol) {
+            const times = (priceCharts[symbol]?.candleSeries.data() || []).map(c => c.time);
+            if (!times.length || !points?.length) return [];
+            const out = new Map();
+            let j = 0;
+            for (const p of [...points].sort((a, b) => a.time - b.time)) {
+                if (p.time < times[0]) continue;
+                while (j + 1 < times.length && times[j + 1] <= p.time) j++;
+                out.set(times[j], p.value == null ? { time: times[j] } : { time: times[j], value: p.value });
+            }
+            return [...out.values()];
+        }
+
         function setTrailData(target, symbol) {
-            target.flipSeries.setData(_flipTrail[symbol] || []);
-            target.putWallSeries.setData(_putWallTrail[symbol] || []);
-            target.callWallSeries.setData(_callWallTrail[symbol] || []);
-            target.pinSeries.setData(_pinTrail[symbol] || []);
-            target.truePinSeries.setData(_truePinTrail[symbol] || []);
+            target.flipSeries.setData(snapToCandles(_flipTrail[symbol], symbol));
+            target.putWallSeries.setData(snapToCandles(_putWallTrail[symbol], symbol));
+            target.callWallSeries.setData(snapToCandles(_callWallTrail[symbol], symbol));
+            target.pinSeries.setData(snapToCandles(_pinTrail[symbol], symbol));
+            target.truePinSeries.setData(snapToCandles(_truePinTrail[symbol], symbol));
         }
 
         // Initialise or update the trail chart for a symbol.
@@ -1237,8 +1255,11 @@
             // Full bar in the dominant side's colour, the smaller side drawn from 0 over it:
             // minority at the bottom, dominant on top.
             const pts = [...agg].sort((x, y) => x[0] - y[0]);
-            const col = (buy, a) => buy ? (a.measured ? 'rgba(0,230,118,0.85)' : 'rgba(0,230,118,0.3)')
-                                        : (a.measured ? 'rgba(255,82,82,0.85)' : 'rgba(255,82,82,0.3)');
+            // Solid colours: the smaller side is drawn on top of the bigger one, and any
+            // transparency blends them (red over green turned salmon). Estimated bars use
+            // darker solid shades instead of fading.
+            const col = (buy, a) => buy ? (a.measured ? '#00e676' : '#1f5c3e')
+                                        : (a.measured ? '#ff5252' : '#6b2a2a');
             e.esVolTotal.setData(pts.map(([time, a]) => ({ time, value: a.vol, color: col(a.buy >= a.sell, a) })));
             e.esVolSell.setData(pts.map(([time, a]) => ({ time, value: Math.min(a.buy, a.sell),
                                                             color: col(a.buy < a.sell, a) })));
@@ -1283,7 +1304,7 @@
                     .map(([time, v]) => v == null ? { time } : { time, value: v });
                 const last = pts.at(-1);
                 if (last && endT != null && endT > last.time) pts.push(last.value == null ? { time: endT } : { time: endT, value: last.value });
-                e.levelSeries[k].setData(pts);
+                e.levelSeries[k].setData(snapToCandles(pts, 'SPX'));   // no candle-less time slots
             }
         }
 
@@ -1307,7 +1328,7 @@
             const bColor = { strong: '#00ff88', moderate: '#9be7c4', weak: '#ffb300', accelerator: '#ff3c50' }[b.label];
             const item = (name, lv, color) => lv
                 ? `<span>${name} <b style="color:${color}">${lv.strike}</b> (${fmtD(lv.dist)})</span>`
-                : `<span>${name} <b style="color:#555">—</b></span>`;
+                : `<span>${name} <b style="color:#8a8a9c">—</b></span>`;
             el.innerHTML = [
                 `<span>BRAKES AT PRICE <b style="color:${bColor}">${b.label.toUpperCase()} ${b.label === 'accelerator' ? '' : b.pct + '%'}</b></span>`,
                 item('Support', L.support, '#00c878'),
@@ -1346,8 +1367,21 @@
                 const { ctx, scales } = chart;
                 if (!chart._spotPrice || !scales.y || chart._noHorizontalSpot) return;
                 const spot  = chart._spotPrice;
-                const spotY = scales.y.getPixelForValue(spot);
-                if (spotY < scales.y.top || spotY > scales.y.bottom) return;
+                // The strike axis is a category axis (one label per strike), so a price
+                // can't be passed to getPixelForValue directly: place it between the two
+                // strikes around it, in proportion.
+                const labels = (chart.data.labels || []).map(Number);
+                if (labels.length < 2) return;
+                let spotY = null;
+                for (let i = 0; i + 1 < labels.length; i++) {
+                    const a = labels[i], b = labels[i + 1];
+                    if ((spot - a) * (spot - b) <= 0 && a !== b) {
+                        const pa = scales.y.getPixelForValue(i), pb = scales.y.getPixelForValue(i + 1);
+                        spotY = pa + (spot - a) / (b - a) * (pb - pa);
+                        break;
+                    }
+                }
+                if (spotY == null || spotY < scales.y.top || spotY > scales.y.bottom) return;
                 ctx.save();
                 ctx.beginPath();
                 ctx.moveTo(scales.x.left, spotY);
@@ -1356,9 +1390,20 @@
                 ctx.lineWidth   = chart._forModal ? 2 : 1.5;
                 ctx.setLineDash([4, 4]);
                 ctx.stroke();
+                ctx.setLineDash([]);
+                // price label in a dark box at the right end of the line
+                const label = `SPX ${spot.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                ctx.font = `bold ${chart._forModal ? 12 : 10}px Courier New`;
+                const tw = ctx.measureText(label).width, pad = 4, bh = chart._forModal ? 16 : 14;
+                const bx = scales.x.right - tw - pad * 2 - 2, by = spotY - bh / 2;
+                ctx.fillStyle = '#0d1b24';
+                ctx.fillRect(bx, by, tw + pad * 2, bh);
+                ctx.strokeStyle = '#00d4ff';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(bx + 0.5, by + 0.5, tw + pad * 2 - 1, bh - 1);
                 ctx.fillStyle = '#00d4ff';
-                ctx.font = `${chart._forModal ? 12 : 10}px Courier New`;
-                ctx.fillText(spot.toLocaleString(), scales.x.right - 70, spotY - 5);
+                ctx.textBaseline = 'middle';
+                ctx.fillText(label, bx + pad, spotY);
                 ctx.restore();
             }
         };
@@ -1448,7 +1493,7 @@
                         x: {
                             grid:  { color: '#1e1e2e' },
                             ticks: {
-                                color: '#555',
+                                color: '#a8a8b8',
                                 font:  { size: forModal ? 11 : 9 },
                                 callback: v => {
                                     const abs = Math.abs(v);
@@ -1492,7 +1537,7 @@
                             <div class="spot" id="ddoi-spot-${symbol}">—</div>
                         </div>
                     </div>
-                    <div style="text-align:right;font-size:0.65rem;color:#555;line-height:1.6">
+                    <div style="text-align:right;font-size:0.65rem;color:#a8a8b8;line-height:1.6">
                         <span style="color:#00ff88">■</span> Call OI &nbsp;
                         <span style="color:#ff4466">■</span> Put OI
                     </div>
@@ -1567,13 +1612,13 @@
                     scales: {
                         x: {
                             grid: { color: '#1e1e2e' },
-                            ticks: { color: '#555', font: { size: 9 },
+                            ticks: { color: '#a8a8b8', font: { size: 9 },
                                 maxRotation: 45, minRotation: 45,
                                 callback: v => strikes[v] },
                         },
                         y: {
                             grid: { color: '#1e1e2e' },
-                            ticks: { color: '#555', font: { size: 9 },
+                            ticks: { color: '#a8a8b8', font: { size: 9 },
                                 callback: v => v >= 1000 ? (v/1000).toFixed(0)+'K' : v },
                         },
                     },
@@ -1721,13 +1766,13 @@
             applyGexLevels(symbol);
             if (symbol === 'SPX') applyGexLevels('ES');
 
-            // Extend the trails on every GEX update, bucketed to each chart's candle
-            // timeframe, so they keep moving even when price ticks are sparse.
-            // Skipped after the close (the levels are then last session's).
+            // Extend the trails on every GEX update, at the latest candle (never at a time
+            // with no candle yet, which would open a hole in the candles). Skipped after
+            // the close (the levels are then last session's).
             if (symbol === 'SPX' && !data.last_session && !_replayDate) {
                 for (const s of PRICE_SYMBOLS) {
-                    const b = (selectedTF[s] || 1) * 60;
-                    appendTrailPoint(s, gexLevels['SPX'], Math.floor(Date.now() / 1000 / b) * b);
+                    const lastCandle = priceCharts[s]?.candleSeries.data().at(-1)?.time;
+                    if (lastCandle != null) appendTrailPoint(s, gexLevels['SPX'], lastCandle);
                 }
             }
 
@@ -1877,10 +1922,15 @@
             if (!container || !display.length) return;
 
             if (priceCharts[symbol]) {
-                // Chart already exists — replace data in place
+                // Chart already exists — replace data in place, keeping the user's view:
+                // if they were at the live edge it stays live, otherwise it doesn't jump.
                 const entry = priceCharts[symbol];
+                const ts    = entry.chart.timeScale();
+                const atEdge = ts.scrollPosition() >= -1;          // within a bar of the right edge
+                const view  = ts.getVisibleRange();
                 _setSeriesData(entry.candleSeries, entry.volumeSeries, display);
-                entry.chart.timeScale().scrollToRealTime();
+                if (atEdge) ts.scrollToRealTime();
+                else if (view) { try { ts.setVisibleRange(view); } catch (_) {} }
             } else {
                 // First render — create chart from scratch
                 container.innerHTML = '';
@@ -1978,32 +2028,6 @@
             // (_gexTrailLines kept as empty store; trail history comes from appendTrailPoint)
         }
 
-        // ── VIX overlay on SPX price chart ───────────────────────────────────
-        let _vixSeries = null;
-
-        function applyVix(candles) {
-            const entry = priceCharts['SPX'];
-            if (!entry || !candles.length) return;
-
-            if (!_vixSeries) {
-                _vixSeries = entry.chart.addSeries(LWC.LineSeries, {
-                    color:            'rgba(255, 165, 0, 0.6)',
-                    lineWidth:        1,
-                    priceScaleId:     'vix',
-                    lastValueVisible: true,
-                    priceLineVisible: false,
-                    title:            'VIX',
-                });
-                entry.chart.priceScale('vix').applyOptions({
-                    scaleMargins: { top: 0.75, bottom: 0.18 },
-                    visible:      true,
-                    borderColor:  '#332200',
-                });
-            }
-
-            _vixSeries.setData(candles.map(c => ({ time: c.time, value: c.close })));
-        }
-
         /**
          * Switch a symbol's displayed timeframe and re-render from raw 1m data.
          * Called when user clicks a TF button.
@@ -2047,7 +2071,7 @@
 
             if (!s.registered) {
                 dot.style.background  = '#333';
-                text.style.color      = '#444';
+                text.style.color      = '#8a8a9c';
                 text.textContent      = 'TOS RTD: not detected';
                 chk.disabled          = true;
                 qtext.textContent     = '';
@@ -2059,7 +2083,7 @@
                 qtext.textContent     = '';
             } else if (!s.enabled) {
                 dot.style.background  = '#555';
-                text.style.color      = '#555';
+                text.style.color      = '#9a9aac';
                 text.textContent      = 'TOS RTD: disabled (using Schwab)';
                 chk.disabled          = false;
                 qtext.textContent     = s.quote_count ? `${s.quote_count} symbols ready` : '';
@@ -2351,9 +2375,9 @@
             const label = slot === 'zero' ? '0DTE' : 'ALL EXPIRATIONS EX-0DTE';
             openModal(`
                 <div style="margin-bottom:8px">
-                    <div style="font-size:0.65rem;color:#444;letter-spacing:2px">GAMMA EXPOSURE · ${label}</div>
+                    <div style="font-size:0.65rem;color:#9a9aac;letter-spacing:2px">GAMMA EXPOSURE · ${label}</div>
                     <div style="font-size:1.4rem;color:#fff;font-weight:bold">${symbol}</div>
-                    <div style="font-size:0.8rem;color:#555">Press ESC to close</div>
+                    <div style="font-size:0.8rem;color:#8a8a9c">Press ESC to close</div>
                 </div>
             `);
             const container = document.getElementById('modal-chart-container');
@@ -2377,11 +2401,11 @@
 
             openModal(`
                 <div style="margin-bottom:8px">
-                    <div style="font-size:0.65rem;color:#444;letter-spacing:2px">PRICE · ${tfLabel}</div>
+                    <div style="font-size:0.65rem;color:#9a9aac;letter-spacing:2px">PRICE · ${tfLabel}</div>
                     <div style="font-size:1.4rem;color:#fff;font-weight:bold">${symbol}
                         <span style="font-size:1rem;color:#00d4ff">${last ? last.close.toFixed(2) : ''}</span>
                     </div>
-                    <div style="font-size:0.8rem;color:#555">Press ESC to close</div>
+                    <div style="font-size:0.8rem;color:#8a8a9c">Press ESC to close</div>
                 </div>
             `);
             const container = document.getElementById('modal-chart-container');
@@ -2915,25 +2939,25 @@
   }
   .rp-panel .chart-div-header { cursor: zoom-in; }
   .rp-head-right { display: flex; align-items: center; gap: 8px; }
-  .rp-time-label { color: #666; font-size: 11px; }
+  .rp-time-label { color: #b0b0c0; font-size: 11px; }
   .rp-select {
     background: #12121c; color: #ddd; border: 1px solid #2a2a3a; border-radius: 3px;
     font-family: 'Courier New', monospace; font-size: 12px; padding: 3px 6px; cursor: pointer;
   }
   .rp-select:focus { outline: 1px solid #00bcd4; }
   .rp-meta { display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
-             font-size: 11px; color: #666; margin: 6px 0 4px; }
+             font-size: 11px; color: #b0b0c0; margin: 6px 0 4px; }
   .rp-meta .rp-c { color: #00e676; }
   .rp-meta .rp-p { color: #ff5252; }
   .rp-meta .rp-warn { color: #ffb300; }
   .rp-range { display: flex; align-items: center; gap: 6px; margin-left: auto; }
   .rp-range input { width: 120px; accent-color: #00d4ff; cursor: pointer; }
   .rp-range-val { color: #00d4ff; min-width: 44px; }
-  .rp-hint { color: #444; font-size: 10px; }
+  .rp-hint { color: #8a8a9c; font-size: 10px; }
   .rp-canvas-wrap { position: relative; flex: 1; min-height: 200px; }
   .rp-empty {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    color: #444; font-size: 12px; pointer-events: none;
+    color: #8a8a9c; font-size: 12px; pointer-events: none;
   }
 </style>
 
@@ -3058,13 +3082,13 @@
           y: {
             type: 'linear', position: 'right',
             // every 5-pt strike gets a label while they fit; zoomed out, labels thin to avoid overlap
-            ticks: { stepSize: 5, autoSkip: true, autoSkipPadding: 2, color: '#888', callback: v => String(v),
+            ticks: { stepSize: 5, autoSkip: true, autoSkipPadding: 2, color: '#c8c8d4', callback: v => String(v),
                      font: { family: "'Courier New', monospace", size: big ? 11 : 10 } },
             grid: { color: '#1a1a2a' },
           },
           x: {
             type: 'linear', beginAtZero: true, reverse: true,   // mirrored: volume grows leftward from the strike axis
-            ticks: { color: '#555', maxTicksLimit: big ? 6 : 4, callback: fmtK,
+            ticks: { color: '#a8a8b8', maxTicksLimit: big ? 6 : 4, callback: fmtK,
                      font: { family: "'Courier New', monospace", size: 10 } },
             grid: { color: '#1a1a2a' },
           },
@@ -3156,9 +3180,9 @@
     const label = (RP_WINDOWS.find(([s]) => s === rpWindow) || [0, ''])[1];
     openModal(`
       <div style="margin-bottom:8px">
-        <div style="font-size:0.65rem;color:#444;letter-spacing:2px">ROLLING PROFILE · 0DTE VOLUME · ${label}</div>
+        <div style="font-size:0.65rem;color:#9a9aac;letter-spacing:2px">ROLLING PROFILE · 0DTE VOLUME · ${label}</div>
         <div style="font-size:1.4rem;color:#fff;font-weight:bold">${RP_SYMBOL}</div>
-        <div style="font-size:0.8rem;color:#555">Scroll to zoom · drag to pan · double-click to reset · ESC to close</div>
+        <div style="font-size:0.8rem;color:#8a8a9c">Scroll to zoom · drag to pan · double-click to reset · ESC to close</div>
       </div>`);
     const container = document.getElementById('modal-chart-container');
     container.innerHTML = '<canvas id="rp-modal-canvas"></canvas>';

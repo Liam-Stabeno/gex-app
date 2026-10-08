@@ -37,7 +37,8 @@ app.register_blueprint(rolling_bp)  # rolling profile (install_rolling_profile.p
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 SYMBOLS              = ['$SPX']                    # GEX symbols
-PRICE_SYMBOLS        = ['$SPX', '/ES', '$VIX.X']   # price chart symbols
+PRICE_SYMBOLS        = ['$SPX', '/ES']   # price symbols synced from REST (VIX removed: Schwab
+                                         # returned no candles and nothing displayed it)
 REFRESH_INTERVAL     = 60               # GEX refresh cadence (seconds)
 PRICE_SYNC_INTERVAL  = 60              # price sync cadence (seconds)
 

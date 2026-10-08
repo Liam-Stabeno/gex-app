@@ -524,8 +524,12 @@ def build_scorecard(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | 
         s0['et'] = s0['timestamp'].map(_to_et)
 
     close, hi, lo = float(px['close'].iloc[-1]), float(px['high'].max()), float(px['low'].min())
-    t_hi = px['dt'][px['high'].idxmax()]
-    t_lo = px['dt'][px['low'].idxmin()]
+    # Grade each wall with the level in force 15 min BEFORE price got closest to it: at
+    # the moment of the high/low the rules may already have moved on (e.g. resist steps
+    # aside within SR_MIN_PTS), which would grade the next wall instead of the one tested.
+    from datetime import timedelta
+    t_hi = px['dt'][px['high'].idxmax()] - timedelta(minutes=15)
+    t_lo = px['dt'][px['low'].idxmin()] - timedelta(minutes=15)
     at = lambda h, m: datetime.combine(day, dtime(h, m), ET)
     row = {k: '' for k in SCORECARD_FIELDS}
     row.update(date=day.isoformat(), close=close, high=hi, low=lo,

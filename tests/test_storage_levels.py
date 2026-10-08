@@ -125,3 +125,25 @@ def test_wall_reaction_touch_and_break():
     assert gs.wall_reaction(px, 7845, "up")["break"] == 0      # closes 7846: only 1 pt through
     assert gs.wall_reaction(px, 7843, "up")["break"] == 1
     assert gs.wall_reaction(px, 7800, "down")["touch"] == 0
+
+
+# ── price history: never save an unfinished minute; repair overwrites ─
+
+def test_finished_drops_the_minute_in_progress(tmp_path, monkeypatch):
+    import price_history as ph
+    now = 1_791_400_000_000
+    bars = [{"datetime": now - 120_000}, {"datetime": now - 60_000}, {"datetime": now - 30_000}]
+    assert [b["datetime"] for b in ph.finished(bars, now_ms=now)] == [now - 120_000, now - 60_000]
+
+
+def test_replace_candles_overwrites_partial_minutes(tmp_path, monkeypatch):
+    import price_history as ph
+    monkeypatch.setattr(ph, "DATA_DIR", str(tmp_path))
+    t = 1_700_000_000_000
+    bar = lambda dt, c, v: {"datetime": dt, "open": 1.0, "high": c, "low": 1.0, "close": c, "volume": v}
+    ph.save_candles("/ES", [bar(t, 2.0, 100), bar(t + 60_000, 3.0, 50)])          # second one partial
+    ph.append_candles("/ES", [bar(t + 60_000, 9.0, 999)])                         # append can't fix it
+    assert ph.load_candles("/ES")[1]["volume"] == 50
+    assert ph.replace_candles("/ES", [bar(t + 60_000, 3.5, 400), bar(t + 120_000, 4.0, 10)]) == 2
+    rows = ph.load_candles("/ES")
+    assert [(r["close"], r["volume"]) for r in rows] == [(2.0, 100), (3.5, 400), (4.0, 10)]
