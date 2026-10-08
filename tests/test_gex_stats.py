@@ -75,3 +75,20 @@ def test_heatmap_sums_expiries_and_splits_0dte(tmp_path):
     assert h["odte"] == [[-40, 100], [0, 0]]
     assert h["times"][1] - h["times"][0] == 300
     assert gs.load_heatmap("SPX", day=date(2026, 1, 2), data_dir=tmp_path)["times"] == []
+
+
+def test_heatmap_cache_reads_only_appended_lines(tmp_path):
+    import json
+    from datetime import date
+    path = tmp_path / "gex_grid_SPX_2026-10-06.jsonl"
+    snap = lambda m, g: json.dumps({"ts": f"2026-10-06T10:{m:02d}:00-04:00", "spot": 7800.0,
+                                    "exp": ["2026-10-06"], "rows": [[7800.0, 0, 1, 0, g]]}) + "\n"
+    path.write_text(snap(0, 10.0), encoding="utf-8")
+    assert gs.load_heatmap("SPX", day=date(2026, 10, 6), data_dir=tmp_path)["all"] == [[10]]
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(snap(1, 20.0))
+        f.write('{"ts": "2026-10-06T10:02')            # being written: must not appear yet
+    assert gs.load_heatmap("SPX", day=date(2026, 10, 6), data_dir=tmp_path)["all"] == [[10], [20]]
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(':00-04:00", "spot": 7801.0, "exp": ["2026-10-06"], "rows": [[7800.0, 0, 1, 0, 30.0]]}\n')
+    assert gs.load_heatmap("SPX", day=date(2026, 10, 6), data_dir=tmp_path)["all"] == [[10], [20], [30]]

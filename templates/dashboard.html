@@ -1069,6 +1069,9 @@
             updateAllViews() {}
             paneViews() { return [this._view]; }
             setAirPockets(air) { this._air = air || []; this._req && this._req(); }
+            // Live GEX by strike ({all: Map, odte: Map}, from the 2 s GEX updates) for the
+            // current strip, from the latest candle to the right edge. null = none (replay).
+            setLive(live) { this._live = live; this._req && this._req(); }
             setData(data, mode) {
                 this._data = data; this._mode = mode;
                 const cols = (data && data[mode]) || [];
@@ -1084,33 +1087,51 @@
                 const xs = d.times.map(t => ts.timeToCoordinate(Math.floor(t / bucket) * bucket));
                 const ks = d.strikes;
                 target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr }) => {
+                    const live = this._live && this._live[this._mode];
+                    const lastCandle = series.data().at(-1)?.time;
+                    const liveXc = live && lastCandle != null ? ts.timeToCoordinate(lastCandle) : null;
+                    const edge = liveXc != null ? Math.round(liveXc * hr) : bitmapSize.width;   // snapshots end here
+                    const fill = (x0, w, i, g) => {
+                        if (!g) return;
+                        // Linear: strength reads true (a 20M strike looks ~1/9 of a 178M one).
+                        // Negative zones keep a floor so any acceleration zone stays visible.
+                        const r = Math.abs(g) / this._max;
+                        let a = 0.04 + 0.6 * r;
+                        if (g < 0 && r >= 0.03) a = Math.max(a, 0.12);   // faint but visible
+                        if (a < 0.06) return;
+                        const y = cell(i);
+                        if (!y) return;
+                        ctx.fillStyle = g > 0 ? `rgba(0,200,120,${Math.min(a, 0.8).toFixed(3)})` : `rgba(255,60,80,${Math.min(a, 0.8).toFixed(3)})`;
+                        ctx.fillRect(x0, y[0], w, y[1]);
+                    };
+                    const cell = i => {
+                        const top = series.priceToCoordinate(i + 1 < ks.length ? (ks[i] + ks[i + 1]) / 2 : ks[i] + 2.5);
+                        const bot = series.priceToCoordinate(i > 0 ? (ks[i - 1] + ks[i]) / 2 : ks[i] - 2.5);
+                        return (top == null || bot == null) ? null
+                            : [Math.round(top * vr), Math.max(1, Math.round((bot - top) * vr))];
+                    };
                     for (let c = 0; c < cols.length; c++) {
                         if (xs[c] == null) continue;
                         let xEnd = null;
                         for (let n = c + 1; n < xs.length && xEnd == null; n++) xEnd = xs[n];
                         const x0 = Math.round(xs[c] * hr);
-                        const x1 = xEnd == null ? bitmapSize.width : Math.round(xEnd * hr);
+                        const x1 = Math.min(edge, xEnd == null ? edge : Math.round(xEnd * hr));
+                        if (x1 <= 0 || x0 >= bitmapSize.width || x1 <= x0) continue;   // off screen
                         const w  = Math.max(1, x1 - x0);
-                        const cell = i => {
-                            const top = series.priceToCoordinate(i + 1 < ks.length ? (ks[i] + ks[i + 1]) / 2 : ks[i] + 2.5);
-                            const bot = series.priceToCoordinate(i > 0 ? (ks[i - 1] + ks[i]) / 2 : ks[i] - 2.5);
-                            return (top == null || bot == null) ? null
-                                : [Math.round(top * vr), Math.max(1, Math.round((bot - top) * vr))];
-                        };
+                        for (let i = 0; i < ks.length; i++) fill(x0, w, i, cols[c][i]);
+                    }
+
+                    // Live strip: GEX as of now (updates every ~2 s), from the latest candle
+                    // to the right edge. Strikes without a live value keep the last snapshot's.
+                    if (liveXc != null && edge < bitmapSize.width) {
+                        const lastCol = cols[cols.length - 1];
+                        const wL = bitmapSize.width - edge;
                         for (let i = 0; i < ks.length; i++) {
-                            const g = cols[c][i];
-                            if (!g) continue;
-                            // Linear: strength reads true (a 20M strike looks ~1/9 of a 178M one).
-                            // Negative zones keep a floor so any acceleration zone stays visible.
-                            const r = Math.abs(g) / this._max;
-                            let a = 0.04 + 0.6 * r;
-                            if (g < 0 && r >= 0.03) a = Math.max(a, 0.12);   // faint but visible
-                            if (a < 0.06) continue;
-                            const y = cell(i);
-                            if (!y) continue;
-                            ctx.fillStyle = g > 0 ? `rgba(0,200,120,${a.toFixed(3)})` : `rgba(255,60,80,${a.toFixed(3)})`;
-                            ctx.fillRect(x0, y[0], w, y[1]);
+                            const g = live.has(ks[i]) ? live.get(ks[i]) : lastCol[i];
+                            fill(edge, wL, i, g);
                         }
+                        ctx.fillStyle = 'rgba(0,212,255,0.35)';           // "now" divider
+                        ctx.fillRect(edge, 0, Math.max(1, Math.round(hr)), bitmapSize.height);
                     }
 
                     // Air pockets (latest snapshot): near-zero gamma, price travels easily
@@ -1140,8 +1161,8 @@
                     const top3 = cols.map(col => new Set(col.map((g, i) => [Math.abs(g), i])
                         .filter(([m]) => m > 0).sort((a, b) => b[0] - a[0]).slice(0, 3).map(([, i]) => i)));
                     const colEnd = c => {
-                        for (let n = c + 1; n < xs.length; n++) if (xs[n] != null) return Math.round(xs[n] * hr);
-                        return bitmapSize.width;
+                        for (let n = c + 1; n < xs.length; n++) if (xs[n] != null) return Math.min(edge, Math.round(xs[n] * hr));
+                        return edge;
                     };
                     ctx.lineWidth = Math.max(1, Math.round(hr));
                     for (let i = 0; i < ks.length; i++) {
@@ -1801,6 +1822,18 @@
                               zeroTotal, zeroTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
             } else {
                 if (zeroDiv) zeroDiv.style.display = 'none';
+            }
+
+            // Live gamma-zone strip: all expiries = chain ex-0DTE (60 s) + live 0DTE (2 s)
+            if (symbol === 'SPX' && priceCharts.SPX?.zones) {
+                if (_replayDate || data.last_session) {
+                    priceCharts.SPX.zones.setLive(null);
+                } else {
+                    const odte = new Map((data.zero?.strikes || []).map((k, i) => [Number(k), data.zero.net_gex[i]]));
+                    const all  = new Map(odte);
+                    (data.multi?.strikes || []).forEach((k, i) => all.set(Number(k), (all.get(Number(k)) || 0) + data.multi.net_gex[i]));
+                    priceCharts.SPX.zones.setLive({ all, odte });
+                }
             }
 
             // Charm flow (0DTE panel): sign is the backtested part; $/hr gives scale

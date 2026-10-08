@@ -120,48 +120,87 @@ def expected_move_now(total_gex: float, now: datetime | None = None,
             'p80': round(float(r['p80']), 1), 'n': int(r['n']), 'days': days}
 
 
+_hm_lock = threading.Lock()
+_hm_cache: dict = {}   # path -> {'sig', 'offset', 'tail', 'snaps': [(t, spot, {strike: [all, odte]})]}
+
+
+def _hm_parse(line: bytes, day_iso: str):
+    """One grid snapshot line -> (epoch, spot, {strike: [all, odte]}), summed over expiries."""
+    import json
+    try:
+        s = json.loads(line)
+    except ValueError:
+        return None
+    today_i = s['exp'].index(day_iso) if day_iso in s.get('exp', []) else -1
+    by_k = {}
+    for k, exp_i, _c, _p, gex in s.get('rows', []):
+        cell = by_k.setdefault(k, [0.0, 0.0])
+        cell[0] += gex
+        if exp_i == today_i:
+            cell[1] += gex
+    return int(datetime.fromisoformat(s['ts']).timestamp()), s.get('spot'), by_k
+
+
+def _hm_snapshots(path: str, day_iso: str) -> list:
+    """Parsed snapshots for a day file, cached. Today's plain file is read
+    incrementally (only lines appended since the last call); a gzipped finished day
+    is parsed once. With a snapshot every minute the file grows to ~15 MB, so
+    re-reading it every 30-60 s would cost real CPU."""
+    import gzip
+    st = os.stat(path)
+    with _hm_lock:
+        c = _hm_cache.get(path)
+        if path.endswith('.gz'):
+            sig = (st.st_size, st.st_mtime)
+            if not c or c['sig'] != sig:
+                with gzip.open(path, 'rb') as f:
+                    snaps = [x for x in (_hm_parse(l, day_iso) for l in f if l.strip()) if x]
+                c = _hm_cache[path] = {'sig': sig, 'offset': 0, 'tail': b'', 'snaps': snaps}
+            return c['snaps']
+        if not c or st.st_size < c['offset']:            # new or rewritten: start over
+            c = _hm_cache[path] = {'sig': None, 'offset': 0, 'tail': b'', 'snaps': []}
+        if st.st_size > c['offset']:
+            with open(path, 'rb') as f:
+                f.seek(c['offset'])
+                chunk = c['tail'] + f.read()
+                c['offset'] = f.tell()
+            lines = chunk.split(b'\n')
+            c['tail'] = lines.pop()                       # last line, possibly still being written
+            c['snaps'].extend(x for x in (_hm_parse(l, day_iso) for l in lines if l.strip()) if x)
+            if c['tail'].strip():                         # complete JSON without a final newline:
+                x = _hm_parse(c['tail'], day_iso)         # a half-written line can't parse
+                if x:
+                    c['snaps'].append(x)
+                    c['tail'] = b''
+        return c['snaps']
+
+
 def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
                  data_dir: str = _DATA_DIR) -> dict:
-    """Net GEX per strike over time, from gex_grid_<sym>_<date>.jsonl (5-min snapshots).
+    """Net GEX per strike over time, from gex_grid_<sym>_<date>.jsonl (one snapshot per
+    chain refresh, about every minute; every 5 min before 2026-10-07).
 
-    Returns {'times': [epoch s], 'strikes': [...], 'all': [[gex per strike] per time],
-             'odte': [...]} for strikes within `band` pts of the day's spot range.
+    Returns {'times': [epoch s], 'spots', 'strikes': [...], 'all': [[gex per strike] per
+    time], 'odte': [...]} for strikes within `band` pts of the day's spot range.
     Positive = dealers long gamma (hedging dampens moves); negative = amplifies.
     """
-    import json
     day = day or datetime.now(ET).date()
     path = day_file(f'gex_grid_{sym}_{day.isoformat()}.jsonl', data_dir)
     empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': []}
     if not path:
         return empty
-    snaps = []
-    with open_text(path) as f:
-        for line in f:
-            try:
-                snaps.append(json.loads(line))
-            except ValueError:
-                continue
+    snaps = _hm_snapshots(path, day.isoformat())
     if not snaps:
         return empty
-    spots = [s['spot'] for s in snaps if s.get('spot')]
+    spots = [sp for _, sp, _ in snaps if sp]
     lo, hi = min(spots) - band, max(spots) + band
-    strikes = sorted({r[0] for s in snaps for r in s['rows'] if lo <= r[0] <= hi})
-    idx = {k: i for i, k in enumerate(strikes)}
+    strikes = sorted({k for _, _, by_k in snaps for k in by_k if lo <= k <= hi})
     out = {'times': [], 'spots': [], 'strikes': strikes, 'all': [], 'odte': []}
-    for s in snaps:
-        today_i = s['exp'].index(day.isoformat()) if day.isoformat() in s['exp'] else -1
-        all_col, odte_col = [0.0] * len(strikes), [0.0] * len(strikes)
-        for k, exp_i, _c, _p, gex in s['rows']:
-            i = idx.get(k)
-            if i is None:
-                continue
-            all_col[i] += gex
-            if exp_i == today_i:
-                odte_col[i] += gex
-        out['times'].append(int(datetime.fromisoformat(s['ts']).timestamp()))
-        out['spots'].append(s.get('spot'))
-        out['all'].append([round(v) for v in all_col])
-        out['odte'].append([round(v) for v in odte_col])
+    for t, sp, by_k in snaps:
+        out['times'].append(t)
+        out['spots'].append(sp)
+        out['all'].append([round(by_k[k][0]) if k in by_k else 0 for k in strikes])
+        out['odte'].append([round(by_k[k][1]) if k in by_k else 0 for k in strikes])
     return out
 
 

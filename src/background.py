@@ -94,7 +94,7 @@ def _append_gex_snapshot(sym: str, tag: str, row: dict):
 # Cells with no OI on either side are left out. The first line of each day
 # records the opening OI (it only changes overnight).
 _ET               = ZoneInfo('America/New_York')
-GRID_INTERVAL_SEC = 300      # snapshot every 5 min (the GEX refresh runs every 60 s)
+GRID_INTERVAL_SEC = 50       # snapshot every chain refresh (~60 s); was 300 before 2026-10-07
 GRID_KEEP_DAYS    = None     # keep forever (finished days are gzipped by gex_stats.archive_old_files)
 _grid_last_ts: dict = {}     # sym -> time.time() of last snapshot
 _grid_cleaned_day: dict = {} # sym -> ET date of last cleanup
