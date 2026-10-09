@@ -805,9 +805,9 @@
                     <button class="tf-btn active" data-zone="all" title="Net GEX at each strike, all expirations">All</button>
                     <button class="tf-btn" data-zone="odte" title="Net GEX at each strike, 0DTE only">0DTE</button>
                     <button class="tf-btn" data-zone="off">Off</button>
-                    <span><span class="zone-swatch" style="background:rgba(0,200,120,0.55)"></span> positive gamma: dealers lean against moves, price <b style="color:#00c878">slows / sticks</b></span>
-                    <span><span class="zone-swatch" style="background:rgba(255,60,80,0.55)"></span> negative gamma: dealers chase moves, price <b style="color:#ff3c50">speeds up</b></span>
-                    <span title="Stronger colour = bigger GEX at that strike (linear). Thin or clear bands slow price only a little."><span class="zone-swatch" style="border:1px solid rgba(120,255,190,0.85)"></span> outlined: 3 strongest strikes (walls)</span>
+                    <span title="Brighter = bigger GEX at that strike, scaled to the day's biggest (linear). Faint bands slow price only a little."><span class="zone-swatch" style="width:26px;background:linear-gradient(90deg, rgba(0,110,70,0.2), rgba(90,245,175,0.75))"></span> positive gamma: dealers lean against moves, price <b style="color:#00c878">slows / sticks</b> (brighter = stronger)</span>
+                    <span title="Brighter = bigger negative GEX at that strike, scaled to the day's biggest (linear)."><span class="zone-swatch" style="width:26px;background:linear-gradient(90deg, rgba(140,25,40,0.3), rgba(255,105,120,0.75))"></span> negative gamma: dealers chase moves, price <b style="color:#ff3c50">speeds up</b></span>
+                    <span title="The 3 biggest strikes in each snapshot, boxed for as long as they stay in the top 3."><span class="zone-swatch" style="border:1px solid rgba(255,255,255,0.75)"></span> outlined: 3 strongest strikes (walls)</span>
                     <span title="Strikes with almost no gamma (under 5% of the day's biggest) in the latest snapshot, drawn from there to the right edge. Nothing slows price there, so it tends to move through quickly. Listed as 'Air' in the levels bar."><span class="zone-swatch" style="background:repeating-linear-gradient(135deg, rgba(200,200,220,0.55) 0 1px, transparent 1px 4px);border:1px solid #333"></span> hatched: air pocket, price moves through fast</span>
                     <span style="margin-left:auto;color:#8a8a9c">double-click: full screen · drag corner: resize</span>
                 </div>
@@ -1065,6 +1065,22 @@
         // Green = positive gamma (dealer hedging dampens moves: price slows / sticks),
         // red = negative gamma (hedging amplifies: price speeds up). Columns are the
         // 5-min snapshots in data/gex_grid_*.jsonl; the last one runs to the right edge.
+        // Heatmap cell colour: brighter = bigger |GEX|. Opacity AND colour both rise with
+        // r = |GEX| / the day's biggest (linear, so strength still reads true): small
+        // strikes are a faint dark green / red, the biggest glow neon. Negative zones keep
+        // a floor so any acceleration zone stays visible. 64 steps, built once.
+        const ZONE_STEPS = 64;
+        const _zoneStyles = { pos: [], neg: [] };
+        for (let s = 0; s <= ZONE_STEPS; s++) {
+            const r = s / ZONE_STEPS, mix = (a, b) => Math.round(a + (b - a) * r);
+            const aPos = 0.07 + 0.68 * r;                       // 0.07 .. 0.75 (0.85 washed out green candles)
+            const aNeg = Math.max(0.16, aPos);
+            _zoneStyles.pos.push(`rgba(${mix(0, 90)},${mix(110, 245)},${mix(70, 175)},${aPos.toFixed(3)})`);
+            _zoneStyles.neg.push(`rgba(${mix(140, 255)},${mix(25, 105)},${mix(40, 120)},${aNeg.toFixed(3)})`);
+        }
+        const zoneStyle = (positive, r) =>
+            _zoneStyles[positive ? 'pos' : 'neg'][Math.min(ZONE_STEPS, Math.round(r * ZONE_STEPS))];
+
         class GammaZones {
             constructor(bucketSec) {
                 this._bucketSec = bucketSec;
@@ -1106,15 +1122,11 @@
                     const edge = liveXc != null ? Math.round(liveXc * hr) : bitmapSize.width;   // snapshots end here
                     const fill = (x0, w, i, g) => {
                         if (!g) return;
-                        // Linear: strength reads true (a 20M strike looks ~1/9 of a 178M one).
-                        // Negative zones keep a floor so any acceleration zone stays visible.
                         const r = Math.abs(g) / this._max;
-                        let a = 0.04 + 0.6 * r;
-                        if (g < 0 && r >= 0.03) a = Math.max(a, 0.12);   // faint but visible
-                        if (a < 0.06) return;
+                        if (r < 0.03) return;                      // too small to matter
                         const y = cells[i];
                         if (!y) return;
-                        ctx.fillStyle = g > 0 ? `rgba(0,200,120,${Math.min(a, 0.8).toFixed(3)})` : `rgba(255,60,80,${Math.min(a, 0.8).toFixed(3)})`;
+                        ctx.fillStyle = zoneStyle(g > 0, r);
                         ctx.fillRect(x0, y[0], w, y[1]);
                     };
                     // each strike's band in pixels, once per frame (was 2 lookups per strike per column)
@@ -1188,7 +1200,8 @@
                             if (inWall && start == null) start = c;
                             if (!inWall && start != null) {
                                 const x0 = Math.round(xs[start] * hr), x1 = colEnd(c - 1);
-                                ctx.strokeStyle = cols[c - 1][i] > 0 ? 'rgba(120,255,190,0.8)' : 'rgba(255,140,150,0.85)';
+                                // white / pale pink: still visible over the brightest fills
+                                ctx.strokeStyle = cols[c - 1][i] > 0 ? 'rgba(255,255,255,0.75)' : 'rgba(255,205,210,0.85)';
                                 ctx.strokeRect(x0 + 0.5, y[0] + 0.5, Math.max(1, x1 - x0 - 1), Math.max(1, y[1] - 1));
                                 start = null;
                             }
@@ -1994,7 +2007,11 @@
             const candleSeries = chart.addSeries(LWC.CandlestickSeries, {
                 upColor:      '#00ff88',
                 downColor:    '#ff4444',
-                borderVisible: false,
+                // thin dark edge: invisible on the dark background, keeps candles readable
+                // on the bright heatmap bands
+                borderVisible:   true,
+                borderUpColor:   '#04261a',
+                borderDownColor: '#2a0808',
                 wickUpColor:   '#00ff88',
                 wickDownColor: '#ff4444',
             });
