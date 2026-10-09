@@ -54,6 +54,43 @@ def pick_with_hysteresis(scores: dict, current, margin: float = TRUE_PIN_SWITCH_
         return current
     return best
 
+
+# A new TRUE PIN must stay the pick this long before it shows. The margin alone let it
+# flip 7720/7750 and 7780/7800 31 times on 2026-10-08; 18 of those lasted <= 2 min.
+TRUE_PIN_CONFIRM_SEC = 180
+
+
+def confirmed_pick(pick, current, pending: dict, now: float, hold: float = TRUE_PIN_CONFIRM_SEC):
+    """Move from `current` to `pick` only once `pick` has been the choice for `hold`
+    seconds in a row. `pending` ({'key', 'since'}) carries the challenger between calls."""
+    if current is None or pick == current:
+        pending.clear()
+        return pick
+    if pick is None:
+        return current
+    if pending.get('key') != pick:
+        pending.update(key=pick, since=now)
+    if now - pending['since'] >= hold:
+        pending.clear()
+        return pick
+    return current
+
+
+def drop_expired(chain: dict, now=None) -> dict:
+    """The chain without contracts that already expired today. After 16:00 ET Schwab
+    still lists the day's expiry (OI intact, gamma huge as T -> 0), which put a fake
+    -351M wall at 7765 into the levels, heatmap and after-hours view on 2026-10-08."""
+    from zoneinfo import ZoneInfo
+    from datetime import time as dtime
+    now = now or datetime.now(ZoneInfo('America/New_York'))
+    if now.time() < dtime(16, 0):
+        return chain
+    today = now.date().isoformat()
+    out = dict(chain)
+    for side in ('callExpDateMap', 'putExpDateMap'):
+        out[side] = {k: v for k, v in (chain.get(side) or {}).items() if k.split(':')[0] > today}
+    return out
+
 load_dotenv()
 
 CLIENT_ID = os.environ['SCHWAB_CLIENT_ID']

@@ -1,7 +1,10 @@
 import os
 import csv
 import time
+import bisect
+import threading
 import requests
+from array import array
 from datetime import datetime, timezone, timedelta, time as dtime
 from collections import defaultdict
 from zoneinfo import ZoneInfo
@@ -12,6 +15,76 @@ _SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(_SRC_DIR), 'data')
 ET = ZoneInfo('America/New_York')
 CANDLE_FIELDS = ['datetime', 'open', 'high', 'low', 'close', 'volume']
+CACHE_DAYS = 10   # days of candles the live chart keeps in memory; older days come from the file
+
+# Saved minutes per file, so an append can skip duplicates without re-reading the
+# file. /ES is 38 MB (780k rows): that full read took ~10 s and 329 MB, several
+# times a minute (every streamed bar too). Rebuilt when the file's size no longer
+# matches, i.e. another writer (repair tool, backfill script) changed it.
+_idx_lock = threading.Lock()
+_idx: dict = {}   # path -> {'size': int, 'dts': array('q'), sorted}
+
+
+def _iter_rows(path: str):
+    """(datetime_ms, raw line bytes) for each data row, streamed; NUL bytes dropped."""
+    with open(path, 'rb') as f:
+        f.readline()                               # header
+        for line in f:
+            if b'\x00' in line:
+                line = line.replace(b'\x00', b'')
+            comma = line.find(b',')
+            if comma <= 0:
+                continue
+            try:
+                yield int(line[:comma]), line
+            except ValueError:
+                continue
+
+
+def _saved_index(path: str) -> dict:
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+    ent = _idx.get(path)
+    if ent is None or ent['size'] != size:
+        dts = sorted({dt for dt, _ in _iter_rows(path)}) if size else []
+        ent = _idx[path] = {'size': size, 'dts': array('q', dts)}
+    return ent
+
+
+def _has(dts, dt: int) -> bool:
+    i = bisect.bisect_left(dts, dt)
+    return i < len(dts) and dts[i] == dt
+
+
+def _fmt_row(r: dict) -> bytes:
+    v = r['volume']
+    r = {**r, 'volume': int(v) if isinstance(v, float) and v.is_integer() else v}
+    return (','.join(str(r[k]) for k in CANDLE_FIELDS) + '\r\n').encode()
+
+
+def last_saved_ms(symbol: str, interval: str = '1m') -> int | None:
+    """Datetime of the newest saved candle, without reading the whole file."""
+    with _idx_lock:
+        dts = _saved_index(csv_path(symbol, interval))['dts']
+        return dts[-1] if dts else None
+
+
+def load_range(symbol: str, start_ms: int, end_ms: int | None = None, interval: str = '1m') -> list:
+    """Candles with start_ms <= datetime < end_ms, sorted (last row wins on a duplicate).
+    Only rows in range are parsed: a day out of /ES takes ~1 s instead of ~10."""
+    path = csv_path(symbol, interval)
+    if not os.path.exists(path):
+        return []
+    out = {}
+    for dt, line in _iter_rows(path):
+        if dt < start_ms or (end_ms is not None and dt >= end_ms):
+            continue
+        p = line.decode('utf-8', 'replace').strip().split(',')
+        try:
+            out[dt] = {'datetime': dt, 'open': float(p[1]), 'high': float(p[2]),
+                       'low': float(p[3]), 'close': float(p[4]), 'volume': int(float(p[5]))}
+        except (ValueError, IndexError):
+            continue
+    return [out[k] for k in sorted(out)]
 
 
 def csv_path(symbol: str, interval: str = '1m') -> str:
@@ -54,10 +127,12 @@ def save_candles(symbol: str, candles: list, interval: str = '1m'):
     """Write full candle list to CSV, replacing existing file."""
     path = csv_path(symbol, interval)
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=CANDLE_FIELDS)
-        writer.writeheader()
-        writer.writerows(candles)
+    with _idx_lock:
+        with open(path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=CANDLE_FIELDS)
+            writer.writeheader()
+            writer.writerows(candles)
+        _idx.pop(path, None)
 
 
 def finished(candles: list, interval_ms: int = 60_000, now_ms: int | None = None) -> list:
@@ -68,52 +143,89 @@ def finished(candles: list, interval_ms: int = 60_000, now_ms: int | None = None
     return [c for c in candles if c['datetime'] + interval_ms <= now_ms]
 
 
-def append_candles(symbol: str, candles: list, interval: str = '1m'):
-    """Append new, finished candles to the CSV, skipping duplicates by datetime."""
-    path = csv_path(symbol, interval)
-    existing = load_candles(symbol, interval)
-    existing_dts = {c['datetime'] for c in existing}
-
+def append_new(symbol: str, candles: list, interval: str = '1m') -> list:
+    """Append finished candles that aren't saved yet; returns the rows written, sorted."""
     if interval == '1m':
         candles = finished(candles)
-    new_candles = [c for c in candles if c['datetime'] not in existing_dts]
-    if not new_candles:
-        return 0
+    if not candles:
+        return []
+    path = csv_path(symbol, interval)
+    with _idx_lock:
+        dts = _saved_index(path)['dts']
+        new = {}
+        for c in candles:
+            dt = int(c['datetime'])
+            if dt not in new and not _has(dts, dt):
+                new[dt] = {**{k: c[k] for k in CANDLE_FIELDS}, 'datetime': dt}
+        if not new:
+            return []
+        rows = [new[k] for k in sorted(new)]
+        os.makedirs(DATA_DIR, exist_ok=True)
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        head = (','.join(CANDLE_FIELDS) + '\r\n').encode() if size == 0 else b''
+        if size:
+            with open(path, 'rb') as f:              # a torn last line would swallow the next row
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b'\n':
+                    head = b'\r\n'
+        with open(path, 'ab') as f:
+            f.write(head + b''.join(_fmt_row(r) for r in rows))
+        for r in rows:
+            bisect.insort(dts, r['datetime'])
+        _idx[path]['size'] = os.path.getsize(path)
+    return rows
 
-    file_exists = os.path.exists(path)
-    with open(path, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=CANDLE_FIELDS)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerows(new_candles)
 
-    return len(new_candles)
+def append_candles(symbol: str, candles: list, interval: str = '1m') -> int:
+    """Append new, finished candles to the CSV, skipping duplicates by datetime."""
+    return len(append_new(symbol, candles, interval))
 
 
 def replace_candles(symbol: str, candles: list, interval: str = '1m') -> int:
     """Overwrite saved candles that have the same datetime (and add missing ones) with
-    these values, for finished bars only. Atomic rewrite. Returns how many rows changed."""
+    these values, for finished bars only. Streams the file into an atomic rewrite, so
+    /ES needs neither the full parse nor its memory. Returns how many rows changed."""
     if interval == '1m':
         candles = finished(candles)
     if not candles:
         return 0
-    rows = {c['datetime']: c for c in load_candles(symbol, interval)}
-    changed = 0
+    new = {}
     for c in candles:
-        new = {k: c[k] for k in CANDLE_FIELDS}
-        new['volume'] = int(new['volume'])
-        old = rows.get(new['datetime'])
-        if old is None or any(abs(float(old[k]) - float(new[k])) > 1e-9 for k in CANDLE_FIELDS[1:]):
-            rows[new['datetime']] = new
-            changed += 1
-    if changed:
-        path = csv_path(symbol, interval)
-        tmp = path + '.tmp'
-        with open(tmp, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=CANDLE_FIELDS)
-            writer.writeheader()
-            writer.writerows(rows[k] for k in sorted(rows))
-        os.replace(tmp, path)
+        r = {k: c[k] for k in CANDLE_FIELDS}
+        r['datetime'], r['volume'] = int(r['datetime']), int(r['volume'])
+        new[r['datetime']] = r
+
+    def differs(line: bytes, r: dict) -> bool:
+        p = line.decode('utf-8', 'replace').strip().split(',')
+        try:
+            return any(abs(float(p[i]) - float(r[k])) > 1e-9 for i, k in enumerate(CANDLE_FIELDS) if i)
+        except (ValueError, IndexError):
+            return True
+
+    path = csv_path(symbol, interval)
+    tmp = path + '.tmp'
+    changed, seen = 0, set()
+    with _idx_lock:
+        with open(tmp, 'wb') as out:
+            out.write((','.join(CANDLE_FIELDS) + '\r\n').encode())
+            if os.path.exists(path):
+                for dt, line in _iter_rows(path):
+                    r = new.get(dt)
+                    if r is None:
+                        out.write(line if line.endswith(b'\n') else line + b'\r\n')
+                        continue
+                    if dt not in seen and differs(line, r):
+                        changed += 1
+                    seen.add(dt)
+                    out.write(_fmt_row(r))
+            for dt in sorted(set(new) - seen):
+                out.write(_fmt_row(new[dt]))
+                changed += 1
+        if changed:
+            os.replace(tmp, path)
+            _idx.pop(path, None)
+        else:
+            os.remove(tmp)
     return changed
 
 
@@ -195,16 +307,16 @@ def sync_symbol(symbol: str, token: str) -> list:
     fetch missing data from Schwab, merge and save.  Also fetches today's
     live session separately because Schwab's period= param only covers
     completed trading days.
-    Returns full candle list.
+    Returns the last CACHE_DAYS of candles (what the live chart keeps in memory).
     """
     from zoneinfo import ZoneInfo
     ET = ZoneInfo('America/New_York')
 
-    existing = load_candles(symbol)
+    last_ms = last_saved_ms(symbol)
     total_added = 0
 
-    if existing:
-        last_ts = existing[-1]['datetime'] / 1000
+    if last_ms:
+        last_ts = last_ms / 1000
         last_dt = datetime.fromtimestamp(last_ts)
         gap_days = (datetime.now() - last_dt).days + 1
         gap_days = min(gap_days, 10)
@@ -231,13 +343,12 @@ def sync_symbol(symbol: str, token: str) -> list:
         if added > 0:
             print(f"[price_history] {symbol}: +{added} candles from today's live session")
 
+    recent = load_range(symbol, int((time.time() - CACHE_DAYS * 86400) * 1000))
     if not fresh and not live:
         print(f"[price_history] No candles returned for {symbol}")
-        return existing
-
-    print(f"[price_history] {symbol}: {len(existing)} existing + {total_added} new candles added")
-
-    return load_candles(symbol)
+    else:
+        print(f"[price_history] {symbol}: +{total_added} new candles added")
+    return recent
 
 
 def backfill(symbol: str, token: str, days: int = 35):

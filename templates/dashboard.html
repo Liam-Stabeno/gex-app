@@ -176,6 +176,12 @@
         .price-panel.replaying { border-color: #ffb300; }
         .price-panel.replaying .chart-title { color: #ffb300; }
         .zone-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
+        .zone-regime { padding: 1px 6px; border-radius: 3px; }
+        .zone-regime.pos { color: #b8f5d4; background: #0d2b1a; border: 1px solid #00ff8866; }
+        .zone-regime.neg { color: #ffc4c4; background: #2b0d0d; border: 1px solid #ff444488; }
+        .zone-regime b { letter-spacing: 0.5px; }
+        .zone-regime.pos b { color: #00ff88; }
+        .zone-regime.neg b { color: #ff5c5c; }
 
 
         /* Strike range slider — vertical, left of canvas */
@@ -732,7 +738,7 @@
                         <div class="total-gex">GEX: <span id="gex-${id}">—</span></div>
                         ${slot === 'zero' ? `
                         <div class="total-gex" title="Typical distance from now to the 16:00 close on past days in the same GEX regime (median, and the 80th percentile). From saved history; see tools/pin_backtest.py.">Move to close: <span id="em-${symbol}">—</span></div>
-                        <div class="total-gex" title="Dealer hedge flow from charm alone (time decay of their option delta), assuming dealers long calls / short puts. In the backtest its sign matched the direction of the move into the close on 71-76% of days at 13:00-15:00 (~22 days, 2026-06 to 10). Promising, not proven.">Charm flow: <span id="cf-${symbol}">—</span></div>` : ''}
+                        <div class="total-gex" title="EXPERIMENTAL. Dealer hedge flow from charm alone (time decay of their option delta), assuming dealers long calls / short puts. Backtest: its sign matched the move into the close on 71-76% of days at 13:00-15:00 (~22 days, 2026-06 to 10). 'live' = how often its 13:00/14:00/15:00 sign matched the move into the close on recorded days (from 2026-10-07, daily scorecard); treat it as unproven until ~20 live days. Hidden after 15:30: charm explodes as 0DTE expiry nears (billions per hour), which says nothing about direction.">Charm flow <span id="cf-rec-${symbol}" style="color:#8a8a9c">(experimental)</span>: <span id="cf-${symbol}">—</span></div>` : ''}
                     </div>
                 </div>
                 <div class="levels">
@@ -1075,8 +1081,14 @@
             setData(data, mode) {
                 this._data = data; this._mode = mode;
                 const cols = (data && data[mode]) || [];
-                // one linear scale for the day
-                this._max = Math.max(1, ...cols.flat().map(Math.abs));
+                // one linear scale for the day (a loop: spreading ~70k values into
+                // Math.max can overflow the call stack)
+                let max = 1;
+                for (const col of cols) for (const g of col) { const a = Math.abs(g); if (a > max) max = a; }
+                this._max = max;
+                // the 3 strongest strikes per column (walls), once per data change, not per frame
+                this._top3 = cols.map(col => new Set(col.map((g, i) => [Math.abs(g), i])
+                    .filter(([m]) => m > 0).sort((a, b) => b[0] - a[0]).slice(0, 3).map(([, i]) => i)));
                 this._req && this._req();
             }
             _draw(target) {
@@ -1099,17 +1111,19 @@
                         let a = 0.04 + 0.6 * r;
                         if (g < 0 && r >= 0.03) a = Math.max(a, 0.12);   // faint but visible
                         if (a < 0.06) return;
-                        const y = cell(i);
+                        const y = cells[i];
                         if (!y) return;
                         ctx.fillStyle = g > 0 ? `rgba(0,200,120,${Math.min(a, 0.8).toFixed(3)})` : `rgba(255,60,80,${Math.min(a, 0.8).toFixed(3)})`;
                         ctx.fillRect(x0, y[0], w, y[1]);
                     };
-                    const cell = i => {
-                        const top = series.priceToCoordinate(i + 1 < ks.length ? (ks[i] + ks[i + 1]) / 2 : ks[i] + 2.5);
-                        const bot = series.priceToCoordinate(i > 0 ? (ks[i - 1] + ks[i]) / 2 : ks[i] - 2.5);
-                        return (top == null || bot == null) ? null
-                            : [Math.round(top * vr), Math.max(1, Math.round((bot - top) * vr))];
-                    };
+                    // each strike's band in pixels, once per frame (was 2 lookups per strike per column)
+                    const cells = ks.map((k, i) => {
+                        const top = series.priceToCoordinate(i + 1 < ks.length ? (k + ks[i + 1]) / 2 : k + 2.5);
+                        const bot = series.priceToCoordinate(i > 0 ? (ks[i - 1] + k) / 2 : k - 2.5);
+                        if (top == null || bot == null) return null;
+                        const y = [Math.round(top * vr), Math.max(1, Math.round((bot - top) * vr))];
+                        return (y[0] + y[1] < 0 || y[0] > bitmapSize.height) ? null : y;   // off screen
+                    });
                     for (let c = 0; c < cols.length; c++) {
                         if (xs[c] == null) continue;
                         let xEnd = null;
@@ -1158,26 +1172,23 @@
 
                     // Walls: the 3 strongest strikes per snapshot, outlined as one continuous
                     // box for as long as a strike stays in the top 3 (not a box per column).
-                    const top3 = cols.map(col => new Set(col.map((g, i) => [Math.abs(g), i])
-                        .filter(([m]) => m > 0).sort((a, b) => b[0] - a[0]).slice(0, 3).map(([, i]) => i)));
+                    const top3 = this._top3 || [];
                     const colEnd = c => {
                         for (let n = c + 1; n < xs.length; n++) if (xs[n] != null) return Math.min(edge, Math.round(xs[n] * hr));
                         return edge;
                     };
                     ctx.lineWidth = Math.max(1, Math.round(hr));
                     for (let i = 0; i < ks.length; i++) {
+                        const y = cells[i];
+                        if (!y) continue;                      // strike off screen
                         let start = null;
                         for (let c = 0; c <= cols.length; c++) {
-                            const inWall = c < cols.length && xs[c] != null && top3[c].has(i);
+                            const inWall = c < cols.length && xs[c] != null && top3[c]?.has(i);
                             if (inWall && start == null) start = c;
                             if (!inWall && start != null) {
-                                const top = series.priceToCoordinate(i + 1 < ks.length ? (ks[i] + ks[i + 1]) / 2 : ks[i] + 2.5);
-                                const bot = series.priceToCoordinate(i > 0 ? (ks[i - 1] + ks[i]) / 2 : ks[i] - 2.5);
-                                if (top != null && bot != null) {
-                                    const x0 = Math.round(xs[start] * hr), x1 = colEnd(c - 1);
-                                    ctx.strokeStyle = cols[c - 1][i] > 0 ? 'rgba(120,255,190,0.8)' : 'rgba(255,140,150,0.85)';
-                                    ctx.strokeRect(x0 + 0.5, Math.round(top * vr) + 0.5, Math.max(1, x1 - x0 - 1), Math.max(1, Math.round((bot - top) * vr) - 1));
-                                }
+                                const x0 = Math.round(xs[start] * hr), x1 = colEnd(c - 1);
+                                ctx.strokeStyle = cols[c - 1][i] > 0 ? 'rgba(120,255,190,0.8)' : 'rgba(255,140,150,0.85)';
+                                ctx.strokeRect(x0 + 0.5, y[0] + 0.5, Math.max(1, x1 - x0 - 1), Math.max(1, y[1] - 1));
                                 start = null;
                             }
                         }
@@ -1343,14 +1354,17 @@
             e.zones?.setAirPockets(L && _zoneMode !== 'off' ? L.air_pockets : []);
             _lastGammaLevels = L;
             drawLevelTrails();
-            if (!L || !L.brakes) { el.textContent = '—'; return; }
+            const sep = '<span style="color:#333">│</span>';
+            const chip = regimeChipHtml();
+            const head = `<span id="zone-regime-wrap" style="display:contents">${chip ? chip + (L && L.brakes ? sep : '') : ''}</span>`;
+            if (!L || !L.brakes) { el.innerHTML = head + (chip ? '' : '—'); return; }
 
             const b = L.brakes;
             const bColor = { strong: '#00ff88', moderate: '#9be7c4', weak: '#ffb300', accelerator: '#ff3c50' }[b.label];
             const item = (name, lv, color) => lv
                 ? `<span>${name} <b style="color:${color}">${lv.strike}</b> (${fmtD(lv.dist)})</span>`
                 : `<span>${name} <b style="color:#8a8a9c">—</b></span>`;
-            el.innerHTML = [
+            el.innerHTML = head + [
                 `<span>BRAKES AT PRICE <b style="color:${bColor}">${b.label.toUpperCase()} ${b.label === 'accelerator' ? '' : b.pct + '%'}</b></span>`,
                 item('Support', L.support, '#00c878'),
                 item('Resist', L.resistance, '#7dffc4'),
@@ -1358,7 +1372,64 @@
                 item('Squeeze', L.squeeze, '#ff9f1c'),
                 `<span>Walls ${(L.walls || []).map(w => `<b style="color:${w.gex >= 0 ? '#00c878' : '#ff3c50'}">${w.strike}</b> ${fmtM(w.gex)}`).join(' · ')}</span>`,
                 (L.air_pockets || []).length ? `<span title="Near-zero gamma: price travels easily">Air ${L.air_pockets.map(([a, z]) => `${a}–${z}`).join(', ')}</span>` : '',
-            ].join('<span style="color:#333">│</span>');
+            ].join(sep);
+        }
+
+        // ── Gamma regime note ─────────────────────────────────────────────────
+        // The heatmap's "bright = brakes" reading holds in POSITIVE gamma. In negative
+        // gamma dealers hedge with the move: 2026-10-08 trended down through bright
+        // bands (0.93x). The chip shows the regime now (or that replay day's) and how
+        // the bands did on past days of that regime (daily scorecard).
+        let _liveTotalGex = null, _hmRel = null, _regimeShown = null;
+
+        async function fetchHeatmapReliability() {
+            try {
+                const res = await fetch('/api/heatmap_reliability/SPX');
+                _hmRel = res.ok ? await res.json() : null;
+            } catch (_) {}
+            renderRegimeChip(true);
+            const rec = document.getElementById('cf-rec-SPX'), c = _hmRel?.charm;
+            if (rec && c && c.calls) rec.textContent = `(experimental · live ${c.hits}/${c.calls})`;
+        }
+
+        function regimeChipHtml() {
+            let neg, label;
+            if (_replayDate) {
+                const d = _hmRel?.days?.[_replayDate];
+                if (!d) return '';
+                neg = d.neg_share >= 0.5;
+                label = `${neg ? 'NEGATIVE' : 'POSITIVE'} GAMMA ${Math.round((neg ? d.neg_share : 1 - d.neg_share) * 100)}% OF THAT DAY`;
+            } else {
+                if (_liveTotalGex == null) return '';
+                neg = _liveTotalGex < 0;
+                // outside the session the live total is the next session's book (expired 0DTE gone)
+                const etHm = new Date().toLocaleTimeString('en-GB', { timeZone: 'America/New_York', hour12: false }).slice(0, 5);
+                const closed = etHm >= '16:00' || etHm < '09:30';
+                label = `${closed ? 'NEXT SESSION: ' : ''}${neg ? 'NEGATIVE' : 'POSITIVE'} GAMMA`;
+            }
+            const what = neg ? 'dealers chase moves: bright bands may not hold, red zones speed price up'
+                             : 'dealers lean against moves: bright bands act as brakes / magnets';
+            const s = _hmRel?.[neg ? 'neg' : 'pos'];
+            const stat = s && s.n
+                ? ` · past ${neg ? 'negative' : 'positive'}-gamma days: bright bands ${s.ratio >= 1.15 ? `slowed price ${s.ratio}×` : `did not slow price (${s.ratio}×)`}, ${s.n} day${s.n > 1 ? 's' : ''}`
+                : '';
+            const tip = 'Gamma regime = sign of net GEX, all expirations. Positive: dealers are long gamma and trade against moves, '
+                + 'so bright green bands slow price and pull it in. Negative: dealers are short gamma and trade with the move; '
+                + 'bright bands are weaker brakes and red bands accelerate, so read the heatmap with the regime. '
+                + 'Past-day numbers: average 1-min move in the lowest-GEX third ÷ highest-GEX third, during minutes in that regime '
+                + '(above 1 = price slower in bright bands). From the daily scorecard; few days so far.';
+            return `<span id="zone-regime" class="zone-regime ${neg ? 'neg' : 'pos'}" title="${tip}"><b>${label}</b> — ${what}${stat}</span>`;
+        }
+
+        // Only touches the DOM when the regime flips (GEX updates arrive every ~2 s)
+        function renderRegimeChip(force) {
+            const key = _replayDate ? `r${_replayDate}` : (_liveTotalGex == null ? null : _liveTotalGex < 0);
+            if (!force && key === _regimeShown) return;
+            _regimeShown = key;
+            const wrap = document.getElementById('zone-regime-wrap');
+            if (!wrap) return;
+            const chip = regimeChipHtml();
+            wrap.innerHTML = chip ? chip + (_lastGammaLevels?.brakes ? '<span style="color:#333">│</span>' : '') : '';
         }
 
         function setZoneMode(mode) {
@@ -1824,6 +1895,11 @@
                 if (zeroDiv) zeroDiv.style.display = 'none';
             }
 
+            if (symbol === 'SPX' && data.total_gex != null) {
+                _liveTotalGex = data.total_gex;
+                renderRegimeChip();
+            }
+
             // Live gamma-zone strip: all expiries = chain ex-0DTE (60 s) + live 0DTE (2 s)
             if (symbol === 'SPX' && priceCharts.SPX?.zones) {
                 if (_replayDate || data.last_session) {
@@ -1840,7 +1916,9 @@
             const cfEl = document.getElementById(`cf-${symbol}`);
             if (cfEl) {
                 const cf = data.last_session ? null : data.charm_flow_per_hr;
-                if (cf == null) { cfEl.textContent = '—'; cfEl.style.color = ''; }
+                const etHm = new Date().toLocaleTimeString('en-GB', { timeZone: 'America/New_York', hour12: false }).slice(0, 5);
+                if (etHm >= '15:30' || etHm < '09:30') { cfEl.textContent = etHm >= '15:30' && etHm < '16:00' ? 'hidden after 15:30' : '—'; cfEl.style.color = '#8a8a9c'; }
+                else if (cf == null) { cfEl.textContent = '—'; cfEl.style.color = ''; }
                 else {
                     const m = Math.abs(cf) / 1e6;
                     cfEl.textContent = `${cf >= 0 ? 'BUY' : 'SELL'} ~$${m >= 10 ? m.toFixed(0) : m.toFixed(1)}M/hr`;
@@ -2933,6 +3011,8 @@
         setInterval(fetchEsVolume, 15000);
         loadReplayDays();
         setInterval(loadReplayDays, 10 * 60000);
+        fetchHeatmapReliability();
+        setInterval(fetchHeatmapReliability, 30 * 60000);   // the scorecard gains a row after each close
         setZoneMode(_zoneMode);
 
         // Expected move to the close for the current regime (server table rebuilt hourly)

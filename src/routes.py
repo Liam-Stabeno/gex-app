@@ -50,6 +50,12 @@ def register(app):
         import gex_stats
         return jsonify(gex_stats.history_days('SPX'))
 
+    @app.route('/api/heatmap_reliability/<symbol>')
+    def api_heatmap_reliability(symbol):
+        """How the heatmap's bright bands did per gamma regime, from the scorecard."""
+        import gex_stats
+        return jsonify(gex_stats.heatmap_reliability(symbol.upper().replace('$', '')))
+
     @app.route('/')
     def index():
         return render_template('dashboard.html')
@@ -136,6 +142,13 @@ def register(app):
         except ValueError:
             return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
         if day is not None:
+            from datetime import timedelta
+            start_ms = int(datetime.combine(day, dtime(0, 0), ET).timestamp() * 1000)
+            if not candles or candles[0]['datetime'] > start_ms:
+                # older than the in-memory window: read just that day from the file
+                from price_history import load_range
+                end_ms = int(datetime.combine(day + timedelta(days=1), dtime(0, 0), ET).timestamp() * 1000)
+                candles = load_range(key, start_ms, end_ms)
             sel = []
             for c in candles:
                 dt = datetime.fromtimestamp(c['datetime'] / 1000, tz=ET)

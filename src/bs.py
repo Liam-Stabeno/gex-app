@@ -140,6 +140,8 @@ def t_to_close(expiry_str: str, now=None) -> float:
 
     Floors at 5 minutes so gamma stays finite into the close. Unlike dte_to_t,
     0DTE time decays through the session instead of being a fixed constant.
+    0 once 16:00 has passed: the option has expired. (The floor used to apply after
+    the close too, so expired 0DTE got huge gamma: a fake -351M wall on 2026-10-08.)
     """
     from datetime import datetime, time as dtime, date
     from zoneinfo import ZoneInfo
@@ -147,7 +149,7 @@ def t_to_close(expiry_str: str, now=None) -> float:
     now = now or datetime.now(et)
     close = datetime.combine(date.fromisoformat(expiry_str), dtime(16, 0), et)
     secs = (close - now).total_seconds()
-    if secs < 0 and close.date() < now.date():
+    if secs <= 0:
         return 0.0
     return max(secs, 300.0) / (365.0 * 24 * 3600)
 

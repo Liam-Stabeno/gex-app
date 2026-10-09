@@ -189,7 +189,10 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': []}
     if not path:
         return empty
-    snaps = _hm_snapshots(path, day.isoformat())
+    # Session only: until 2026-10-08 the grid also ran 16:00-16:15, when the expired
+    # 0DTE still showed huge gamma (a fake -351M wall). Those lines stay in the file.
+    snaps = [x for x in _hm_snapshots(path, day.isoformat())
+             if datetime.fromtimestamp(x[0], ET).time() < dtime(16, 0)]
     if not snaps:
         return empty
     spots = [sp for _, sp, _ in snaps if sp]
@@ -496,6 +499,29 @@ def history_days(sym: str = 'SPX', data_dir: str = _DATA_DIR) -> list:
             for d, v in sorted(days.items(), reverse=True)]
 
 
+def heatmap_reliability(sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict:
+    """From the scorecard: did bright heatmap bands slow price, per gamma regime (median
+    speed ratio over days, >1 = slower in bright bands); each day's share of the session
+    in negative gamma; and charm flow's live hit record."""
+    out = {'pos': None, 'neg': None, 'days': {}, 'charm': None}
+    path = os.path.join(data_dir, f'scorecard_{sym}.csv')
+    if not os.path.exists(path):
+        return out
+    df = pd.read_csv(path, dtype=str)
+    num = lambda c: pd.to_numeric(df[c], errors='coerce') if c in df else pd.Series(dtype=float)
+    for tag in ('pos', 'neg'):
+        v = num(f'speed_ratio_{tag}').dropna()
+        if len(v):
+            out[tag] = {'ratio': round(float(v.median()), 2), 'n': int(len(v))}
+    for d, x in zip(df['date'], num('neg_share')):
+        if pd.notna(x):
+            out['days'][d] = {'neg_share': float(x)}
+    calls = num('charm_calls').sum()
+    if calls:
+        out['charm'] = {'hits': int(num('charm_hits').sum()), 'calls': int(calls)}
+    return out
+
+
 # ── Daily scorecard: did the levels work? ──────────────────────────────────────
 # One row per day in data/scorecard_<sym>.csv, written after the close. Over weeks
 # it shows which levels hold, which pins land near the close, whether bright heatmap
@@ -510,9 +536,11 @@ SCORECARD_FIELDS = [
     'call_wall', 'call_wall_touch', 'call_wall_break',
     'put_wall', 'put_wall_touch', 'put_wall_break',
     'trapdoor', 'trapdoor_break',
-    'pin_lt_dist', 'true_pin_dist', 'pin_0dte_dist', 'true_pin_dist_1400', 'pin_0dte_dist_1400',
+    'pin_lt_dist', 'true_pin_dist_1400', 'pin_0dte_dist_1400',
+    'true_pin_dist_1500', 'pin_0dte_dist_1500', 'true_pin_dist_1530', 'pin_0dte_dist_1530',
     'em_1400_move', 'em_1400_median', 'em_1400_p80', 'em_1400_in_median', 'em_1400_in_p80',
     'speed_dim', 'speed_bright', 'speed_ratio', 'speed_hours_slower', 'speed_hours',
+    'neg_share', 'speed_ratio_pos', 'speed_ratio_neg',
     'charm_hits', 'charm_calls',
 ]
 
@@ -528,6 +556,18 @@ def wall_reaction(px: pd.DataFrame, level: float, side: str) -> dict:
         gap = float(px['low'].min()) - level
         broke = bool((px['close'] < level - BREAK_PTS).any())
     return {'touch': int(gap <= TOUCH_PTS), 'break': int(broke), 'gap': round(gap, 2)}
+
+
+def _speed_ratio(q: pd.DataFrame, min_rows: int = 60):
+    """Mean 1-min move in the lowest-GEX third over the highest-GEX third (>1 = price
+    slower where GEX is high). None with too few minutes or no spread in GEX."""
+    if len(q) < min_rows:
+        return None
+    band = pd.qcut(q['g'], 3, labels=False, duplicates='drop')
+    if band.nunique() < 2:
+        return None
+    dim, bright = q[band == band.min()]['move'].mean(), q[band == band.max()]['move'].mean()
+    return round(float(dim / bright), 2) if bright else None
 
 
 def _level_at(df: pd.DataFrame, col: str, when) -> float | None:
@@ -594,14 +634,16 @@ def build_scorecard(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | 
         if trap is not None:
             row.update(trapdoor=trap, trapdoor_break=int(bool((px['close'] < trap).any())))
 
-    # pins: distance from the close (final value, and the value in force at 14:00)
+    # pins: distance from the close of the value in force at 14:00, 15:00 and 15:30. Not
+    # the final value: by 16:00 0DTE gamma sits on the strike nearest price, so a final
+    # pin lands near the close by construction and proves nothing.
     d = lambda v: round(abs(v - close), 2) if v is not None else ''
-    row.update(pin_lt_dist=d(_level_at(s, 'pin', at(15, 59))),
-               true_pin_dist=d(_level_at(s, 'true_pin', at(15, 59))) if 'true_pin' in s else '',
-               true_pin_dist_1400=d(_level_at(s, 'true_pin', at(14, 0))) if 'true_pin' in s else '')
-    if s0 is not None and not s0.empty:
-        row.update(pin_0dte_dist=d(_level_at(s0, 'pin', at(15, 59))),
-                   pin_0dte_dist_1400=d(_level_at(s0, 'pin', at(14, 0))))
+    row['pin_lt_dist'] = d(_level_at(s, 'pin', at(15, 59)))
+    for hh, mm, tag in ((14, 0, '1400'), (15, 0, '1500'), (15, 30, '1530')):
+        if 'true_pin' in s:
+            row[f'true_pin_dist_{tag}'] = d(_level_at(s, 'true_pin', at(hh, mm)))
+        if s0 is not None and not s0.empty:
+            row[f'pin_0dte_dist_{tag}'] = d(_level_at(s0, 'pin', at(hh, mm)))
 
     # expected move from 14:00
     spot14 = _level_at(s, 'spot', at(14, 0))
@@ -625,7 +667,20 @@ def build_scorecard(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | 
         ok = idx >= 0
         g = np.full(len(px), np.nan)
         g[ok] = [np.interp(p, ks, cols[i]) for p, i in zip(px['close'].to_numpy()[ok], idx[ok])]
-        q = pd.DataFrame({'g': g, 'move': px['close'].diff().abs(), 'hour': px['dt'].dt.hour}).dropna()
+        # regime in force each minute (net GEX, all expiries, from the snapshots)
+        st = (s['et'].map(lambda x: x.timestamp())).to_numpy()
+        si = np.searchsorted(st, tt, side='right') - 1
+        neg = np.where(si >= 0, s['total_gex'].to_numpy()[np.clip(si, 0, None)] < 0, False)
+        q = pd.DataFrame({'g': g, 'move': px['close'].diff().abs(), 'hour': px['dt'].dt.hour,
+                          'neg': neg}).dropna()
+        if len(q):
+            row['neg_share'] = round(float(q['neg'].mean()), 2)
+        # The bright-band brake is a positive-gamma effect: on 2026-10-08 (negative
+        # gamma, trend day) price ran through bright bands (0.93x). Graded per regime.
+        for tag, part in (('pos', q[~q['neg']]), ('neg', q[q['neg']])):
+            r = _speed_ratio(part)
+            if r is not None:
+                row[f'speed_ratio_{tag}'] = r
         if len(q) >= 60:
             q['band'] = pd.qcut(q['g'], 3, labels=False, duplicates='drop')
             dim, bright = q[q['band'] == q['band'].min()]['move'].mean(), q[q['band'] == q['band'].max()]['move'].mean()

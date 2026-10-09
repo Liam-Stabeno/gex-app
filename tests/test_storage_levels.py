@@ -147,3 +147,34 @@ def test_replace_candles_overwrites_partial_minutes(tmp_path, monkeypatch):
     assert ph.replace_candles("/ES", [bar(t + 60_000, 3.5, 400), bar(t + 120_000, 4.0, 10)]) == 2
     rows = ph.load_candles("/ES")
     assert [(r["close"], r["volume"]) for r in rows] == [(2.0, 100), (3.5, 400), (4.0, 10)]
+
+
+def test_append_dedups_from_the_index_and_sees_outside_writes(tmp_path, monkeypatch):
+    import price_history as ph
+    monkeypatch.setattr(ph, "DATA_DIR", str(tmp_path))
+    t = 1_700_000_000_000
+    bar = lambda dt, c: {"datetime": dt, "open": c, "high": c, "low": c, "close": c, "volume": 7.0}
+    assert ph.append_candles("/ES", [bar(t, 1.0), bar(t + 60_000, 2.0)]) == 2
+    assert [r["datetime"] for r in ph.append_new("/ES", [bar(t + 60_000, 9.0), bar(t + 120_000, 3.0)])] == [t + 120_000]
+    assert ph.append_candles("/ES", [bar(t, 5.0)]) == 0                    # already saved
+    assert ph.last_saved_ms("/ES") == t + 120_000
+    with open(ph.csv_path("/ES"), "ab") as f:                             # another process appends,
+        f.write(f"{t + 180_000},4,4,4,4,1".encode())                      # no newline at the end
+    assert ph.append_candles("/ES", [bar(t + 180_000, 8.0), bar(t + 240_000, 5.0)]) == 1
+    rows = ph.load_candles("/ES")
+    assert [r["close"] for r in rows] == [1.0, 2.0, 3.0, 4.0, 5.0]
+    assert rows[0]["volume"] == 7                                         # 7.0 saved as an int
+    assert [r["close"] for r in ph.load_range("/ES", t + 60_000, t + 180_000)] == [2.0, 3.0]
+
+
+def test_replace_candles_streams_and_keeps_other_rows(tmp_path, monkeypatch):
+    import price_history as ph
+    monkeypatch.setattr(ph, "DATA_DIR", str(tmp_path))
+    t = 1_700_000_000_000
+    bar = lambda dt, c, v=1: {"datetime": dt, "open": c, "high": c, "low": c, "close": c, "volume": v}
+    ph.append_candles("/ES", [bar(t + i * 60_000, float(i)) for i in range(5)])
+    assert ph.replace_candles("/ES", [bar(t + 60_000, 1.0)]) == 0          # same values: no rewrite
+    assert ph.replace_candles("/ES", [bar(t + 120_000, 2.5, 9), bar(t + 600_000, 10.0)]) == 2
+    rows = ph.load_candles("/ES")
+    assert [(r["close"], r["volume"]) for r in rows] == [(0.0, 1), (1.0, 1), (2.5, 9), (3.0, 1), (4.0, 1), (10.0, 1)]
+    assert ph.append_candles("/ES", [bar(t + 600_000, 0.0)]) == 0          # index rebuilt after rewrite

@@ -1,4 +1,4 @@
-"""
+r"""
 rtd_diag.py — Run this standalone to diagnose TOS RTD connectivity.
 Usage: .venv\Scripts\python src\rtd_diag.py
 """

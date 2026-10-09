@@ -40,8 +40,10 @@ def main():
     if a.rebuild:
         names = [f for f in os.listdir(os.path.join(ROOT, 'data'))
                  if f.startswith('gex_snapshots_SPX_') and f.endswith('.csv')]
+        today = datetime.now(gex_stats.ET).date()
         for d in sorted(datetime.strptime(f[-14:-4], '%Y-%m-%d').date() for f in names):
-            gex_stats.write_scorecard(d)
+            if d < today or datetime.now(gex_stats.ET).hour >= 16:   # today only once it closed
+                gex_stats.write_scorecard(d)
     if not os.path.exists(PATH):
         sys.exit('No scorecard yet: it is written after the close, or run with --rebuild.')
 
@@ -66,10 +68,13 @@ def main():
     tb = num('trapdoor_break').dropna()
     print(f'  {"Trapdoor broken":30s} {int(tb.sum())} of {len(tb)} days')
 
-    print('\nPins: median distance from the 16:00 close (pts)')
-    for c, label in (('true_pin_dist', 'True Pin (final)'), ('pin_0dte_dist', 'Pin 0DTE (final)'),
-                     ('true_pin_dist_1400', 'True Pin at 14:00'), ('pin_0dte_dist_1400', 'Pin 0DTE at 14:00'),
-                     ('pin_lt_dist', 'Pin LT')):
+    # Not the 16:00 value: by then 0DTE gamma sits on the strike nearest price, so a
+    # final pin is near the close by construction.
+    print('\nPins: median distance from the 16:00 close of the pin in force at each time (pts)')
+    for c, label in (('true_pin_dist_1400', 'True Pin at 14:00'), ('pin_0dte_dist_1400', 'Pin 0DTE at 14:00'),
+                     ('true_pin_dist_1500', 'True Pin at 15:00'), ('pin_0dte_dist_1500', 'Pin 0DTE at 15:00'),
+                     ('true_pin_dist_1530', 'True Pin at 15:30'), ('pin_0dte_dist_1530', 'Pin 0DTE at 15:30'),
+                     ('pin_lt_dist', 'Pin LT (final)')):
         v = num(c).dropna()
         print(f'  {label:20s} ' + (f'{v.median():6.1f}  (within 10 pts on {(v <= 10).mean():.0%} of {len(v)} days)' if len(v) else 'no data'))
 
@@ -83,6 +88,14 @@ def main():
     print(f'Heatmap: price moved {r.median():.2f}x faster in dim bands than bright (median, {len(r)} days); '
           f'within the same hour, high GEX was slower in {int(hs)} of {int(hn)} hours ({hs / hn:.0%})'
           if len(r) and hn else 'Heatmap: no data')
+    # The brake is a positive-gamma effect; in negative gamma dealers chase the move.
+    for tag, label in (('pos', 'positive'), ('neg', 'negative')):
+        v = num(f'speed_ratio_{tag}').dropna()
+        if len(v):
+            print(f'  in {label}-gamma minutes: {v.median():.2f}x (median, {len(v)} days; >1 = slower in bright bands)')
+    ns = num('neg_share').dropna()
+    if len(ns):
+        print(f'  days mostly in negative gamma: {int((ns >= 0.5).sum())} of {len(ns)}')
 
     ch, cc = num('charm_hits').sum(), num('charm_calls').sum()
     print(f'Charm flow: sign matched the move into the close {int(ch)} of {int(cc)} times ({ch / cc:.0%})'

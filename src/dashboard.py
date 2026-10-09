@@ -13,6 +13,7 @@ Modules:
     routes        — Flask API route handlers
 """
 
+import logging
 import sys
 import threading
 import time
@@ -71,10 +72,9 @@ if __name__ == '__main__':
         sys.exit(1)
     for symbol in PRICE_SYMBOLS:
         try:
-            candles = sync_symbol(symbol, token)
-            if symbol == '/ES':
-                cutoff_ms = (time.time() - 5 * 86400) * 1000
-                candles = [c for c in candles if c['datetime'] >= cutoff_ms]
+            # Memory holds only recent days (all of /ES was 780k candles, ~300 MB);
+            # replay of older days reads the file (routes.api_price).
+            candles = background.recent_candles(sync_symbol(symbol, token))
             with cache_lock:
                 candle_cache[symbol] = candles
             print(f"  {symbol}: {len(candles)} candles loaded")
@@ -132,6 +132,8 @@ if __name__ == '__main__':
     _t.Thread(target=_open_browser, daemon=True).start()
 
     print("\nDashboard running at http://127.0.0.1:5000")
+    # Request lines (~14k a day, mostly the browser polling) only when they fail
+    logging.getLogger('werkzeug').setLevel(logging.WARNING)
     try:
         app.run(debug=False, port=5000, threaded=True)
     except Exception as e:

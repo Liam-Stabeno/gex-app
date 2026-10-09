@@ -24,8 +24,8 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 from gex import (get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts,
-                 TRUE_PIN_WEIGHTS, pick_with_hysteresis, sticky_levels)
-from price_history import fetch_candles, append_candles, load_candles
+                 TRUE_PIN_WEIGHTS, pick_with_hysteresis, confirmed_pick, sticky_levels, drop_expired)
+from price_history import fetch_candles, append_candles, append_new, replace_candles, CACHE_DAYS
 import bs
 import delta_flow
 import flow_alerts
@@ -41,6 +41,7 @@ _GEX_SNAPSHOT_FIELDS  = ['timestamp', 'spot', 'total_gex', 'regime',
                           'flip_level', 'put_wall', 'call_wall', 'pin',
                           'strike_min', 'strike_max', 'true_pin', 'charm_flow']
 _last_true_pin: dict = {}   # display symbol -> latest TRUE PIN from the live loop
+_true_pin_pending: dict = {}  # challenger strike waiting out TRUE_PIN_CONFIRM_SEC
 _last_charm_flow: dict = {} # display symbol -> latest charm hedge flow, $/hr
 _level_state: dict = {}     # (display symbol, 'multi'|'0dte') -> last published levels (sticky)
 _level_seeded: set = set()
@@ -105,7 +106,7 @@ def _record_gex_grid(sym: str, raw_df, spot: float):
     if now - _grid_last_ts.get(sym, 0) < GRID_INTERVAL_SEC:
         return
     et = datetime.now(_ET)
-    if et.weekday() >= 5 or not (dtime(9, 30) <= et.time() < dtime(16, 15)):
+    if et.weekday() >= 5 or not (dtime(9, 30) <= et.time() < dtime(16, 0)):
         return
     if raw_df is None or raw_df.empty:
         return
@@ -199,6 +200,14 @@ def daily_jobs_loop():
     On startup it also backfills summaries for past days and archives old files."""
     import gex_stats
     def run(write_today: bool):
+        if write_today:
+            # since the previous run (Friday's on a Monday), before the summary reads the bars
+            hours = 72 if datetime.now(_ET).weekday() == 0 else 24
+            for sym in _price_symbols:
+                try:
+                    reconcile_recent(sym, hours)
+                except Exception as e:
+                    print(f'[daily] {sym}: reconcile failed: {e}')
         try:
             for d in gex_stats.summary_days_missing('SPX'):
                 gex_stats.write_daily_summary(d, 'SPX')
@@ -403,7 +412,8 @@ def refresh_gex(symbol: str):
     try:
         token        = get_access_token()
         strike_count = 150 if symbol in ('$SPX', 'SPX') else 200
-        chain        = fetch_option_chain(symbol, token, strike_count=strike_count)
+        raw_chain    = fetch_option_chain(symbol, token, strike_count=strike_count)
+        chain        = drop_expired(raw_chain)   # after 16:00 ET the day's expiry is gone
         gex_all, gex_0dte, gex_multi, spot, raw_df = parse_gex(chain)
         display_sym  = symbol.replace('$', '').replace('/', '')
         _seed_level_state(display_sym)
@@ -523,9 +533,10 @@ def refresh_gex(symbol: str):
             _cache[symbol] = data
 
         # ── Persist snapshots ────────────────────────────────────────────────
-        # Skipped after the close: zero-OI refreshes would log GEX as 0 and
-        # skew the history.
-        if not all_oi_zero:
+        # Skipped after the close: zero-OI refreshes would log GEX as 0, and
+        # until then the rows only repeat tomorrow's book (OI changes overnight).
+        after_close = datetime.now(_ET).time() >= dtime(16, 0)
+        if not all_oi_zero and not after_close:
             ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             def _lvl(lvl_dict, key):
@@ -568,7 +579,7 @@ def refresh_gex(symbol: str):
         # ─────────────────────────────────────────────────────────────────────
 
         if display_sym == 'SPX':
-            new_snap = delta_flow.extract_chain_snapshot(chain)
+            new_snap = delta_flow.extract_chain_snapshot(raw_chain)
             delta_flow.process_chain_snapshot(new_snap)
 
             with _gex_watch_lock:
@@ -609,16 +620,50 @@ def refresh_gex(symbol: str):
 
 # ── Price ─────────────────────────────────────────────────────────────────────
 
+def recent_candles(candles: list) -> list:
+    """The last CACHE_DAYS of candles: what the live chart keeps in memory."""
+    cutoff = (time.time() - CACHE_DAYS * 86400) * 1000
+    return [c for c in candles if c['datetime'] >= cutoff]
+
+
+def _merge_candles(cached: list, rows: list) -> list:
+    """Cached candles with `rows` replacing or adding their minutes, sorted, recent only."""
+    by_dt = {c['datetime']: c for c in cached}
+    by_dt.update({c['datetime']: c for c in rows})
+    return recent_candles([by_dt[k] for k in sorted(by_dt)])
+
+
+def reconcile_recent(symbol: str, hours: float) -> int:
+    """Replace the last `hours` of saved 1-min bars with Schwab's history. A streamed
+    final bar can miss trades reported late (23 of 975 /ES minutes differed on
+    2026-10-08); REST history has them. Runs once after the close. Only replaces or
+    adds minutes, never removes any."""
+    token = get_access_token()
+    now_ms = int(time.time() * 1000)
+    rest = fetch_candles(symbol, token, frequency=1,
+                         start_ms=now_ms - int(hours * 3600_000), end_ms=now_ms)
+    if not rest:
+        return 0
+    with _csv_lock:
+        changed = replace_candles(symbol, rest)
+    if changed:
+        with _cache_lock:
+            _candle_cache[symbol] = _merge_candles(_candle_cache.get(symbol, []),
+                                                   [c for c in rest if c['datetime'] + 60_000 <= now_ms])
+    print(f'[daily] {symbol}: {changed} saved minute(s) corrected from Schwab history')
+    return changed
+
+
 def refresh_price(symbol: str):
     try:
         token       = get_access_token()
         total_added = 0
 
+        new_rows = []
         historical = fetch_candles(symbol, token, days=2, frequency=1)
         if historical:
             with _csv_lock:
-                added = append_candles(symbol, historical)
-            total_added += added
+                new_rows += append_new(symbol, historical)
 
         today_midnight = datetime.now(tz=ET).replace(hour=0, minute=0, second=0, microsecond=0)
         start_ms = int(today_midnight.timestamp() * 1000)
@@ -626,27 +671,25 @@ def refresh_price(symbol: str):
         live = fetch_candles(symbol, token, frequency=1, start_ms=start_ms, end_ms=end_ms)
         if live:
             with _csv_lock:
-                added = append_candles(symbol, live)
-            total_added += added
-            if added > 0:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Price live: {symbol} +{added} candles today")
+                added = append_new(symbol, live)
+            new_rows += added
+            if added:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Price live: {symbol} +{len(added)} candles today")
+        total_added = len(new_rows)
 
-        if total_added > 0:
-            candles = load_candles(symbol)
+        if new_rows:
             with _cache_lock:
-                # Keep live streamed candles newer than the file (the minute just finished
-                # and the one in progress aren't saved yet) instead of dropping them.
-                last_saved = candles[-1]['datetime'] if candles else 0
-                live = [c for c in _candle_cache.get(symbol, []) if c['datetime'] > last_saved]
-                _candle_cache[symbol] = candles + live
+                # Newly saved bars replace whatever the cache had for those minutes (a
+                # partial tick-built candle); streamed candles newer than them stay.
+                _candle_cache[symbol] = _merge_candles(_candle_cache.get(symbol, []), new_rows)
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Price updated: {symbol} +{total_added} total")
 
             # Push the latest candle to the browser so it updates without a reload.
             # Map raw CSV symbol → browser chart key (same as on_streamer_candle).
             _SYM_MAP = {'/ES': 'ES', '$SPX': 'SPX'}
             browser_sym = _SYM_MAP.get(symbol, symbol)
-            if candles:
-                last = candles[-1]
+            if new_rows:
+                last = max(new_rows, key=lambda c: c['datetime'])
                 sse.push({
                     'type':     'candle',
                     'symbol':   browser_sym,
@@ -751,6 +794,7 @@ def live_gex_loop():
 
     MIN_INTERVAL = 2.0
     last_push    = 0.0
+    last_log     = 0.0
 
     while True:
         _gex_dirty.wait(timeout=MIN_INTERVAL)
@@ -891,8 +935,12 @@ def live_gex_loop():
                 + TRUE_PIN_WEIGHTS['vanna'] * vanna_abs.get(k, 0.0) / vanna_total)
             for k in gex_watch
         }
-        # sticky: only move when a new strike clearly beats the current one
-        pin_enhanced = pick_with_hysteresis(scores, _last_true_pin.get('SPX'))
+        # sticky: only move when a new strike clearly beats the current one, and has
+        # done so for TRUE_PIN_CONFIRM_SEC (an unwatched current strike switches at once)
+        cur_pin = _last_true_pin.get('SPX')
+        cur_pin = cur_pin if cur_pin in scores else None
+        pin_enhanced = confirmed_pick(pick_with_hysteresis(scores, cur_pin), cur_pin,
+                                      _true_pin_pending, time.time())
 
         with _cache_lock:
             existing = dict(_cache.get('$SPX', {}))
@@ -932,8 +980,10 @@ def live_gex_loop():
 
         sse.push({'type': 'gex', 'symbol': 'SPX', **data})
         last_push = time.time()
-        src = f'RTD:{rtd_hits} Schwab:{schwab_hits}' if use_rtd else f'Schwab:{schwab_hits}'
-        print(f'[GEX live] quote sources — {src}  vol solved {n_solved} / Schwab gamma fallback {n_fallback}')
+        if last_push - last_log >= 60:      # every 2 s was ~13k log lines a day
+            last_log = last_push
+            src = f'RTD:{rtd_hits} Schwab:{schwab_hits}' if use_rtd else f'Schwab:{schwab_hits}'
+            print(f'[GEX live] quote sources — {src}  vol solved {n_solved} / Schwab gamma fallback {n_fallback}')
 
 
 # ── Streamer callbacks ────────────────────────────────────────────────────────
@@ -1003,9 +1053,9 @@ def on_streamer_candle(candle: dict):
         'volume':  candle['volume'],
     })
 
-    ts   = datetime.now().strftime('%H:%M:%S')
-    flag = ' [saved]' if write_csv else ''
-    print(f'[{ts}] Streamer candle: {raw_symbol} {candle["close"]:.2f}{flag}')
+    if write_csv:   # one line per saved bar (every tick was ~46k lines a day)
+        ts = datetime.now().strftime('%H:%M:%S')
+        print(f'[{ts}] Streamer candle: {raw_symbol} {candle["close"]:.2f} [saved]')
 
 
 def on_flow_alert(alert: dict):

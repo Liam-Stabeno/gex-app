@@ -92,3 +92,25 @@ def test_heatmap_cache_reads_only_appended_lines(tmp_path):
     with open(path, "a", encoding="utf-8") as f:
         f.write(':00-04:00", "spot": 7801.0, "exp": ["2026-10-06"], "rows": [[7800.0, 0, 1, 0, 30.0]]}\n')
     assert gs.load_heatmap("SPX", day=date(2026, 10, 6), data_dir=tmp_path)["all"] == [[10], [20], [30]]
+
+
+def test_heatmap_leaves_out_columns_after_the_close(tmp_path):
+    import json
+    from datetime import date
+    snap = lambda hm, g: json.dumps({"ts": f"2026-10-08T{hm}:00-04:00", "spot": 7765.0,
+                                     "exp": ["2026-10-08"], "rows": [[7765.0, 0, 1, 0, g]]})
+    (tmp_path / "gex_grid_SPX_2026-10-08.jsonl").write_text(
+        "\n".join([snap("15:59", -140e6), snap("16:00", -343e6), snap("16:13", -351e6)]))
+    h = gs.load_heatmap("SPX", day=date(2026, 10, 8), data_dir=tmp_path)
+    assert h["all"] == [[-140_000_000]]          # expired 0DTE after 16:00 stays in the file only
+
+
+def test_heatmap_reliability_by_regime(tmp_path):
+    pd.DataFrame({"date": ["2026-10-06", "2026-10-07", "2026-10-08"],
+                  "speed_ratio_pos": [1.97, 1.47, ""], "speed_ratio_neg": ["", "", 0.93],
+                  "neg_share": [0.0, 0.1, 0.9], "charm_hits": ["", 1, 0], "charm_calls": ["", 2, 3]}
+                 ).to_csv(tmp_path / "scorecard_SPX.csv", index=False)
+    r = gs.heatmap_reliability("SPX", data_dir=tmp_path)
+    assert r["pos"] == {"ratio": 1.72, "n": 2} and r["neg"] == {"ratio": 0.93, "n": 1}
+    assert r["days"]["2026-10-08"]["neg_share"] == 0.9 and r["charm"] == {"hits": 1, "calls": 5}
+    assert gs.heatmap_reliability("SPX", data_dir=tmp_path / "none") == {"pos": None, "neg": None, "days": {}, "charm": None}

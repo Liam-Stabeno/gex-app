@@ -59,6 +59,33 @@ def test_t_to_close_decays_intraday():
     assert t_close == pytest.approx(300 / (365 * 24 * 3600))   # 5-minute floor
     assert bs.t_to_close("2026-10-07", at(13, 0)) == pytest.approx(27.0 / (365 * 24))
     assert bs.t_to_close("2026-10-05", at(13, 0)) == 0.0        # already expired
+    assert bs.t_to_close("2026-10-06", at(16, 0)) == 0.0         # expired at the close:
+    assert bs.t_to_close("2026-10-06", at(16, 13)) == 0.0        # no 5-minute floor after it
+
+
+def test_drop_expired_removes_todays_expiry_after_the_close():
+    from gex import drop_expired
+    chain = {"underlyingPrice": 7765.0,
+             "callExpDateMap": {"2026-10-08:0": {"7765.0": [{}]}, "2026-10-09:1": {"7765.0": [{}]}},
+             "putExpDateMap": {"2026-10-08:0": {"7765.0": [{}]}, "2026-10-09:1": {"7765.0": [{}]}}}
+    at = lambda h, m: datetime(2026, 10, 8, h, m, tzinfo=ET)
+    assert drop_expired(chain, at(15, 59)) is chain                    # in session: untouched
+    after = drop_expired(chain, at(16, 0))
+    assert list(after["callExpDateMap"]) == ["2026-10-09:1"] == list(after["putExpDateMap"])
+    assert after["underlyingPrice"] == 7765.0 and len(chain["callExpDateMap"]) == 2   # input kept
+
+
+def test_true_pin_needs_to_lead_for_the_confirm_time():
+    from gex import confirmed_pick
+    p = {}
+    assert confirmed_pick(7750.0, None, p, 0) == 7750.0               # first pin shows at once
+    assert confirmed_pick(7720.0, 7750.0, p, 10) == 7750.0            # challenger starts waiting
+    assert confirmed_pick(7750.0, 7750.0, p, 60) == 7750.0 and p == {}  # it fell back: reset
+    assert confirmed_pick(7720.0, 7750.0, p, 70) == 7750.0
+    assert confirmed_pick(7700.0, 7750.0, p, 100) == 7750.0           # another strike: restarts
+    assert confirmed_pick(7700.0, 7750.0, p, 279) == 7750.0
+    assert confirmed_pick(7700.0, 7750.0, p, 280) == 7700.0           # led 180 s: moves
+    assert confirmed_pick(None, 7700.0, p, 300) == 7700.0
 
 
 def test_true_pin_hysteresis():

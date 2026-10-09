@@ -27,10 +27,11 @@ class _DailyFileHandler(logging.FileHandler):
     Opens a new log file named app_YYYY-MM-DD.log when the calendar day
     changes.  Uses open-new-file semantics instead of os.rename(), so it
     works correctly on Windows even when other threads hold the log open.
-    Old files beyond keep_days are pruned on each rollover.
+    Finished days are gzipped (at startup and on rollover) and kept; with keep_days
+    set, files older than that are pruned.
     """
 
-    def __init__(self, log_dir: str, keep_days: int = 14):
+    def __init__(self, log_dir: str, keep_days: int | None = None):
         self.log_dir   = log_dir
         self.keep_days = keep_days
         self._today    = datetime.now().date()
@@ -40,6 +41,7 @@ class _DailyFileHandler(logging.FileHandler):
             encoding='utf-8',
             delay=False,
         )
+        self._compress_old_async(self._today)
 
     def _dated_path(self, d) -> str:
         return os.path.join(self.log_dir, f'app_{d}.log')
@@ -58,7 +60,28 @@ class _DailyFileHandler(logging.FileHandler):
         self._today        = today
         self.baseFilename  = os.path.abspath(self._dated_path(today))
         self.stream        = self._open()
-        self._prune_old(today)
+        self._compress_old_async(today)
+
+    def _compress_old_async(self, today):
+        """Gzip finished days' logs (~15x smaller) in the background, then prune."""
+        import threading
+        threading.Thread(target=self._compress_old, args=(today,), daemon=True).start()
+
+    def _compress_old(self, today):
+        import gzip
+        import shutil
+        for path in glob(os.path.join(self.log_dir, 'app_*.log')):
+            try:
+                if datetime.strptime(os.path.basename(path)[4:14], '%Y-%m-%d').date() >= today:
+                    continue
+                with open(path, 'rb') as src, gzip.open(path + '.gz.tmp', 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+                os.replace(path + '.gz.tmp', path + '.gz')
+                os.remove(path)
+            except Exception:
+                pass
+        if self.keep_days is not None:
+            self._prune_old(today)
 
     def emit(self, record):
         try:
@@ -69,7 +92,7 @@ class _DailyFileHandler(logging.FileHandler):
 
     def _prune_old(self, today):
         cutoff = today - timedelta(days=self.keep_days)
-        for path in glob(os.path.join(self.log_dir, 'app_*.log')):
+        for path in glob(os.path.join(self.log_dir, 'app_*.log*')):
             try:
                 date_str = os.path.basename(path)[4:14]   # "2026-05-22"
                 if datetime.strptime(date_str, '%Y-%m-%d').date() < cutoff:
@@ -131,7 +154,7 @@ class _Tee:
 
 # ── Public entry point ───────────────────────────────────────────────────────
 
-def setup_logging(log_dir: str = LOGS_DIR, keep_days: int = 14) -> logging.Logger:
+def setup_logging(log_dir: str = LOGS_DIR, keep_days: int | None = None) -> logging.Logger:
     """
     Configure file + console logging.
     Returns the root logger so callers can do:
