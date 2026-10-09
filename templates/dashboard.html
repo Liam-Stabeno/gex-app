@@ -808,6 +808,7 @@
                     <span><span class="zone-swatch" style="background:rgba(0,200,120,0.55)"></span> positive gamma: dealers lean against moves, price <b style="color:#00c878">slows / sticks</b></span>
                     <span><span class="zone-swatch" style="background:rgba(255,60,80,0.55)"></span> negative gamma: dealers chase moves, price <b style="color:#ff3c50">speeds up</b></span>
                     <span title="Stronger colour = bigger GEX at that strike (linear). Thin or clear bands slow price only a little."><span class="zone-swatch" style="border:1px solid rgba(120,255,190,0.85)"></span> outlined: 3 strongest strikes (walls)</span>
+                    <span title="Strikes with almost no gamma (under 5% of the day's biggest) in the latest snapshot, drawn from there to the right edge. Nothing slows price there, so it tends to move through quickly. Listed as 'Air' in the levels bar."><span class="zone-swatch" style="background:repeating-linear-gradient(135deg, rgba(200,200,220,0.55) 0 1px, transparent 1px 4px);border:1px solid #333"></span> hatched: air pocket, price moves through fast</span>
                     <span style="margin-left:auto;color:#8a8a9c">double-click: full screen · drag corner: resize</span>
                 </div>
                 <div class="zone-bar" title="ES futures volume per bar, aligned to the SPX candles. Buy/sell split by the tick rule from the live stream (uptick = buy, downtick = sell). Faded bars are estimated from where the candle closed in its range (no tick data for them).">
@@ -2046,11 +2047,16 @@
                 low:   c.low,
                 close: c.close,
             })));
-            volumeSeries.setData(candles.map(c => ({
-                time:  c.time,
-                value: c.volume || 0,
-                color: c.close >= c.open ? 'rgba(0,255,136,0.25)' : 'rgba(255,68,68,0.25)',
-            })));
+            volumeSeries.setData(candles.map(c => volBar(c, 0.25)));
+        }
+
+        // A volume bar, or an empty slot when there's no volume: the SPX index has none,
+        // and its zero-height bars drew a 1 px red/green line across the price pane.
+        // (Real volume is the ES pane.)
+        function volBar(c, alpha) {
+            if (!c.volume) return { time: c.time };
+            return { time: c.time, value: c.volume,
+                     color: c.close >= c.open ? `rgba(0,255,136,${alpha})` : `rgba(255,68,68,${alpha})` };
         }
 
         function renderPriceChart(symbol, candles) {
@@ -2094,6 +2100,11 @@
                                       priceLineVisible: false, base: 0 };
                     priceCharts.SPX.esVolTotal = chart.addSeries(LWC.HistogramSeries, volOpts, 1);
                     priceCharts.SPX.esVolSell  = chart.addSeries(LWC.HistogramSeries, volOpts, 1);   // smaller side, drawn over the bottom
+                    // Bars from the pane's bottom edge: the chart-wide 18% bottom margin is for
+                    // the price pane and left an empty -2K..-6K strip under the volume.
+                    priceCharts.SPX.esVolTotal.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0 } });
+                    // the price pane's 18% bottom margin was room for SPX volume, which doesn't exist
+                    candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.05 } });
                     try { chart.panes()[1].setHeight(110); } catch (_) {}
                     fetchEsVolume();
                     priceCharts.SPX.zones = new GammaZones(() => (selectedTF.SPX || 1) * 60);
@@ -2342,18 +2353,13 @@
                 low:   agg.low,
                 close: agg.close,
             });
-            entry.volumeSeries.update({
-                time:  agg.time,
-                value: agg.volume,
-                color: agg.close >= agg.open ? 'rgba(0,255,136,0.25)' : 'rgba(255,68,68,0.25)',
-            });
+            entry.volumeSeries.update(volBar(agg, 0.25));
 
             // Mirror candle update to trail chart
             const tc = trailCharts[symbol];
             if (tc) {
                 tc.candleSeries.update({ time: agg.time, open: agg.open, high: agg.high, low: agg.low, close: agg.close });
-                tc.volumeSeries.update({ time: agg.time, value: agg.volume,
-                    color: agg.close >= agg.open ? 'rgba(0,255,136,0.15)' : 'rgba(255,68,68,0.15)' });
+                tc.volumeSeries.update(volBar(agg, 0.15));
                 // Extend trail lines — use candle bucket time so one point per candle
                 const levels = gexLevels[symbol] || (symbol === 'ES' ? gexLevels['SPX'] : null);
                 if (levels) appendTrailPoint(symbol, levels, agg.time);

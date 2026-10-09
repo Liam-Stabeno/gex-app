@@ -32,6 +32,9 @@ import tos_rtd
 # ── App ───────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__, template_folder='../templates')
+# Re-read templates when they change: a page fix shows on a browser refresh instead
+# of needing an app restart mid-session (the check is one file stat per page load).
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 from rolling_profile import rolling_bp  # rolling profile (install_rolling_profile.py)
 app.register_blueprint(rolling_bp)  # rolling profile (install_rolling_profile.py)
 
