@@ -804,12 +804,18 @@ def live_gex_loop():
         if now - last_push < MIN_INTERVAL:
             time.sleep(MIN_INTERVAL - (now - last_push))
 
-        # Need a valid spot price
+        # Spot: the streamed SPX price (ticks ~1 s) while it's current, else the chain's
+        # underlying from the 60 s refresh. With only the chain's, spot was up to 60 s
+        # old: IVs were solved from live option quotes against a stale price, and each
+        # push dragged the dashboard's spot line and price back (seen 2026-10-09).
         spot = 0.0
         with _cache_lock:
             spx_data = _cache.get('$SPX') or _cache.get('SPX')
             if spx_data:
                 spot = spx_data.get('spot', 0.0)
+            bars = _candle_cache.get('$SPX') if _candle_cache is not None else None
+            if bars and time.time() * 1000 - bars[-1]['datetime'] < 120_000:
+                spot = float(bars[-1].get('close') or 0.0) or spot
         if spot <= 0.0:
             continue
 

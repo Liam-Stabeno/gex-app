@@ -1455,10 +1455,12 @@
 
         const spotLinePlugin = {
             id: 'spotLine',
-            afterDraw(chart) {
+            // spot: chart._spotPrice (live updates), else options.plugins.spotLine.spot, which
+            // exists from the first frame (set after `new Chart`, the first frame had no line)
+            afterDraw(chart, args, opts) {
                 const { ctx, scales } = chart;
-                if (!chart._spotPrice || !scales.y || chart._noHorizontalSpot) return;
-                const spot  = chart._spotPrice;
+                const spot = chart._spotPrice ?? opts?.spot;
+                if (!spot || !scales.y || chart._noHorizontalSpot) return;
                 // The strike axis is a category axis (one label per strike), so a price
                 // can't be passed to getPixelForValue directly: place it between the two
                 // strikes around it, in proportion.
@@ -1504,10 +1506,10 @@
         // Vertical spot line for charts with strikes on X axis (DDOI)
         const spotLinePluginVertical = {
             id: 'spotLineVertical',
-            afterDraw(chart) {
+            afterDraw(chart, args, opts) {
                 const { ctx, scales } = chart;
-                if (!chart._spotPrice || !scales.x) return;
-                const spot   = chart._spotPrice;
+                const spot = chart._spotPrice ?? opts?.spot;
+                if (!spot || !scales.x) return;
                 const labels = chart.data.labels;
                 if (!labels || !labels.length) return;
                 const nearest = labels.reduce((best, s, i) =>
@@ -1564,6 +1566,7 @@
                     maintainAspectRatio: false,
                     animation: false,
                     plugins: {
+                        spotLine: { spot },
                         legend:  { display: false },
                         tooltip: { callbacks: { label: c => `GEX: ${fmtGex(c.raw)}` } },
                         zoom: {
@@ -1601,7 +1604,8 @@
                             ticks: {
                                 color:    '#888',
                                 font:     { size: forModal ? 11 : 9, family: 'Courier New' },
-                                callback: (v, i) => strikes[i],
+                                // the chart's current labels (data is swapped in place on updates)
+                                callback: function (v) { return this.getLabelForValue(v); },
                             },
                         },
                     },
@@ -1675,8 +1679,18 @@
             const call_oi  = ddoi.call_oi.slice(lo, hi);
             const put_oi   = ddoi.put_oi.slice(lo, hi);
 
-            if (ddoiCharts[symbol]) { ddoiCharts[symbol].destroy(); delete ddoiCharts[symbol]; }
-
+            // in place, like the GEX chart (a rebuild blanked the spot line for a frame)
+            const existing = ddoiCharts[symbol];
+            if (existing && existing.canvas === canvas) {
+                existing.data.labels = strikes;
+                existing.data.datasets[0].data = call_oi;
+                existing.data.datasets[1].data = put_oi;
+                existing.options.plugins.spotLineVertical = { spot };
+                existing._spotPrice = spot;
+                existing._fullDdoi  = ddoi;
+                existing.update('none');
+            } else {
+            if (existing) existing.destroy();
             ddoiCharts[symbol] = new Chart(canvas.getContext('2d'), {
                 type: 'bar',
                 data: {
@@ -1692,6 +1706,7 @@
                     maintainAspectRatio: false,
                     animation: false,
                     plugins: {
+                        spotLineVertical: { spot },
                         legend: { display: false },
                         tooltip: { callbacks: {
                             label: c => `${c.dataset.label}: ${c.raw.toLocaleString()}`
@@ -1706,7 +1721,7 @@
                             grid: { color: '#1e1e2e' },
                             ticks: { color: '#a8a8b8', font: { size: 9 },
                                 maxRotation: 45, minRotation: 45,
-                                callback: v => strikes[v] },
+                                callback: function (v) { return this.getLabelForValue(v); } },
                         },
                         y: {
                             grid: { color: '#1e1e2e' },
@@ -1720,6 +1735,7 @@
             ddoiCharts[symbol]._spotPrice        = spot;
             ddoiCharts[symbol]._fullDdoi         = ddoi;
             ddoiCharts[symbol]._noHorizontalSpot = true;
+            }
 
             // Wire slider
             const slider    = document.getElementById(`ddoi-slider-${symbol}`);
@@ -1735,6 +1751,17 @@
             }
             if (sliderVal) sliderVal.textContent = n;
             if (slider)    slider.value = n;
+        }
+
+        // New GEX data into an existing chart, without rebuilding it (keeps zoom, no blank frame)
+        function swapGexData(chart, { strikes, net_gex }, spot) {
+            const ds = chart.data.datasets[0];
+            chart.data.labels = strikes;
+            ds.data = net_gex;
+            ds.backgroundColor = net_gex.map(v => v >= 0 ? 'rgba(0,255,136,0.7)' : 'rgba(255,68,68,0.7)');
+            chart.options.plugins.spotLine = { spot };
+            chart._spotPrice = spot;
+            chart.update('none');
         }
 
         // Strike count per chart key — persists across re-renders
@@ -1765,14 +1792,21 @@
                 net_gex: chartData.net_gex.slice(lo, hi),
             };
 
-            if (gexCharts[key]) { gexCharts[key].destroy(); delete gexCharts[key]; }
-
-            const config    = makeGexChartConfig(slicedData, spot);
-            const chartInst = new Chart(canvas.getContext('2d'), config);
-            chartInst._spotPrice  = spot;
-            chartInst._fullData   = chartData;   // keep full data for re-slice
-            gexCharts[key]        = chartInst;
-            gexCharts[key]._gexData = { ...chartData, spot };
+            // Update the existing chart in place: destroying and rebuilding it on every GEX
+            // update (~2 s) blanked the spot line for a frame (it blinked) and reset zoom.
+            let chartInst = gexCharts[key];
+            if (chartInst && chartInst.canvas === canvas) {
+                swapGexData(chartInst, slicedData, spot);
+            } else {
+                if (chartInst) chartInst.destroy();
+                chartInst = new Chart(canvas.getContext('2d'), makeGexChartConfig(slicedData, spot));
+                chartInst._spotPrice = spot;
+                gexCharts[key] = chartInst;
+            }
+            chartInst._fullData = chartData;   // keep full data for re-slice
+            chartInst._gexData  = { ...chartData, spot };
+            // the expanded view of this chart, if open, follows too (it was a frozen copy)
+            if (modalCJSChart && modalCJSChart._key === key) swapGexData(modalCJSChart, chartData, spot);
 
             canvas.ondblclick = () => chartInst.resetZoom();
 
@@ -1889,7 +1923,9 @@
                 if (dateEl && data.odte_date) {
                     dateEl.textContent = `· ${fmtOdteDate(data.odte_date)}`;
                 }
-                updateGexSlot(symbol, 'zero', data.zero, data.levels_0dte, data.spot,
+                // TRUE PIN is computed once (0DTE + next expiry) and sent with the multi levels
+                updateGexSlot(symbol, 'zero', data.zero,
+                              { ...data.levels_0dte, pin_enhanced: data.levels_multi?.pin_enhanced }, data.spot,
                               zeroTotal, zeroTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
             } else {
                 if (zeroDiv) zeroDiv.style.display = 'none';
@@ -2271,6 +2307,9 @@
             const zeroKey  = `${symbol}-zero`;
             if (gexCharts[multiKey]) { gexCharts[multiKey]._spotPrice = candle.close; gexCharts[multiKey].update(); }
             if (gexCharts[zeroKey])  { gexCharts[zeroKey]._spotPrice  = candle.close; gexCharts[zeroKey].update(); }
+            if (modalCJSChart && modalCJSChart._key?.startsWith(`${symbol}-`)) {
+                modalCJSChart._spotPrice = candle.close; modalCJSChart.update('none');
+            }
 
             // Update DDOI chart spot line in real time
             if (ddoiCharts[symbol]) {
@@ -2499,6 +2538,7 @@
             modalCJSChart   = new Chart(canvas.getContext('2d'), config);
             modalCJSChart._spotPrice = spot;
             modalCJSChart._forModal  = true;
+            modalCJSChart._key       = key;   // renderGexChart / price ticks keep it live
         }
 
         function expandPrice(symbol) {
