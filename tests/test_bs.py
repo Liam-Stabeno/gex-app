@@ -96,3 +96,16 @@ def test_true_pin_hysteresis():
     assert pick_with_hysteresis({7810.0: 1.0, 7845.0: 1.2}, 7810.0) == 7845.0   # +20% moves it
     assert pick_with_hysteresis(s, 7700.0) == 7845.0               # current strike gone
     assert pick_with_hysteresis({}, 7810.0) is None
+
+
+def test_stream_candles_only_in_trading_hours():
+    from background import in_trading_hours
+    ms = lambda d, h, m: int(datetime(2026, 10, d, h, m, tzinfo=ET).timestamp() * 1000)   # Oct 2026: 9 Fri, 10 Sat, 11 Sun
+    assert in_trading_hours('$SPX', ms(9, 9, 30)) and in_trading_hours('$SPX', ms(9, 15, 59))
+    assert not in_trading_hours('$SPX', ms(9, 9, 14))          # pre-market snapshot tick
+    assert not in_trading_hours('$SPX', ms(9, 16, 0))
+    assert not in_trading_hours('$SPX', ms(10, 12, 0))         # Saturday
+    assert in_trading_hours('/ES', ms(9, 16, 59)) and not in_trading_hours('/ES', ms(9, 17, 0))   # Friday close
+    assert not in_trading_hours('/ES', ms(10, 15, 2))          # Saturday
+    assert not in_trading_hours('/ES', ms(11, 17, 59)) and in_trading_hours('/ES', ms(11, 18, 0))  # Sunday open
+    assert not in_trading_hours('/ES', ms(8, 17, 30)) and in_trading_hours('/ES', ms(8, 3, 0))     # daily halt / overnight

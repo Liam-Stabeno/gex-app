@@ -1394,7 +1394,16 @@
         // gamma dealers hedge with the move: 2026-10-08 trended down through bright
         // bands (0.93x). The chip shows the regime now (or that replay day's) and how
         // the bands did on past days of that regime (daily scorecard).
-        let _liveTotalGex = null, _hmRel = null, _regimeShown = null;
+        let _liveTotalGex = null, _hmRel = null, _regimeShown = null, _lastSession = false;
+
+        // Outside 9:30-16:00 ET, on weekends, or whenever the server is showing the last
+        // session (holidays too: OI is zeroed then)
+        function marketClosed() {
+            const now = new Date(), tz = { timeZone: 'America/New_York' };
+            const hm  = now.toLocaleTimeString('en-GB', { ...tz, hour12: false }).slice(0, 5);
+            const day = now.toLocaleDateString('en-US', { ...tz, weekday: 'short' });
+            return _lastSession || day === 'Sat' || day === 'Sun' || hm < '09:30' || hm >= '16:00';
+        }
 
         async function fetchHeatmapReliability() {
             try {
@@ -1417,9 +1426,7 @@
                 if (_liveTotalGex == null) return '';
                 neg = _liveTotalGex < 0;
                 // outside the session the live total is the next session's book (expired 0DTE gone)
-                const etHm = new Date().toLocaleTimeString('en-GB', { timeZone: 'America/New_York', hour12: false }).slice(0, 5);
-                const closed = etHm >= '16:00' || etHm < '09:30';
-                label = `${closed ? 'NEXT SESSION: ' : ''}${neg ? 'NEGATIVE' : 'POSITIVE'} GAMMA`;
+                label = `${marketClosed() ? 'NEXT SESSION: ' : ''}${neg ? 'NEGATIVE' : 'POSITIVE'} GAMMA`;
             }
             const what = neg ? 'dealers chase moves: bright bands may not hold, red zones speed price up'
                              : 'dealers lean against moves: bright bands act as brakes / magnets';
@@ -1437,7 +1444,7 @@
 
         // Only touches the DOM when the regime flips (GEX updates arrive every ~2 s)
         function renderRegimeChip(force) {
-            const key = _replayDate ? `r${_replayDate}` : (_liveTotalGex == null ? null : _liveTotalGex < 0);
+            const key = _replayDate ? `r${_replayDate}` : (_liveTotalGex == null ? null : `${_liveTotalGex < 0}|${marketClosed()}`);
             if (!force && key === _regimeShown) return;
             _regimeShown = key;
             const wrap = document.getElementById('zone-regime-wrap');
@@ -1947,6 +1954,7 @@
 
             if (symbol === 'SPX' && data.total_gex != null) {
                 _liveTotalGex = data.total_gex;
+                _lastSession  = !!data.last_session;
                 renderRegimeChip();
             }
 
@@ -1983,7 +1991,7 @@
 
             // After the close: backend serves the last in-session OI snapshot
             if (data.last_session) {
-                const asOf = `last session · ${data.last_session.slice(5, 16)}`;
+                const asOf = `last session · as of ${data.last_session.slice(5, 16)} ET`;
                 for (const slot of ['multi', 'zero']) {
                     const r = document.getElementById(`regime-${symbol}-${slot}`);
                     if (r) { r.textContent = 'CLOSED'; r.className = 'regime CLOSED'; r.title = asOf; }

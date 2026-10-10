@@ -14,6 +14,7 @@ Modules:
 """
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -62,9 +63,52 @@ routes.register(app)
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
+def _log_console_event(event: int) -> bool:
+    """Record why Windows is ending the app (it exited 0xC000013A with nothing in the
+    log on 2026-10-10). False lets the default handler go on and end the process."""
+    names = {0: 'Ctrl+C', 1: 'Ctrl+Break', 2: 'console window closed',
+             5: 'user logged off', 6: 'system shutdown'}
+    print(f"[EXIT] Windows console event: {names.get(event, event)} — app stopping", flush=True)
+    return False
+
+
+def _hide_console() -> bool:
+    """Hide this app's console window unless GEX_SHOW_CONSOLE=1 (start.bat sets it).
+    Closing that window ends the app: on 2026-10-10 it stopped 3 times, each logged as
+    'console window closed'. Output still goes to logs/app_<date>.log."""
+    if os.environ.get('GEX_SHOW_CONSOLE') == '1':
+        return False
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)   # SW_HIDE
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _alert(message: str):
+    """A Windows message box: with the console hidden, nobody would see a printed
+    banner or answer an 'input()' prompt (it would wait forever, invisibly)."""
+    print(message)
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, message, 'GEX Dashboard', 0x10 | 0x10000 | 0x40000)
+    except Exception:
+        pass
+
+
 if __name__ == '__main__':
     setup_logging()
-    print("Starting GEX Dashboard...")
+    console_hidden = _hide_console()
+    try:
+        import win32api
+        win32api.SetConsoleCtrlHandler(_log_console_event, True)
+    except Exception as e:   # pywin32 missing: just no exit reason in the log
+        print(f"[EXIT] console event logging unavailable: {e}")
+    print("Starting GEX Dashboard..." + (" (console hidden; output in logs/)" if console_hidden else ""))
 
     # Sync price history from Schwab REST API
     print("\nSyncing price history...")
@@ -72,6 +116,9 @@ if __name__ == '__main__':
         token = get_access_token()
     except SchwabAuthError:
         # Banner already printed by gex.py — exit cleanly without a traceback.
+        if console_hidden:
+            _alert('GEX Dashboard could not start: the Schwab login has expired.\n\n'
+                   'Run reauth.bat in C:\\Productivity\\TradingApp, then restart.bat.')
         sys.exit(1)
     for symbol in PRICE_SYMBOLS:
         try:
@@ -143,4 +190,8 @@ if __name__ == '__main__':
         import traceback
         print(f"[FATAL] Flask crashed: {e}")
         traceback.print_exc()
-        input("Press Enter to exit...")
+        if console_hidden:
+            _alert(f'GEX Dashboard stopped: {e}\n\nDetails are in logs\\app_<date>.log. '
+                   'restart.bat starts it again.')
+        else:
+            input("Press Enter to exit...")

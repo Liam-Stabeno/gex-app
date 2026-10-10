@@ -305,6 +305,16 @@ def _save_last_session(sym: str, data: dict):
         print(f'[GEX] {sym}: could not save last session: {e}')
 
 
+def _local_to_et(stamp):
+    """'YYYY-MM-DD HH:MM:SS' in this PC's local time (Pacific) -> the same in ET, as the
+    dashboard shows ET everywhere ('last session 15:09' was really 18:09 ET)."""
+    try:
+        return (datetime.strptime(stamp, '%Y-%m-%d %H:%M:%S').astimezone(_ET)
+                .strftime('%Y-%m-%d %H:%M:%S'))
+    except (TypeError, ValueError):
+        return stamp
+
+
 def _load_last_session(sym: str):
     try:
         with open(_last_session_path(sym), encoding='utf-8') as f:
@@ -523,7 +533,7 @@ def refresh_gex(symbol: str):
             last = _load_last_session(display_sym)
             if last:
                 data = {**last, 'spot': spot, 'regime': 'CLOSED',
-                        'last_session': last.get('updated')}
+                        'last_session': _local_to_et(last.get('updated'))}
             else:
                 data['regime'] = 'CLOSED'
         else:
@@ -722,38 +732,6 @@ def price_loop():
         for symbol in _price_symbols:
             refresh_price(symbol)
             time.sleep(2)
-
-
-def on_streamer_candle(candle: dict):
-    """
-    Called on every WebSocket price tick (CHART_FUTURES / LEVELONE_FUTURES).
-    Pushes the candle to all connected browsers via SSE so the current bar
-    animates in real-time without waiting for the REST poll.
-
-    Normalises streamer symbols to browser keys:
-        /ES  → ES    (CHART_FUTURES / LEVELONE_FUTURES)
-        $SPX → SPX   (LEVELONE_EQUITIES)
-    """
-    # Map streamer symbols → browser chart keys
-    _SYM_MAP = {'/ES': 'ES', '$SPX': 'SPX'}
-    raw_sym  = candle['symbol']
-    browser_sym = _SYM_MAP.get(raw_sym, raw_sym)
-
-    try:
-        sse.push({
-            'type':     'candle',
-            'symbol':   browser_sym,
-            'datetime': candle['datetime'],
-            'open':     candle['open'],
-            'high':     candle['high'],
-            'low':      candle['low'],
-            'close':    candle['close'],
-            'volume':   candle.get('volume', 0),
-            'is_final': candle.get('is_final', False),
-        })
-    except Exception as e:
-        print(f'[ERROR] on_streamer_candle SSE push: {e}')
-
 
 
 # ── Live GEX (BS gamma from streamer quotes) ──────────────────────────────────
@@ -994,6 +972,22 @@ def live_gex_loop():
 
 # ── Streamer callbacks ────────────────────────────────────────────────────────
 
+def in_trading_hours(symbol: str, ts_ms: int) -> bool:
+    """Is this minute inside the symbol's session? On subscribe Schwab sends the last
+    price even when the market is shut, which made a stray candle for the current
+    minute (a Saturday SPX and ES bar on 2026-10-10, so the chart's last two days
+    were Friday plus that one candle)."""
+    t = datetime.fromtimestamp(ts_ms / 1000, _ET)
+    wd, hm = t.weekday(), t.time()
+    if symbol == '$SPX':
+        return wd < 5 and dtime(9, 30) <= hm < dtime(16, 0)
+    if symbol == '/ES':   # CME Globex: Sun 18:00 - Fri 17:00 ET, halted 17:00-18:00 daily
+        if wd == 5 or (wd == 6 and hm < dtime(18, 0)) or (wd == 4 and hm >= dtime(17, 0)):
+            return False
+        return not (dtime(17, 0) <= hm < dtime(18, 0))
+    return True
+
+
 def on_streamer_candle(candle: dict):
     """
     Called by SchwabStreamer on each incoming candle update.
@@ -1003,6 +997,8 @@ def on_streamer_candle(candle: dict):
     ts_ms      = candle['datetime']
     if raw_symbol == '$SPX':
         rolling_profile.update_spot('SPX', candle.get('close'))
+    if not in_trading_hours(raw_symbol, ts_ms):
+        return
     is_final   = candle.get('is_final', False)
 
     push_sse  = False
