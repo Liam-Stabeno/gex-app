@@ -101,6 +101,14 @@ def _alert(message: str):
 
 
 if __name__ == '__main__':
+    import single_instance
+    if not single_instance.acquire():
+        # e.g. start.bat while the hidden scheduled copy runs: just show the dashboard
+        print("GEX Dashboard is already running — opening it in the browser.\n"
+              "To restart it, run restart.bat.")
+        import webbrowser
+        webbrowser.open('http://127.0.0.1:5000')
+        sys.exit(0)
     setup_logging()
     console_hidden = _hide_console()
     try:
@@ -112,14 +120,16 @@ if __name__ == '__main__':
 
     # Sync price history from Schwab REST API
     print("\nSyncing price history...")
-    try:
-        token = get_access_token()
-    except SchwabAuthError:
-        # Banner already printed by gex.py — exit cleanly without a traceback.
-        if console_hidden:
-            _alert('GEX Dashboard could not start: the Schwab login has expired.\n\n'
-                   'Run reauth.bat in C:\\Productivity\\TradingApp, then restart.bat.')
-        sys.exit(1)
+    # Login expired: gex.py has opened the Schwab login window. Wait for it, then carry
+    # on (it used to exit and leave you to find reauth.bat and restart by hand).
+    token = None
+    while token is None:
+        try:
+            token = get_access_token()
+        except SchwabAuthError:
+            print("Waiting for the Schwab login (log in in the window that opened)...")
+            time.sleep(15)
+    background.renew_login_if_old()     # e.g. the after-close prompt was missed
     for symbol in PRICE_SYMBOLS:
         try:
             # Memory holds only recent days (all of /ES was 780k candles, ~300 MB);

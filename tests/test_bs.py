@@ -109,3 +109,10 @@ def test_stream_candles_only_in_trading_hours():
     assert not in_trading_hours('/ES', ms(10, 15, 2))          # Saturday
     assert not in_trading_hours('/ES', ms(11, 17, 59)) and in_trading_hours('/ES', ms(11, 18, 0))  # Sunday open
     assert not in_trading_hours('/ES', ms(8, 17, 30)) and in_trading_hours('/ES', ms(8, 3, 0))     # daily halt / overnight
+
+
+def test_single_instance_lock():
+    import single_instance as si
+    name = r'Local\GEXDashboardTest_' + str(__import__('os').getpid())
+    assert si.acquire(name) is True              # first copy runs
+    assert si.acquire(name) is False             # a second one sees it and stops

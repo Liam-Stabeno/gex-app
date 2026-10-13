@@ -389,8 +389,14 @@ class SchwabStreamer:
                 'is_final': False,
             }
         else:
-            # Compute per-minute volume as delta from the start of this minute
-            baseline   = self._minute_vol_start.get(symbol, day_vol)
+            # Compute per-minute volume as delta from the start of this minute.
+            # No known day volume at the minute's start (0: e.g. the first tick after a
+            # reconnect carried no volume) or a lower one (session reset): count from
+            # here. Otherwise the whole day's volume landed in one bar (a ~50M SPX bar
+            # at 14:57 on 2026-10-12).
+            baseline = self._minute_vol_start.get(symbol)
+            if not baseline or day_vol < baseline:
+                self._minute_vol_start[symbol] = baseline = day_vol
             min_volume = max(0, day_vol - baseline)
             live['close']  = last
             live['high']   = max(live['high'], last)

@@ -117,15 +117,50 @@ def _print_reauth_banner() -> None:
     """Print a clear, actionable message when the refresh token has lapsed."""
     print()
     print("=" * 70)
-    print("  SCHWAB LOGIN EXPIRED")
-    print("  Your Schwab refresh token is invalid, expired, or revoked.")
-    print("  (Refresh tokens are only valid for 7 days.)")
-    print()
-    print("  To fix, just run:   reauth.bat")
-    print("  (double-click it, or run it from the project folder)")
-    print("  Then start the app again with start.bat")
+    print("  SCHWAB LOGIN EXPIRED (refresh tokens last 7 days)")
+    print("  The Schwab login window has opened: log in there. The dashboard")
+    print("  carries on by itself once you're logged in (no restart needed).")
+    print("  If no window appeared, run reauth.bat.")
     print("=" * 70)
     print()
+
+
+REAUTH_EVERY_SEC = 15 * 60
+_reauth_opened_at = 0.0
+
+
+def request_reauth(renew: bool = False) -> bool:
+    """Open the Schwab login (src/auth.py, its own console window) and return True,
+    at most once per REAUTH_EVERY_SEC. auth.py exits at once if a login window is
+    already open, saves new tokens to TOKENS_FILE, and get_access_token() picks them
+    up on its next try. renew: the login still works but is near its 7 days.
+    GEX_NO_AUTO_REAUTH=1 turns this off (scripts, tests)."""
+    global _reauth_opened_at
+    if os.environ.get('GEX_NO_AUTO_REAUTH') == '1' or time.time() - _reauth_opened_at < REAUTH_EVERY_SEC:
+        return False
+    _reauth_opened_at = time.time()
+    import subprocess
+    import sys
+    cmd = [sys.executable, os.path.join(_SRC_DIR, 'auth.py'), '--renew' if renew else '--auto']
+    flags = subprocess.CREATE_NEW_CONSOLE
+    # Outside the dashboard's job object, so a dashboard restart doesn't close it
+    for extra in (subprocess.CREATE_BREAKAWAY_FROM_JOB, 0):
+        try:
+            subprocess.Popen(cmd, cwd=_PROJECT_DIR, creationflags=flags | extra)
+            return True
+        except OSError:
+            continue
+    print("[auth] could not open the Schwab login window: run reauth.bat")
+    return False
+
+
+def login_age_days() -> float | None:
+    """Days since the last Schwab login (data/auth_state.json, written by auth.py)."""
+    try:
+        with open(os.path.join(_PROJECT_DIR, 'data', 'auth_state.json')) as f:
+            return (time.time() - float(json.load(f)['logged_in_at'])) / 86400
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def load_tokens() -> dict:
@@ -157,9 +192,10 @@ def refresh_access_token(refresh_token: str) -> dict:
         # Retrying can't fix it — the user must re-run auth.py. Surface a clear
         # message instead of a raw HTTPError traceback.
         if response.status_code == 400 and "invalid_grant" in body:
-            _print_reauth_banner()
+            if request_reauth():        # banner only when the window opens, not every retry
+                _print_reauth_banner()
             raise SchwabAuthError(
-                "Schwab refresh token expired — run 'python src\\auth.py' to re-authenticate."
+                "Schwab login expired — log in in the Schwab login window (or run reauth.bat)."
             )
         print(f"Token refresh failed: {body}")
         response.raise_for_status()

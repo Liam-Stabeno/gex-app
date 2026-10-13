@@ -24,7 +24,8 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 from gex import (get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts,
-                 TRUE_PIN_WEIGHTS, pick_with_hysteresis, confirmed_pick, sticky_levels, drop_expired)
+                 TRUE_PIN_WEIGHTS, pick_with_hysteresis, confirmed_pick, sticky_levels, drop_expired,
+                 login_age_days, request_reauth)
 from price_history import fetch_candles, append_candles, append_new, replace_candles, CACHE_DAYS
 import bs
 import delta_flow
@@ -195,6 +196,18 @@ def load_level_history(sym: str, day=None) -> list:
     return out
 
 
+LOGIN_RENEW_DAYS = 6   # Schwab logins lapse at 7 days
+
+
+def renew_login_if_old():
+    """Open the Schwab login window when the login is LOGIN_RENEW_DAYS old: run after
+    the close and at startup, so it's renewed before it can lapse mid-session (the
+    2026-10-12 login lapsed at 16:28 ET, 7 days after it was made)."""
+    age = login_age_days()
+    if age is not None and age >= LOGIN_RENEW_DAYS and request_reauth(renew=True):
+        print(f'[auth] Schwab login is {age:.1f} days old (lapses at 7): opened the login window')
+
+
 def daily_jobs_loop():
     """Once a day after the close: write the summary row, then gzip finished days.
     On startup it also backfills summaries for past days and archives old files."""
@@ -208,6 +221,7 @@ def daily_jobs_loop():
                     reconcile_recent(sym, hours)
                 except Exception as e:
                     print(f'[daily] {sym}: reconcile failed: {e}')
+            renew_login_if_old()
         try:
             for d in gex_stats.summary_days_missing('SPX'):
                 gex_stats.write_daily_summary(d, 'SPX')
@@ -997,6 +1011,9 @@ def on_streamer_candle(candle: dict):
     ts_ms      = candle['datetime']
     if raw_symbol == '$SPX':
         rolling_profile.update_spot('SPX', candle.get('close'))
+        # An index has no volume (Schwab's history has 0); the stream's "total
+        # volume" deltas only made stray bars on the price pane
+        candle = {**candle, 'volume': 0}
     if not in_trading_hours(raw_symbol, ts_ms):
         return
     is_final   = candle.get('is_final', False)
