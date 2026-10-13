@@ -173,6 +173,7 @@ if __name__ == '__main__':
     threading.Thread(target=background.live_gex_loop, daemon=True).start()
     threading.Thread(target=background.daily_jobs_loop, daemon=True).start()
     threading.Thread(target=market_recorder.flush_loop, daemon=True).start()   # model-training data
+    threading.Thread(target=background.option_history_loop, daemon=True).start()  # Schwab option/price history
 
     # Start WebSocket streamer
     _streamer = SchwabStreamer(

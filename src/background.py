@@ -197,6 +197,53 @@ def load_level_history(sym: str, day=None) -> list:
     return out
 
 
+def option_history_loop():
+    """Save Schwab's 1-minute trade bars for SPX option contracts while Schwab still has
+    them (option_history.py): today's 0DTE at 15:52 (contracts vanish at expiry), again
+    at 16:01 if still served, then at 17:15 every later-expiration contract within
+    +-300 pts that traded today, and the latest SPX / ES / VIX / internals history at
+    every interval (market_history.refresh_recent). Weekdays only."""
+    import market_history
+    import option_history as oh
+    done, zero = set(), []
+    while True:
+        time.sleep(30)
+        now = datetime.now(_ET)
+        if now.weekday() >= 5:
+            continue
+        d, hm, today = now.date(), now.strftime('%H:%M'), now.date().isoformat()
+        try:
+            if '15:52' <= hm < '15:59' and (d, '0dte') not in done:
+                done.add((d, '0dte'))
+                chain = fetch_option_chain('$SPX', get_access_token(), strike_count=150)
+                spot = chain.get('underlyingPrice') or current_spot()
+                zero = oh.contracts_from_chain(chain, spot, spot * 0.05, expiries={today})
+                with oh.history_lock(wait=300) as lock:
+                    if lock.ok and zero:
+                        stop = now.replace(hour=15, minute=59, second=50).timestamp()
+                        s = oh.pull(zero, oh.day_range_ms(d)[0], int(time.time() * 1000), rate=1.6, stop_at=stop)
+                        print(f'[history] 0DTE bars before expiry: {s}')
+            elif '16:01' <= hm < '16:15' and (d, '0dte_final') not in done:
+                done.add((d, '0dte_final'))
+                if zero and oh.fetch_bars(zero[0][0], int((time.time() - 600) * 1000), int(time.time() * 1000)):
+                    with oh.history_lock(wait=600) as lock:
+                        if lock.ok:
+                            s = oh.pull(zero, int((time.time() - 1200) * 1000), int(time.time() * 1000), rate=1.6)
+                            print(f'[history] 0DTE bars after the close: {s}')
+            elif hm >= '17:15' and (d, 'rest') not in done:
+                done.add((d, 'rest'))
+                chain = fetch_option_chain('$SPX', get_access_token(), strike_count=150)
+                spot = chain.get('underlyingPrice') or current_spot()
+                rest = [c for c in oh.contracts_from_chain(chain, spot, 300, traded_only=True) if c[1] > today]
+                with oh.history_lock(wait=1800) as lock:
+                    if lock.ok:
+                        s = oh.pull(rest, oh.day_range_ms(d)[0], int(time.time() * 1000), rate=1.0)
+                        print(f'[history] later-expiration bars for today: {s}')
+                print(f'[history] price history: {market_history.refresh_recent()}')
+        except Exception as e:      # never kill the thread
+            print(f'[history] failed: {e}')
+
+
 LOGIN_RENEW_DAYS = 6   # Schwab logins lapse at 7 days
 
 
