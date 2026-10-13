@@ -16,6 +16,8 @@ data/
 logs/
 *.csv
 *.json
+# reference data built from official schedules (tools/build_event_calendar.py): versioned
+!reference/*.csv
 
 # VS Code
 .vscode/

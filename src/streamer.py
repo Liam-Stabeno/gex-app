@@ -39,8 +39,19 @@ _ET = ZoneInfo('America/New_York')
 STREAM_CHART_EQUITY = []       # no CHART_EQUITY subscriptions needed right now
 STREAM_LEVELONE_EQUITY = ['$SPX']  # LEVELONE — real-time last price if available
 STREAM_FUTURES = ['/ES']
+# Recorded for model training only (market_recorder.internal_quote), never charted:
+# volatility indexes, NYSE TICK / TRIN, and related index ETFs. ($ADD and $TICKQ come
+# back as 0 from Schwab, so they're left out.)
+STREAM_INTERNALS = ['$VIX', '$VIX9D', '$VIX3M', '$VVIX', '$TICK', '$TRIN', 'SPY', 'QQQ', '$NDX', '$RUT']
+_INTERNALS = set(STREAM_INTERNALS)
 CHART_FIELDS        = '0,1,2,3,4,5,6,7,8'
 LEVELONE_FIELDS     = '0,3,8'  # 0 = symbol, 3 = last price, 8 = total volume
+# /ES also: 1 = bid, 2 = ask, 4 = bid size, 5 = ask size, 9 = last (trade) size, for
+# the order-book / trade recording (market_recorder.es_quote)
+FUTURES_FIELDS      = '0,1,2,3,4,5,8,9'
+_FUTURES_KEYS       = {'1': ('bid', float), '2': ('ask', float), '3': ('last', float),
+                       '4': ('bid_size', int), '5': ('ask_size', int),
+                       '8': ('volume', int), '9': ('last_size', int)}
 
 # ── Options flow ────────────────────────────────────────────────────────────────
 # LEVELONE_OPTIONS fields we care about:
@@ -129,6 +140,26 @@ def _parse_levelone(msg: dict) -> list:
     return ticks
 
 
+def _parse_futures_book(msg: dict) -> list:
+    """LEVELONE_FUTURES updates as {'symbol', and whichever of bid, ask, last,
+    bid_size, ask_size, volume, last_size changed}. Book-only updates included."""
+    out = []
+    for item in msg.get('content', []):
+        key = item.get('key', '')
+        if not key:
+            continue
+        q = {'symbol': key}
+        for f, (name, cast) in _FUTURES_KEYS.items():
+            if f in item:
+                try:
+                    q[name] = cast(item[f])
+                except (TypeError, ValueError):
+                    pass
+        if len(q) > 1:
+            out.append(q)
+    return out
+
+
 def _parse_options(msg: dict) -> list:
     """Parse LEVELONE_OPTIONS content into quote dicts.
 
@@ -156,11 +187,14 @@ class SchwabStreamer:
     Handles price candles and options flow monitoring in a single connection.
     """
 
-    def __init__(self, on_candle, on_flow_alert=None, on_options_quote=None, on_volume_split=None):
+    def __init__(self, on_candle, on_flow_alert=None, on_options_quote=None, on_volume_split=None,
+                 on_futures_quote=None, on_internal_quote=None):
+        self.on_internal_quote = on_internal_quote  # (symbol, last, volume) for STREAM_INTERNALS
         self.on_candle         = on_candle
         self.on_flow_alert     = on_flow_alert
         self.on_options_quote  = on_options_quote  # called on every bid/ask tick
         self.on_volume_split   = on_volume_split   # (symbol, minute_ms, buy, sell) for futures
+        self.on_futures_quote  = on_futures_quote  # every /ES level-one update (book + trades)
 
         # Last known last/volume/tick direction per price symbol (ticks are partial)
         self._tick_mem   = {}   # symbol -> {'last', 'volume', 'dir'}
@@ -292,6 +326,26 @@ class SchwabStreamer:
                             print(f'[STREAMER] on_candle error: {exc}')
 
                 elif service in ('LEVELONE_EQUITIES', 'LEVELONE_FUTURES'):
+                    if service == 'LEVELONE_EQUITIES':
+                        # internals go to the recorder only, never into candles / the chart
+                        rest = []
+                        for item in notify.get('content', []):
+                            if item.get('key') not in _INTERNALS:
+                                rest.append(item)
+                            elif self.on_internal_quote and ('3' in item or '8' in item):
+                                try:
+                                    self.on_internal_quote(item['key'],
+                                                           float(item['3']) if '3' in item else None,
+                                                           int(item['8']) if '8' in item else None)
+                                except Exception as exc:
+                                    print(f'[STREAMER] on_internal_quote error: {exc}')
+                        notify = {**notify, 'content': rest}
+                    if service == 'LEVELONE_FUTURES' and self.on_futures_quote:
+                        for q in _parse_futures_book(notify):
+                            try:
+                                self.on_futures_quote(q)
+                            except Exception as exc:
+                                print(f'[STREAMER] on_futures_quote error: {exc}')
                     for tick in _parse_levelone(notify):
                         try:
                             tick = self._merge_tick(tick)
@@ -336,10 +390,12 @@ class SchwabStreamer:
                               {'keys': ','.join(STREAM_FUTURES), 'fields': CHART_FIELDS}))
 
         # LEVELONE — tick-by-tick last price to animate the live candle
+        # one SUBS per service (a second SUBS would replace the first)
         ws.send(_make_request('LEVELONE_EQUITIES', 'SUBS', 4, cid, corr,
-                              {'keys': ','.join(STREAM_LEVELONE_EQUITY), 'fields': LEVELONE_FIELDS}))
+                              {'keys': ','.join(STREAM_LEVELONE_EQUITY + STREAM_INTERNALS),
+                               'fields': LEVELONE_FIELDS}))
         ws.send(_make_request('LEVELONE_FUTURES',  'SUBS', 5, cid, corr,
-                              {'keys': ','.join(STREAM_FUTURES), 'fields': LEVELONE_FIELDS}))
+                              {'keys': ','.join(STREAM_FUTURES), 'fields': FUTURES_FIELDS}))
         print(f'[STREAMER] Subscribed LEVELONE equities: {STREAM_LEVELONE_EQUITY}')
         print(f'[STREAMER] Subscribed CHART+LEVELONE futures: {STREAM_FUTURES}')
 
@@ -482,6 +538,7 @@ class SchwabStreamer:
                 self.on_options_quote({'symbol': symbol,
                                        'bid':    quote['bid'],
                                        'ask':    quote['ask'],
+                                       'last':   quote['last'],
                                        'volume': quote['volume']})
             except Exception as exc:
                 print(f'[STREAMER] on_options_quote error: {exc}')

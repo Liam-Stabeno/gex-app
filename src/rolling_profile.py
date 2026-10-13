@@ -46,6 +46,9 @@ except Exception as e:  # Windows has no system tz database
     raise ImportError("rolling_profile needs time zone data on Windows: pip install tzdata") from e
 MAX_WINDOW_SEC = 3600            # longest selectable window (1h)
 KEEP_SEC = MAX_WINDOW_SEC + 300  # keep a little extra so a full 1h base snapshot exists
+# Chain fetches are snapshotted (gex.py hook) only when the dashboard turns this on:
+# a script's 10-strike chain check wrote a partial snapshot on 2026-10-13.
+RECORD_CHAINS = False
 ALLOWED_WINDOWS = {60, 120, 180, 300, 600, 900, 1800, 3600}
 SESSION_OPEN = dtime(9, 30)      # snapshots outside this ET window are ignored: Schwab still
 SESSION_CLOSE = dtime(16, 15)    # lists today's 0DTE after the close, which would evict the session

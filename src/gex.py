@@ -557,6 +557,7 @@ def print_summary(levels: dict, gex_by_strike: pd.DataFrame, symbol: str = "SPX"
 try:
     import functools as _rp_functools
     import inspect as _rp_inspect
+    import rolling_profile as _rp_module
     from rolling_profile import record_chain as _rp_record
 
     _rp_orig_fetch = fetch_option_chain
@@ -567,7 +568,9 @@ try:
         chain = _rp_orig_fetch(*args, **kwargs)
         try:
             symbol = args[0] if args else kwargs.get(_rp_first_param)
-            if isinstance(symbol, str):
+            # only the dashboard records: a script's chain fetch (a 10-strike check on
+            # 2026-10-13) wrote a partial snapshot into the day's file
+            if isinstance(symbol, str) and _rp_module.RECORD_CHAINS:
                 _rp_record(symbol, chain)
         except Exception as _rp_e:  # never break the GEX loop
             print(f"[rolling_profile] record failed: {_rp_e}")

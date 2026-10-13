@@ -30,6 +30,7 @@ from price_history import fetch_candles, append_candles, append_new, replace_can
 import bs
 import delta_flow
 import flow_alerts
+import market_recorder
 import rolling_profile
 import sse
 import tos_rtd
@@ -404,6 +405,8 @@ def init(cache, candle_cache, cache_lock, csv_lock,
     _price_symbols       = price_symbols
     _refresh_interval    = refresh_interval
     _price_sync_interval = price_sync_interval
+    market_recorder.configure(meta_fn=_contract_meta_tuple, greeks_fn=_contract_greeks,
+                              oi_fn=_oi_cache.get, spot_fn=current_spot)
 
 
 # ── GEX ──────────────────────────────────────────────────────────────────────
@@ -605,6 +608,11 @@ def refresh_gex(symbol: str):
         if display_sym == 'SPX':
             new_snap = delta_flow.extract_chain_snapshot(raw_chain)
             delta_flow.process_chain_snapshot(new_snap)
+            # the expirations the stream doesn't cover, for model training
+            try:
+                market_recorder.record_chain(chain, spot, {c['symbol'] for c in watch})
+            except Exception as e:
+                print(f'[recorder] chain: {e}')
 
             with _gex_watch_lock:
                 _gex_watch['SPX'] = watch
@@ -768,6 +776,62 @@ def on_options_quote(quote: dict):
         rolling_profile.record_stream_volume(meta.get('underlying') or 'SPX', sym,
                                              meta['strike'], meta['side'], quote['volume'])
 
+    # Every quote is saved (ticks + minute bars) for model training
+    market_recorder.option_quote(sym, bid, ask, quote.get('last'), quote.get('volume'))
+
+
+def on_futures_quote(q: dict):
+    """Every /ES level-one update (book and trades), for market_recorder."""
+    if q.get('symbol') == '/ES':
+        market_recorder.es_quote({k: v for k, v in q.items() if k != 'symbol'})
+
+
+def on_internal_quote(symbol: str, last, volume):
+    """VIX / TICK / TRIN / SPY ... updates, for market_recorder (never charted)."""
+    market_recorder.internal_quote(symbol, last, volume)
+
+
+# ── Providers for market_recorder ─────────────────────────────────────────────
+_live_iv: dict = {}   # (expiry 'YYYY-MM-DD', strike) -> vol solved by live_gex_loop (None: didn't invert)
+
+
+def current_spot() -> float:
+    """The streamed SPX price while current (ticks ~1 s), else the chain's underlying."""
+    spot = 0.0
+    with _cache_lock:
+        spx_data = _cache.get('$SPX') or _cache.get('SPX')
+        if spx_data:
+            spot = spx_data.get('spot', 0.0) or 0.0
+        bars = _candle_cache.get('$SPX') if _candle_cache is not None else None
+        if bars and time.time() * 1000 - bars[-1]['datetime'] < 120_000:
+            spot = float(bars[-1].get('close') or 0.0) or spot
+    return spot
+
+
+def _contract_meta_tuple(sym: str):
+    m = _contract_meta.get(sym)
+    if not m or not m.get('expiry_date'):
+        return None
+    return m['expiry_date'], m['strike'], m['side']
+
+
+def _contract_greeks(sym: str):
+    """(iv, delta, gamma) for a streamed contract from the live loop's solved vol."""
+    m = _contract_meta.get(sym)
+    if not m or not m.get('expiry_date'):
+        return None, None, None
+    sigma = _live_iv.get((m['expiry_date'], m['strike']))
+    spot = current_spot()
+    try:
+        T = bs.t_to_close(m['expiry_date'])
+    except ValueError:
+        T = 0.0
+    if not sigma or not spot or T <= 0:
+        return sigma, None, None
+    k = float(m['strike'])
+    return (sigma, bs.delta(spot, k, T, _RISK_FREE, sigma, m['side'][0]),
+            bs._bs_gamma(spot, k, T, _RISK_FREE, sigma))
+
 
 def _sticky_0dte(levels: dict, df, spot: float) -> dict:
     """Live 0DTE levels share stickiness with the chain refresh's 0DTE levels."""
@@ -800,14 +864,7 @@ def live_gex_loop():
         # underlying from the 60 s refresh. With only the chain's, spot was up to 60 s
         # old: IVs were solved from live option quotes against a stale price, and each
         # push dragged the dashboard's spot line and price back (seen 2026-10-09).
-        spot = 0.0
-        with _cache_lock:
-            spx_data = _cache.get('$SPX') or _cache.get('SPX')
-            if spx_data:
-                spot = spx_data.get('spot', 0.0)
-            bars = _candle_cache.get('$SPX') if _candle_cache is not None else None
-            if bars and time.time() * 1000 - bars[-1]['datetime'] < 120_000:
-                spot = float(bars[-1].get('close') or 0.0) or spot
+        spot = current_spot()
         if spot <= 0.0:
             continue
 
@@ -879,6 +936,7 @@ def live_gex_loop():
                 if sigma is not None:
                     break
 
+            _live_iv[(expiry_str, k)] = sigma     # for the recorder's minute bars
             if sigma is not None:
                 g, c, v = bs.greeks(spot, k, T, _RISK_FREE, sigma)
                 n_solved += 1

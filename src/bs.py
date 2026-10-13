@@ -68,6 +68,15 @@ def _bs_gamma(S: float, K: float, T: float, r: float, v: float) -> float:
     return _npdf(d1) / (S * v * math.sqrt(T))
 
 
+def delta(S: float, K: float, T: float, r: float, v: float, flag: str) -> float:
+    """Black-Scholes delta: N(d1) for a call, N(d1) - 1 for a put (at expiry: 1/0)."""
+    if T <= 0.0 or v <= 0.0:
+        itm = S > K if flag == 'c' else S < K
+        return (1.0 if itm else 0.0) * (1 if flag == 'c' else -1)
+    n = _ncdf(_d1(S, K, T, r, v))
+    return n if flag == 'c' else n - 1.0
+
+
 def _bs_charm(S: float, K: float, T: float, r: float, v: float) -> float:
     """dDelta/dτ — delta change per unit time-to-expiry remaining (per year).
 

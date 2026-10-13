@@ -347,7 +347,10 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
 # Day files are kept forever. Once a day is over, the large ones are gzipped
 # (~10x smaller); readers accept either form. A one-row-per-day summary CSV
 # (daily_summary_<sym>.csv) is the quick way to track things day to day.
-ARCHIVE_PATTERNS = ('gex_grid_{sym}_*.jsonl', 'rolling_profile_{sym}_*.jsonl', 'gex_watchlist_{sym}_*.csv')
+ARCHIVE_PATTERNS = ('gex_grid_{sym}_*.jsonl', 'rolling_profile_{sym}_*.jsonl', 'gex_watchlist_{sym}_*.csv',
+                    # market_recorder (model-training data)
+                    'option_ticks_{sym}_*.csv', 'option_bars_{sym}_*.csv', 'option_chain_{sym}_*.csv',
+                    'es_ticks_*.csv', 'es_book_*.csv', 'internals_*.csv')
 
 
 def day_file(name: str, data_dir: str = _DATA_DIR) -> str | None:

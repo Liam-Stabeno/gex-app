@@ -27,6 +27,8 @@ import delta_flow
 import flow_alerts
 import sse
 import background
+import market_recorder
+import rolling_profile
 import routes
 import tos_rtd
 
@@ -110,6 +112,7 @@ if __name__ == '__main__':
         webbrowser.open('http://127.0.0.1:5000')
         sys.exit(0)
     setup_logging()
+    rolling_profile.RECORD_CHAINS = True     # only the dashboard snapshots chains (not scripts)
     console_hidden = _hide_console()
     try:
         import win32api
@@ -169,6 +172,7 @@ if __name__ == '__main__':
     threading.Thread(target=background.price_loop,    daemon=True).start()
     threading.Thread(target=background.live_gex_loop, daemon=True).start()
     threading.Thread(target=background.daily_jobs_loop, daemon=True).start()
+    threading.Thread(target=market_recorder.flush_loop, daemon=True).start()   # model-training data
 
     # Start WebSocket streamer
     _streamer = SchwabStreamer(
@@ -176,6 +180,8 @@ if __name__ == '__main__':
         on_flow_alert=background.on_flow_alert,
         on_options_quote=background.on_options_quote,
         on_volume_split=background.on_volume_split,
+        on_futures_quote=background.on_futures_quote,
+        on_internal_quote=background.on_internal_quote,
     )
     _streamer_ref[0] = _streamer
     _streamer.start()

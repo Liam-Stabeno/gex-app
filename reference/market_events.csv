@@ -1,0 +1,160 @@
+date,time_et,event,category,importance,source
+2026-01-01,,Market closed: New Year's Day,holiday,high,nyse.com/markets/hours-calendars
+2026-01-09,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-01-13,08:30,CPI,cpi,high,bls.gov release schedule
+2026-01-16,,Monthly option expiration,opex,medium,computed
+2026-01-19,,Market closed: Martin Luther King Jr. Day,holiday,high,nyse.com/markets/hours-calendars
+2026-01-21,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-01-28,14:00,FOMC decision,fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2026-01-30,,Month end,period_end,low,computed
+2026-02-11,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-02-13,08:30,CPI,cpi,high,bls.gov release schedule
+2026-02-16,,Market closed: Washington's Birthday,holiday,high,nyse.com/markets/hours-calendars
+2026-02-18,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-02-20,,Monthly option expiration,opex,medium,computed
+2026-02-27,,Month end,period_end,low,computed
+2026-03-06,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-03-11,08:30,CPI,cpi,high,bls.gov release schedule
+2026-03-18,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-03-18,14:00,FOMC decision + projections (SEP),fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2026-03-20,,Quarterly expiration (quad witching),opex,high,computed
+2026-03-31,,Quarter end,period_end,medium,computed
+2026-04-03,,Market closed: Good Friday,holiday,high,nyse.com/markets/hours-calendars
+2026-04-03,08:30,Jobs report (Employment Situation) (stock market closed; ES trades),jobs,high,bls.gov release schedule
+2026-04-10,08:30,CPI,cpi,high,bls.gov release schedule
+2026-04-15,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-04-17,,Monthly option expiration,opex,medium,computed
+2026-04-29,14:00,FOMC decision,fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2026-04-30,,Month end,period_end,low,computed
+2026-05-08,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-05-12,08:30,CPI,cpi,high,bls.gov release schedule
+2026-05-15,,Monthly option expiration,opex,medium,computed
+2026-05-20,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-05-25,,Market closed: Memorial Day,holiday,high,nyse.com/markets/hours-calendars
+2026-05-29,,Month end,period_end,low,computed
+2026-06-05,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-06-10,08:30,CPI,cpi,high,bls.gov release schedule
+2026-06-17,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-06-17,14:00,FOMC decision + projections (SEP),fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2026-06-18,,Quarterly expiration (quad witching),opex,high,computed
+2026-06-19,,Market closed: Juneteenth,holiday,high,nyse.com/markets/hours-calendars
+2026-06-30,,Quarter end,period_end,medium,computed
+2026-07-02,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-07-03,,Market closed: Independence Day (observed),holiday,high,nyse.com/markets/hours-calendars
+2026-07-14,08:30,CPI,cpi,high,bls.gov release schedule
+2026-07-17,,Monthly option expiration,opex,medium,computed
+2026-07-22,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-07-29,14:00,FOMC decision,fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2026-07-31,,Month end,period_end,low,computed
+2026-08-07,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-08-12,08:30,CPI,cpi,high,bls.gov release schedule
+2026-08-19,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-08-21,,Monthly option expiration,opex,medium,computed
+2026-08-31,,Month end,period_end,low,computed
+2026-09-04,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-09-07,,Market closed: Labor Day,holiday,high,nyse.com/markets/hours-calendars
+2026-09-11,08:30,CPI,cpi,high,bls.gov release schedule
+2026-09-16,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-09-16,14:00,FOMC decision + projections (SEP),fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2026-09-18,,Quarterly expiration (quad witching),opex,high,computed
+2026-09-30,,Quarter end,period_end,medium,computed
+2026-10-02,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-10-14,08:30,CPI,cpi,high,bls.gov release schedule
+2026-10-16,,Monthly option expiration,opex,medium,computed
+2026-10-21,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-10-28,14:00,FOMC decision,fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2026-10-30,,Month end,period_end,low,computed
+2026-11-06,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-11-10,08:30,CPI,cpi,high,bls.gov release schedule
+2026-11-18,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-11-20,,Monthly option expiration,opex,medium,computed
+2026-11-26,,Market closed: Thanksgiving,holiday,high,nyse.com/markets/hours-calendars
+2026-11-27,13:00,Early close 1:00 PM (options 1:15): Day after Thanksgiving,early_close,high,nyse.com/markets/hours-calendars
+2026-11-30,,Month end,period_end,low,computed
+2026-12-04,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2026-12-09,14:00,FOMC decision + projections (SEP),fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2026-12-10,08:30,CPI,cpi,high,bls.gov release schedule
+2026-12-16,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2026-12-18,,Quarterly expiration (quad witching),opex,high,computed
+2026-12-24,13:00,Early close 1:00 PM (options 1:15): Christmas Eve,early_close,high,nyse.com/markets/hours-calendars
+2026-12-25,,Market closed: Christmas,holiday,high,nyse.com/markets/hours-calendars
+2026-12-31,,Quarter end,period_end,medium,computed
+2027-01-01,,Market closed: New Year's Day,holiday,high,nyse.com/markets/hours-calendars
+2027-01-08,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-01-13,08:30,CPI,cpi,high,bls.gov release schedule
+2027-01-15,,Monthly option expiration,opex,medium,computed
+2027-01-18,,Market closed: Martin Luther King Jr. Day,holiday,high,nyse.com/markets/hours-calendars
+2027-01-20,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-01-27,14:00,FOMC decision,fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2027-01-29,,Month end,period_end,low,computed
+2027-02-05,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-02-11,08:30,CPI,cpi,high,bls.gov release schedule
+2027-02-15,,Market closed: Washington's Birthday,holiday,high,nyse.com/markets/hours-calendars
+2027-02-17,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-02-19,,Monthly option expiration,opex,medium,computed
+2027-02-26,,Month end,period_end,low,computed
+2027-03-05,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-03-10,08:30,CPI,cpi,high,bls.gov release schedule
+2027-03-17,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-03-17,14:00,FOMC decision + projections (SEP),fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2027-03-19,,Quarterly expiration (quad witching),opex,high,computed
+2027-03-26,,Market closed: Good Friday,holiday,high,nyse.com/markets/hours-calendars
+2027-03-31,,Quarter end,period_end,medium,computed
+2027-04-02,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-04-13,08:30,CPI,cpi,high,bls.gov release schedule
+2027-04-16,,Monthly option expiration,opex,medium,computed
+2027-04-21,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-04-28,14:00,FOMC decision,fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2027-04-30,,Month end,period_end,low,computed
+2027-05-07,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-05-12,08:30,CPI,cpi,high,bls.gov release schedule
+2027-05-19,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-05-21,,Monthly option expiration,opex,medium,computed
+2027-05-28,,Month end,period_end,low,computed
+2027-05-31,,Market closed: Memorial Day,holiday,high,nyse.com/markets/hours-calendars
+2027-06-04,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-06-09,14:00,FOMC decision + projections (SEP),fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2027-06-10,08:30,CPI,cpi,high,bls.gov release schedule
+2027-06-16,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-06-17,,Quarterly expiration (quad witching),opex,high,computed
+2027-06-18,,Market closed: Juneteenth (observed),holiday,high,nyse.com/markets/hours-calendars
+2027-06-30,,Quarter end,period_end,medium,computed
+2027-07-02,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-07-05,,Market closed: Independence Day (observed),holiday,high,nyse.com/markets/hours-calendars
+2027-07-14,08:30,CPI,cpi,high,bls.gov release schedule
+2027-07-16,,Monthly option expiration,opex,medium,computed
+2027-07-21,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-07-28,14:00,FOMC decision,fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2027-07-30,,Month end,period_end,low,computed
+2027-08-06,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-08-11,08:30,CPI,cpi,high,bls.gov release schedule
+2027-08-18,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-08-20,,Monthly option expiration,opex,medium,computed
+2027-08-31,,Month end,period_end,low,computed
+2027-09-03,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-09-06,,Market closed: Labor Day,holiday,high,nyse.com/markets/hours-calendars
+2027-09-14,08:30,CPI,cpi,high,bls.gov release schedule
+2027-09-15,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-09-15,14:00,FOMC decision + projections (SEP),fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2027-09-17,,Quarterly expiration (quad witching),opex,high,computed
+2027-09-30,,Quarter end,period_end,medium,computed
+2027-10-08,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-10-14,08:30,CPI,cpi,high,bls.gov release schedule
+2027-10-15,,Monthly option expiration,opex,medium,computed
+2027-10-20,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-10-27,14:00,FOMC decision,fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2027-10-29,,Month end,period_end,low,computed
+2027-11-05,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-11-10,08:30,CPI,cpi,high,bls.gov release schedule
+2027-11-17,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-11-19,,Monthly option expiration,opex,medium,computed
+2027-11-25,,Market closed: Thanksgiving,holiday,high,nyse.com/markets/hours-calendars
+2027-11-26,13:00,Early close 1:00 PM (options 1:15): Day after Thanksgiving,early_close,high,nyse.com/markets/hours-calendars
+2027-11-30,,Month end,period_end,low,computed
+2027-12-03,08:30,Jobs report (Employment Situation),jobs,high,bls.gov release schedule
+2027-12-08,14:00,FOMC decision + projections (SEP),fomc,high,federalreserve.gov/monetarypolicy/fomccalendars.htm
+2027-12-10,08:30,CPI,cpi,high,bls.gov release schedule
+2027-12-17,,Quarterly expiration (quad witching),opex,high,computed
+2027-12-22,09:30,VIX expiration (settles on SPX option prices at the open),vix_exp,medium,computed
+2027-12-24,,Market closed: Christmas (observed),holiday,high,nyse.com/markets/hours-calendars
+2027-12-31,,Quarter end,period_end,medium,computed
