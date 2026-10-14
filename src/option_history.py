@@ -65,9 +65,13 @@ def fetch_bars(symbol: str, start_ms: int, end_ms: int, token: str | None = None
     didn't trade, None if the request failed (so a resumable run retries it)."""
     freq, _ = BAR_SIZES[size]
     for attempt in range(3):
+        token = get_access_token()          # per request: picks up a refresh at once
         r = requests.get('https://api.schwabapi.com/marketdata/v1/pricehistory', timeout=SCHWAB_TIMEOUT,
-                         headers={'Authorization': f'Bearer {token or get_access_token()}'},
+                         headers={'Authorization': f'Bearer {token}'},
                          params={'symbol': symbol, **freq, 'startDate': int(start_ms), 'endDate': int(end_ms)})
+        if r.status_code == 401 and attempt == 0:
+            get_access_token(force=True)    # superseded / expired token: get a new one, retry
+            continue
         if r.status_code == 429:
             print(f'[option_history] rate limited: pausing 60 s ({symbol})')
             time.sleep(60)

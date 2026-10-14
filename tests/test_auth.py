@@ -63,3 +63,34 @@ def test_renew_prompt_only_when_login_is_6_days_old(monkeypatch):
         monkeypatch.setattr(background, "login_age_days", lambda a=age: a)
         background.renew_login_if_old()
         assert asked == expect
+
+
+def test_tokens_shared_between_processes(tmp_path, monkeypatch):
+    f = tmp_path / "tokens.json"
+    monkeypatch.setattr(gex, "TOKENS_FILE", str(f))
+    refreshed = []
+    def fake_refresh(rt):
+        refreshed.append(rt)
+        t = {"access_token": f"NEW{len(refreshed)}", "refresh_token": rt}
+        f.write_text(json.dumps(t))
+        return t
+    monkeypatch.setattr(gex, "refresh_access_token", fake_refresh)
+    f.write_text(json.dumps({"access_token": "A", "refresh_token": "R"}))
+    monkeypatch.setattr(gex, "_cached_token", {"access_token": "B", "expires_at": time.time() + 600, "file_mtime": 0.0})
+    assert gex.get_access_token() == "A" and refreshed == []        # another process refreshed: adopt
+    assert gex.get_access_token() == "A"                             # no file change: cached
+    assert gex.get_access_token(force=True) == "NEW1" and refreshed == ["R"]   # A rejected, file still A
+    f.write_text(json.dumps({"access_token": "C", "refresh_token": "R"}))      # the other process again
+    assert gex.get_access_token(force=True) == "C" and len(refreshed) == 1    # newer in the file: no refresh
+
+
+def test_history_request_retries_after_401(monkeypatch):
+    import option_history as oh
+    codes, forced = iter([401, 200]), []
+    class R:
+        def __init__(self, c): self.status_code, self.ok, self.text = c, c == 200, ""
+        def json(self): return {"candles": [{"datetime": 1}]}
+    monkeypatch.setattr(oh.requests, "get", lambda url, **kw: R(next(codes)))
+    monkeypatch.setattr(oh, "get_access_token", lambda force=False: forced.append(force) or "t")
+    assert oh.fetch_bars("X", 0, 1) == [{"datetime": 1}]
+    assert True in forced                                            # a fresh token was fetched

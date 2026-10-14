@@ -207,20 +207,52 @@ def refresh_access_token(refresh_token: str) -> dict:
     return tokens
 
 
-def get_access_token() -> str:
+def get_access_token(force: bool = False) -> str:
     """
     Return a valid Schwab access token, refreshing at most once per TOKEN_TTL seconds.
     Thread-safe — multiple threads share a single cached token.
+
+    Several processes share TOKENS_FILE (the app, backfill scripts): when another one
+    has refreshed (the file holds a newer access token than ours), that token is used
+    instead of refreshing again, so the processes don't knock out each other's token
+    (2026-10-13: hundreds of history requests got 401 with a superseded token).
+    force: refresh now (after a 401 with nothing newer in the file).
     """
     with _token_lock:
         now = time.time()
-        if _cached_token['access_token'] and now < _cached_token['expires_at']:
+        try:
+            mtime = os.path.getmtime(TOKENS_FILE)
+        except OSError:
+            mtime = 0.0
+        if not force and mtime > _cached_token.get('file_mtime', 0.0):
+            try:
+                t = load_tokens()
+            except (OSError, ValueError):
+                t = {}
+            _cached_token['file_mtime'] = mtime
+            if t.get('access_token') and t['access_token'] != _cached_token['access_token'] \
+                    and now - mtime < TOKEN_TTL:
+                _cached_token['access_token'] = t['access_token']
+                _cached_token['expires_at']   = mtime + TOKEN_TTL
+                return t['access_token']
+        if not force and _cached_token['access_token'] and now < _cached_token['expires_at']:
             return _cached_token['access_token']
-        # Token missing or expired — refresh once
         tokens = load_tokens()
+        if force and tokens.get('access_token') and tokens['access_token'] != _cached_token['access_token'] \
+                and now - mtime < TOKEN_TTL:
+            # ours was rejected, but another process already refreshed: use that one
+            _cached_token['access_token'] = tokens['access_token']
+            _cached_token['expires_at']   = mtime + TOKEN_TTL
+            _cached_token['file_mtime']   = mtime
+            return tokens['access_token']
+        # Token missing, expired or rejected — refresh once
         tokens = refresh_access_token(tokens['refresh_token'])
         _cached_token['access_token'] = tokens['access_token']
         _cached_token['expires_at']   = now + TOKEN_TTL
+        try:
+            _cached_token['file_mtime'] = os.path.getmtime(TOKENS_FILE)   # our own write
+        except OSError:
+            pass
         return tokens['access_token']
 
 

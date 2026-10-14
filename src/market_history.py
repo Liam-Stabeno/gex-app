@@ -42,11 +42,14 @@ FUTURES_FALLBACK = {'/NQ': '/NQZ26', '/RTY': '/RTYZ26', '/YM': '/YMZ26', '/ZN': 
                     '/ZB': '/ZBZ26', '/CL': '/CLX26', '/GC': '/GCZ26'}
 
 
-def _get(symbol: str, params: dict, token: str) -> list:
-    for _ in range(3):
+def _get(symbol: str, params: dict, token: str | None = None) -> list:
+    for attempt in range(3):
         r = requests.get('https://api.schwabapi.com/marketdata/v1/pricehistory', timeout=SCHWAB_TIMEOUT,
-                         headers={'Authorization': f'Bearer {token}'},
+                         headers={'Authorization': f'Bearer {get_access_token()}'},
                          params={'symbol': symbol, 'needExtendedHoursData': True, **params})
+        if r.status_code == 401 and attempt == 0:
+            get_access_token(force=True)    # superseded / expired token
+            continue
         if r.status_code == 429:
             time.sleep(60)
             continue

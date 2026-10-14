@@ -45,7 +45,10 @@ def main():
     print(f'spot {spot:.2f}: {len(contracts)} contracts, '
           f'~{len(contracts) / a.rate / 60:.0f} min at {a.rate}/s', flush=True)
     t0 = time.time()
-    s = oh.pull(contracts, start_ms, end_ms, rate=a.rate)
+    with oh.history_lock(wait=3600) as lock:          # never alongside another history writer
+        if not lock.ok:
+            sys.exit('another option-history run holds the lock')
+        s = oh.pull(contracts, start_ms, end_ms, rate=a.rate)
     print(f"done in {(time.time() - t0) / 60:.1f} min: {s['contracts']} contracts, "
           f"{s['with_bars']} traded, {s['bars']} bars, {s['added']} new rows saved")
 
