@@ -197,6 +197,26 @@ def load_level_history(sym: str, day=None) -> list:
     return out
 
 
+def _history_jobs_path(day: str) -> str:
+    return os.path.join(_DATA_DIR, f'history_jobs_{day}.json')
+
+
+def _history_done(day: str) -> set:
+    """Daily history steps already run today. Kept on disk: kept in memory, every app
+    restart after 17:15 re-ran the whole pass (and a restart mid-pass left its lock)."""
+    try:
+        with open(_history_jobs_path(day)) as f:
+            return set(json.load(f))
+    except (OSError, ValueError):
+        return set()
+
+
+def _history_mark(day: str, step: str):
+    done = _history_done(day) | {step}
+    with open(_history_jobs_path(day), 'w') as f:
+        json.dump(sorted(done), f)
+
+
 def option_history_loop():
     """Save Schwab's 1-minute trade bars for SPX option contracts while Schwab still has
     them (option_history.py): today's 0DTE at 15:52 (contracts vanish at expiry), again
@@ -205,16 +225,17 @@ def option_history_loop():
     every interval (market_history.refresh_recent). Weekdays only."""
     import market_history
     import option_history as oh
-    done, zero = set(), []
+    zero = []
     while True:
         time.sleep(30)
         now = datetime.now(_ET)
         if now.weekday() >= 5:
             continue
         d, hm, today = now.date(), now.strftime('%H:%M'), now.date().isoformat()
+        done = _history_done(today)
         try:
-            if '15:52' <= hm < '15:59' and (d, '0dte') not in done:
-                done.add((d, '0dte'))
+            if '15:52' <= hm < '15:59' and '0dte' not in done:
+                _history_mark(today, '0dte')
                 chain = fetch_option_chain('$SPX', get_access_token(), strike_count=150)
                 spot = chain.get('underlyingPrice') or current_spot()
                 zero = oh.contracts_from_chain(chain, spot, spot * 0.05, expiries={today})
@@ -223,15 +244,15 @@ def option_history_loop():
                         stop = now.replace(hour=15, minute=59, second=50).timestamp()
                         s = oh.pull(zero, oh.day_range_ms(d)[0], int(time.time() * 1000), rate=1.6, stop_at=stop)
                         print(f'[history] 0DTE bars before expiry: {s}')
-            elif '16:01' <= hm < '16:15' and (d, '0dte_final') not in done:
-                done.add((d, '0dte_final'))
+            elif '16:01' <= hm < '16:15' and '0dte_final' not in done:
+                _history_mark(today, '0dte_final')
                 if zero and oh.fetch_bars(zero[0][0], int((time.time() - 600) * 1000), int(time.time() * 1000)):
                     with oh.history_lock(wait=600) as lock:
                         if lock.ok:
                             s = oh.pull(zero, int((time.time() - 1200) * 1000), int(time.time() * 1000), rate=1.6)
                             print(f'[history] 0DTE bars after the close: {s}')
-            elif hm >= '17:15' and (d, 'rest') not in done:
-                done.add((d, 'rest'))
+            elif hm >= '17:15' and 'rest' not in done:
+                _history_mark(today, 'rest')
                 chain = fetch_option_chain('$SPX', get_access_token(), strike_count=150)
                 spot = chain.get('underlyingPrice') or current_spot()
                 rest = [c for c in oh.contracts_from_chain(chain, spot, 300, traded_only=True) if c[1] > today]

@@ -152,6 +152,22 @@ LOCK_PATH = os.path.join(DATA_DIR, 'option_history.lock')
 LOCK_STALE_SEC = 3 * 3600
 
 
+def _pid_alive(pid: int) -> bool:
+    """Is process `pid` running? (Windows API: os.kill(pid, 0) would send Ctrl+C there.)"""
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, int(pid))          # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return bool(ok) and code.value == 259               # STILL_ACTIVE
+    except Exception:
+        return True                                          # can't tell: assume alive
+
+
 class history_lock:
     """One writer at a time (the app's daily passes, backfill scripts): two copies
     merging the same day file at once could drop rows. `with history_lock(wait=...)`
@@ -171,7 +187,14 @@ class history_lock:
                 return self
             except FileExistsError:
                 try:
-                    if time.time() - os.path.getmtime(self.path) > LOCK_STALE_SEC:
+                    with open(self.path) as f:
+                        holder = int(f.read().strip() or 0)
+                except (OSError, ValueError):
+                    holder = 0
+                try:
+                    # a killed holder (e.g. the app restarted mid-pass) frees it at once
+                    if (holder and not _pid_alive(holder)) or \
+                            time.time() - os.path.getmtime(self.path) > LOCK_STALE_SEC:
                         os.remove(self.path)
                         continue
                 except OSError:

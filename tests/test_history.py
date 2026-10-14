@@ -69,3 +69,14 @@ def test_save_bars_keeps_rows_of_an_already_gzipped_day(tmp_path):
     with gz.open(tmp_path / "option_trade_bars_SPX_2026-09-01.csv.gz", "rt") as f:
         lines = f.read().splitlines()
     assert [l.split(",")[:2] for l in lines[1:]] == [["100", "A"], ["200", "A"], ["300", "B"]]
+
+
+def test_lock_held_by_a_dead_process_is_taken_over(tmp_path):
+    p = str(tmp_path / "x.lock")
+    open(p, "w").write("999999")                    # no such process (a killed app copy)
+    with oh.history_lock(wait=0, path=p) as l:
+        assert l.ok and open(p).read() == str(os.getpid())
+    open(p, "w").write(str(os.getpid()))            # a live holder (this process) is respected
+    with oh.history_lock(wait=0, path=p) as l2:
+        assert not l2.ok
+    os.remove(p)
