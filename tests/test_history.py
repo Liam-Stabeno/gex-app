@@ -80,3 +80,17 @@ def test_lock_held_by_a_dead_process_is_taken_over(tmp_path):
     with oh.history_lock(wait=0, path=p) as l2:
         assert not l2.ok
     os.remove(p)
+
+
+def test_daily_request_params_and_failed_requests_not_marked_done(monkeypatch, tmp_path):
+    sent, codes = [], iter([500, 200, 200])
+    class R:
+        def __init__(self, code): self.status_code, self.ok, self.text = code, code == 200, "err"
+        def json(self): return {"candles": [{"datetime": 1_791_900_000_000, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]}
+    monkeypatch.setattr(oh.requests, "get", lambda url, **kw: sent.append(kw["params"]) or R(next(codes)))
+    monkeypatch.setattr(oh, "get_access_token", lambda: "t")
+    done = []
+    c = [("A", "2026-12-18", 7800.0, "call"), ("B", "2026-12-18", 7800.0, "put"), ("C", "2026-12-18", 7805.0, "call")]
+    s = oh.pull(c, 0, 1, rate=0, size="1d", data_dir=str(tmp_path), on_saved=done.extend)
+    assert sent[0]["periodType"] == "year" and sent[0]["frequencyType"] == "daily"
+    assert s["errors"] == 1 and done == ["B", "C"]          # A failed: retried next run

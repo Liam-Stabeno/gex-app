@@ -54,12 +54,15 @@ def contracts_from_chain(chain: dict, spot: float, band: float, expiries=None, t
 BAR_SIZES = {
     '1m': ({'frequencyType': 'minute', 'frequency': 1}, 'option_trade_bars_SPX'),
     '5m': ({'frequencyType': 'minute', 'frequency': 5}, 'option_trade_bars_5m_SPX'),
-    '1d': ({'frequencyType': 'daily', 'frequency': 1}, 'option_daily_bars_SPX'),
+    # daily needs periodType=year with a date range (without it: 400 "Invalid frequency")
+    '1d': ({'periodType': 'year', 'frequencyType': 'daily', 'frequency': 1}, 'option_daily_bars_SPX'),
 }
+_errors = {'n': 0}      # non-OK answers in this process (pull() reports them)
 
 
-def fetch_bars(symbol: str, start_ms: int, end_ms: int, token: str | None = None, size: str = '1m') -> list:
-    """Trade bars of `size` for one contract between start_ms and end_ms ([] if none)."""
+def fetch_bars(symbol: str, start_ms: int, end_ms: int, token: str | None = None, size: str = '1m'):
+    """Trade bars of `size` for one contract between start_ms and end_ms: [] if it
+    didn't trade, None if the request failed (so a resumable run retries it)."""
     freq, _ = BAR_SIZES[size]
     for attempt in range(3):
         r = requests.get('https://api.schwabapi.com/marketdata/v1/pricehistory', timeout=SCHWAB_TIMEOUT,
@@ -70,9 +73,14 @@ def fetch_bars(symbol: str, start_ms: int, end_ms: int, token: str | None = None
             time.sleep(60)
             continue
         if not r.ok:
-            return []
+            # counted and the first few printed: a bad request must not look like "no trades"
+            _errors['n'] += 1
+            if _errors['n'] <= 3:
+                print(f'[option_history] {size} {symbol}: HTTP {r.status_code} {r.text[:160]}', flush=True)
+            return None
         return r.json().get('candles', []) or []
-    return []
+    _errors['n'] += 1                       # still rate limited after 3 tries
+    return None
 
 
 def save_bars(rows_by_day: dict, data_dir: str | None = None, size: str = '1m') -> int:
@@ -114,6 +122,7 @@ def pull(contracts: list, start_ms: int, end_ms: int, rate: float = 1.0, log_eve
     resumable run records its progress there). stop_at: epoch s to stop by."""
     token, token_at = get_access_token(), time.time()
     pending, stats, batch = {}, {'contracts': 0, 'with_bars': 0, 'bars': 0, 'added': 0}, []
+    errors_before = _errors['n']
     gap = 1.0 / rate if rate > 0 else 0
 
     def flush():
@@ -132,7 +141,8 @@ def pull(contracts: list, start_ms: int, end_ms: int, rate: float = 1.0, log_eve
         t0 = time.time()
         bars = fetch_bars(sym, start_ms, end_ms, token, size)
         stats['contracts'] += 1
-        batch.append(sym)
+        if bars is not None:                # failed requests aren't recorded as done
+            batch.append(sym)
         if bars:
             stats['with_bars'] += 1
             stats['bars'] += len(bars)
@@ -145,6 +155,9 @@ def pull(contracts: list, start_ms: int, end_ms: int, rate: float = 1.0, log_eve
             print(f"[option_history] {size} {i}/{len(contracts)} contracts, {stats['bars']} bars", flush=True)
         time.sleep(max(0.0, gap - (time.time() - t0)))
     flush()
+    stats['errors'] = _errors['n'] - errors_before
+    if stats['errors']:
+        print(f"[option_history] {size}: {stats['errors']} requests failed (see the first above)", flush=True)
     return stats
 
 
