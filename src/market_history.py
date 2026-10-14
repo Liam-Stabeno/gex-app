@@ -19,8 +19,27 @@ import requests
 import price_history as ph
 from gex import SCHWAB_TIMEOUT, get_access_token
 
-SYMBOLS = ['$SPX', '/ES', '$VIX', '$VIX9D', '$VIX3M', '$VVIX', '$TICK', '$TRIN', 'SPY', 'QQQ', '$NDX', '$RUT']
+SYMBOLS = ['$SPX', '/ES', '$VIX', '$VIX9D', '$VIX3M', '$VVIX', '$TICK', '$TRIN', 'SPY', 'QQQ', '$NDX', '$RUT',
+           # volatility: 1-day VIX (0DTE), skew, other indexes' vol
+           '$VIX1D', '$SKEW', '$VXN', '$RVX', '$VXD', '$OVX', '$GVZ', '$VXEEM', '$VIXEQ',
+           # breadth (Schwab has no live $ADD / put-call ratios)
+           '$ADVN', '$DECN', '$UVOL', '$DVOL',
+           # indexes and Treasury yields
+           '$DJI', '$COMPX', '$SPXEW', '$OEX', '$XSP', '$TNX', '$TYX', '$FVX', '$IRX',
+           # ETFs: size, bonds, credit, commodities, dollar, sectors, vol products
+           'IWM', 'DIA', 'RSP', 'TLT', 'IEF', 'HYG', 'LQD', 'GLD', 'SLV', 'USO', 'UUP',
+           'XLK', 'XLF', 'XLE', 'XLV', 'XLY', 'XLP', 'XLI', 'XLU', 'XLB', 'XLRE', 'XLC', 'SMH', 'KRE',
+           'VXX', 'UVXY', 'SVXY',
+           # the stocks that move SPX most
+           'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AVGO', 'JPM', 'LLY', 'NFLX',
+           # other index / rate / commodity futures (front month; see FUTURES_FALLBACK)
+           '/NQ', '/RTY', '/YM', '/ZN', '/ZB', '/CL', '/GC']
 APP_OWNED_1M = {'$SPX', '/ES'}          # price_history_SPX/ES.csv: written by the running app
+# Schwab's quotes need a contract month for these; if the front-month name returns no
+# history either, the named contract is pulled and saved under its own symbol (a single
+# contract, not a continuous series)
+FUTURES_FALLBACK = {'/NQ': '/NQZ26', '/RTY': '/RTYZ26', '/YM': '/YMZ26', '/ZN': '/ZNZ26',
+                    '/ZB': '/ZBZ26', '/CL': '/CLX26', '/GC': '/GCZ26'}
 
 
 def _get(symbol: str, params: dict, token: str) -> list:
@@ -66,7 +85,12 @@ def backfill(symbols=None, pause: float = 1.0) -> dict:
     token, res = get_access_token(), {}
     for s in symbols or SYMBOLS:
         res[s] = pull_symbol(s, token)
-        print(f'[market_history] {s}: {res[s]}', flush=True)
+        if not any(res[s].values()) and s in FUTURES_FALLBACK:
+            alt = FUTURES_FALLBACK[s]
+            res[alt] = pull_symbol(alt, token)
+            print(f'[market_history] {s}: nothing under the front-month name; {alt}: {res[alt]}', flush=True)
+        else:
+            print(f'[market_history] {s}: {res[s]}', flush=True)
         time.sleep(pause)
     return res
 

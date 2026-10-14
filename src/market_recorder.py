@@ -313,15 +313,18 @@ def es_quote(fields: dict, ts: float | None = None):
         if spread is not None:
             m['spread_max'] = spread if m['spread_max'] is None else max(m['spread_max'], spread)
         vol = fields.get('volume')
-        if vol is not None and prev_vol is not None and vol > prev_vol and st.get('last'):
-            dv = vol - prev_vol
+        # day volume restarts after the 17:00-18:00 halt: the new total is all since then
+        dv = 0 if vol is None or prev_vol is None else (vol - prev_vol if vol >= prev_vol else vol)
+        if dv > 0 and st.get('last'):
             m['trades'] += 1
             m['volume'] += dv
             m['pv'] += st['last'] * dv
             if (st.get('last_size') or 0) >= ES_LARGE_LOTS:
                 m['large_trades'] += 1
                 m['large_volume'] += dv
-        last = fields.get('last')
+        # a trade at an unchanged price comes as volume only: it still sets high / low
+        # (otherwise VWAP could fall outside them)
+        last = fields.get('last') or (st.get('last') if dv > 0 else None)
         if last:
             m['high'] = last if m['high'] is None else max(m['high'], last)
             m['low'] = last if m['low'] is None else min(m['low'], last)

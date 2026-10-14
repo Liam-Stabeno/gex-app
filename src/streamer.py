@@ -43,7 +43,13 @@ STREAM_FUTURES = ['/ES']
 # volatility indexes, NYSE TICK / TRIN, and related index ETFs. ($ADD and $TICKQ come
 # back as 0 from Schwab, so they're left out.)
 STREAM_INTERNALS = ['$VIX', '$VIX9D', '$VIX3M', '$VVIX', '$TICK', '$TRIN', 'SPY', 'QQQ', '$NDX', '$RUT']
-_INTERNALS = set(STREAM_INTERNALS)
+# more of the same, added with separate ADD requests so a rejected symbol can't take
+# down the $SPX / /ES subscriptions the dashboard runs on
+STREAM_INTERNALS_EXTRA = ['$VIX1D', '$SKEW', '$ADVN', '$DECN', '$UVOL', '$DVOL', '$TNX', '$DJI', '$COMPX',
+                          '$SPXEW', 'IWM', 'DIA', 'RSP', 'TLT', 'HYG', 'XLK', 'XLF', 'SMH',
+                          'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AVGO']
+STREAM_FUTURES_INTERNALS = ['/NQ', '/RTY', '/ZN', '/CL', '/GC']
+_INTERNALS = set(STREAM_INTERNALS + STREAM_INTERNALS_EXTRA + STREAM_FUTURES_INTERNALS)
 CHART_FIELDS        = '0,1,2,3,4,5,6,7,8'
 LEVELONE_FIELDS     = '0,3,8'  # 0 = symbol, 3 = last price, 8 = total volume
 # /ES also: 1 = bid, 2 = ask, 4 = bid size, 5 = ask size, 9 = last (trade) size, for
@@ -138,6 +144,17 @@ def _parse_levelone(msg: dict) -> list:
             'volume': int(item['8'])   if '8' in item else None,
         })
     return ticks
+
+
+def _num(v, whole: bool = False):
+    """A stream field as a number (None if missing / unparseable). Some symbols send
+    volume as a decimal ($DVOL: 92233720368.54776), so whole numbers go via float."""
+    if v is None:
+        return None
+    try:
+        return int(float(v)) if whole else float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_futures_book(msg: dict) -> list:
@@ -313,53 +330,7 @@ class SchwabStreamer:
                         print(f"[STREAMER] {resp.get('service')} {resp.get('command')} rejected "
                               f"code={code}: {resp.get('content', {}).get('msg', '')}")
 
-            # Price candle data
-            for notify in data.get('data', []):
-                service = notify.get('service', '')
-                if service in ('CHART_EQUITY', 'CHART_FUTURES'):
-                    # Official completed bar — sync live candle and fire callback
-                    for candle in _parse_chart(notify):
-                        self._live_candles[candle['symbol']] = dict(candle)
-                        try:
-                            self.on_candle(candle)
-                        except Exception as exc:
-                            print(f'[STREAMER] on_candle error: {exc}')
-
-                elif service in ('LEVELONE_EQUITIES', 'LEVELONE_FUTURES'):
-                    if service == 'LEVELONE_EQUITIES':
-                        # internals go to the recorder only, never into candles / the chart
-                        rest = []
-                        for item in notify.get('content', []):
-                            if item.get('key') not in _INTERNALS:
-                                rest.append(item)
-                            elif self.on_internal_quote and ('3' in item or '8' in item):
-                                try:
-                                    self.on_internal_quote(item['key'],
-                                                           float(item['3']) if '3' in item else None,
-                                                           int(item['8']) if '8' in item else None)
-                                except Exception as exc:
-                                    print(f'[STREAMER] on_internal_quote error: {exc}')
-                        notify = {**notify, 'content': rest}
-                    if service == 'LEVELONE_FUTURES' and self.on_futures_quote:
-                        for q in _parse_futures_book(notify):
-                            try:
-                                self.on_futures_quote(q)
-                            except Exception as exc:
-                                print(f'[STREAMER] on_futures_quote error: {exc}')
-                    for tick in _parse_levelone(notify):
-                        try:
-                            tick = self._merge_tick(tick)
-                            if tick:
-                                self._handle_tick(tick)
-                        except Exception as exc:
-                            print(f'[STREAMER] tick error: {exc}')
-
-                elif service == 'LEVELONE_OPTIONS':
-                    for quote in _parse_options(notify):
-                        try:
-                            self._handle_options_quote(quote)
-                        except Exception as exc:
-                            print(f'[STREAMER] flow error: {exc}')
+            self._handle_data(data)
 
             # Re-subscribe options if watch list changed while connected
             if self._pending_update and self._ws:
@@ -396,6 +367,11 @@ class SchwabStreamer:
                                'fields': LEVELONE_FIELDS}))
         ws.send(_make_request('LEVELONE_FUTURES',  'SUBS', 5, cid, corr,
                               {'keys': ','.join(STREAM_FUTURES), 'fields': FUTURES_FIELDS}))
+        # recorder-only symbols, added separately (a rejection here leaves the above alone)
+        ws.send(_make_request('LEVELONE_EQUITIES', 'ADD', 14, cid, corr,
+                              {'keys': ','.join(STREAM_INTERNALS_EXTRA), 'fields': LEVELONE_FIELDS}))
+        ws.send(_make_request('LEVELONE_FUTURES', 'ADD', 15, cid, corr,
+                              {'keys': ','.join(STREAM_FUTURES_INTERNALS), 'fields': LEVELONE_FIELDS}))
         print(f'[STREAMER] Subscribed LEVELONE equities: {STREAM_LEVELONE_EQUITY}')
         print(f'[STREAMER] Subscribed CHART+LEVELONE futures: {STREAM_FUTURES}')
 
@@ -464,6 +440,55 @@ class SchwabStreamer:
             self.on_candle(dict(self._live_candles[symbol]))
         except Exception as exc:
             print(f'[STREAMER] on_candle error: {exc}')
+
+    def _handle_data(self, data: dict):
+        """Route one stream message's data: chart bars, level-one ticks (recorder-only
+        internals split off first) and option quotes."""
+        # Price candle data
+        for notify in data.get('data', []):
+            service = notify.get('service', '')
+            if service in ('CHART_EQUITY', 'CHART_FUTURES'):
+                # Official completed bar — sync live candle and fire callback
+                for candle in _parse_chart(notify):
+                    self._live_candles[candle['symbol']] = dict(candle)
+                    try:
+                        self.on_candle(candle)
+                    except Exception as exc:
+                        print(f'[STREAMER] on_candle error: {exc}')
+
+            elif service in ('LEVELONE_EQUITIES', 'LEVELONE_FUTURES'):
+                # internals go to the recorder only, never into candles / the chart / the ES book
+                rest = []
+                for item in notify.get('content', []):
+                    if item.get('key') not in _INTERNALS:
+                        rest.append(item)
+                    elif self.on_internal_quote and ('3' in item or '8' in item):
+                        try:
+                            self.on_internal_quote(item['key'], _num(item.get('3')),
+                                                   _num(item.get('8'), whole=True))
+                        except Exception as exc:
+                            print(f'[STREAMER] on_internal_quote error: {exc}')
+                notify = {**notify, 'content': rest}
+                if service == 'LEVELONE_FUTURES' and self.on_futures_quote:
+                    for q in _parse_futures_book(notify):
+                        try:
+                            self.on_futures_quote(q)
+                        except Exception as exc:
+                            print(f'[STREAMER] on_futures_quote error: {exc}')
+                for tick in _parse_levelone(notify):
+                    try:
+                        tick = self._merge_tick(tick)
+                        if tick:
+                            self._handle_tick(tick)
+                    except Exception as exc:
+                        print(f'[STREAMER] tick error: {exc}')
+
+            elif service == 'LEVELONE_OPTIONS':
+                for quote in _parse_options(notify):
+                    try:
+                        self._handle_options_quote(quote)
+                    except Exception as exc:
+                        print(f'[STREAMER] flow error: {exc}')
 
     def _merge_tick(self, tick: dict):
         """Fill a partial price tick from memory and, for futures, split each

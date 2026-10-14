@@ -12,6 +12,7 @@ Requests are paced (default 1 per second) so the live app keeps headroom under
 Schwab's ~120 requests/minute; a 429 pauses a minute and retries.
 """
 import csv
+import gzip
 import os
 import time
 from datetime import date, datetime
@@ -48,13 +49,22 @@ def contracts_from_chain(chain: dict, spot: float, band: float, expiries=None, t
     return out
 
 
-def fetch_bars(symbol: str, start_ms: int, end_ms: int, token: str | None = None) -> list:
-    """1-minute trade bars for one contract between start_ms and end_ms ([] if none)."""
+# bar size -> (Schwab frequency params, day-file prefix). Listed contracts keep ~31
+# trading days of 1-minute bars, ~9 months of 5-minute and ~2 years of daily.
+BAR_SIZES = {
+    '1m': ({'frequencyType': 'minute', 'frequency': 1}, 'option_trade_bars_SPX'),
+    '5m': ({'frequencyType': 'minute', 'frequency': 5}, 'option_trade_bars_5m_SPX'),
+    '1d': ({'frequencyType': 'daily', 'frequency': 1}, 'option_daily_bars_SPX'),
+}
+
+
+def fetch_bars(symbol: str, start_ms: int, end_ms: int, token: str | None = None, size: str = '1m') -> list:
+    """Trade bars of `size` for one contract between start_ms and end_ms ([] if none)."""
+    freq, _ = BAR_SIZES[size]
     for attempt in range(3):
         r = requests.get('https://api.schwabapi.com/marketdata/v1/pricehistory', timeout=SCHWAB_TIMEOUT,
                          headers={'Authorization': f'Bearer {token or get_access_token()}'},
-                         params={'symbol': symbol, 'frequencyType': 'minute', 'frequency': 1,
-                                 'startDate': int(start_ms), 'endDate': int(end_ms)})
+                         params={'symbol': symbol, **freq, 'startDate': int(start_ms), 'endDate': int(end_ms)})
         if r.status_code == 429:
             print(f'[option_history] rate limited: pausing 60 s ({symbol})')
             time.sleep(60)
@@ -65,15 +75,20 @@ def fetch_bars(symbol: str, start_ms: int, end_ms: int, token: str | None = None
     return []
 
 
-def save_bars(rows_by_day: dict, data_dir: str | None = None) -> int:
+def save_bars(rows_by_day: dict, data_dir: str | None = None, size: str = '1m') -> int:
     """Merge rows into each day's file (deduped on time + symbol; existing rows kept).
     Returns rows added."""
     added = 0
+    prefix = BAR_SIZES[size][1]
     for day, rows in rows_by_day.items():
-        path = os.path.join(data_dir or DATA_DIR, f'option_trade_bars_SPX_{day}.csv')
+        path = os.path.join(data_dir or DATA_DIR, f'{prefix}_{day}.csv')
         have = {}
-        if os.path.exists(path):
-            with open(path, newline='', encoding='utf-8') as f:
+        # a finished day may already be gzipped (archive_old_files): merge its rows in,
+        # so the plain file written here is a superset and re-gzipping it loses nothing
+        sources = [p for p in (path + '.gz', path) if os.path.exists(p)]
+        for src in sources:
+            opener = gzip.open if src.endswith('.gz') else open
+            with opener(src, 'rt', newline='', encoding='utf-8') as f:
                 for r in csv.reader(f):
                     if r and r[0] != 'time':
                         have[(r[0], r[1])] = r
@@ -92,12 +107,22 @@ def save_bars(rows_by_day: dict, data_dir: str | None = None) -> int:
 
 
 def pull(contracts: list, start_ms: int, end_ms: int, rate: float = 1.0, log_every: int = 100,
-         data_dir: str | None = None, stop_at: float | None = None) -> dict:
+         data_dir: str | None = None, stop_at: float | None = None, size: str = '1m',
+         on_saved=None) -> dict:
     """Fetch and save bars for each contract. Saves every `log_every` contracts so a
-    stopped run keeps what it got. stop_at: epoch s to stop by. Returns counts."""
+    stopped run keeps what it got; on_saved(symbols) is called after each save (a
+    resumable run records its progress there). stop_at: epoch s to stop by."""
     token, token_at = get_access_token(), time.time()
-    pending, stats = {}, {'contracts': 0, 'with_bars': 0, 'bars': 0, 'added': 0}
+    pending, stats, batch = {}, {'contracts': 0, 'with_bars': 0, 'bars': 0, 'added': 0}, []
     gap = 1.0 / rate if rate > 0 else 0
+
+    def flush():
+        nonlocal pending, batch
+        stats['added'] += save_bars(pending, data_dir, size)
+        if on_saved and batch:
+            on_saved(batch)
+        pending, batch = {}, []
+
     for i, (sym, exp, k, side) in enumerate(contracts, 1):
         if stop_at and time.time() >= stop_at:
             print(f'[option_history] stopped at the deadline after {i - 1} contracts')
@@ -105,8 +130,9 @@ def pull(contracts: list, start_ms: int, end_ms: int, rate: float = 1.0, log_eve
         if time.time() - token_at > 600:
             token, token_at = get_access_token(), time.time()
         t0 = time.time()
-        bars = fetch_bars(sym, start_ms, end_ms, token)
+        bars = fetch_bars(sym, start_ms, end_ms, token, size)
         stats['contracts'] += 1
+        batch.append(sym)
         if bars:
             stats['with_bars'] += 1
             stats['bars'] += len(bars)
@@ -115,11 +141,10 @@ def pull(contracts: list, start_ms: int, end_ms: int, rate: float = 1.0, log_eve
                 pending.setdefault(day, []).append([int(b['datetime'] // 1000), sym, exp, k, side,
                                                     b['open'], b['high'], b['low'], b['close'], b['volume']])
         if i % log_every == 0:
-            stats['added'] += save_bars(pending, data_dir)
-            pending = {}
-            print(f"[option_history] {i}/{len(contracts)} contracts, {stats['bars']} bars", flush=True)
+            flush()
+            print(f"[option_history] {size} {i}/{len(contracts)} contracts, {stats['bars']} bars", flush=True)
         time.sleep(max(0.0, gap - (time.time() - t0)))
-    stats['added'] += save_bars(pending, data_dir)
+    flush()
     return stats
 
 

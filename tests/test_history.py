@@ -52,3 +52,20 @@ def test_market_history_saves_only_finished_bars(monkeypatch):
     now_ms = int(time.time() * 1000)
     bars = [{"datetime": now_ms - 600_000}, {"datetime": now_ms - 120_000}]     # the second: 5-min bar in progress
     assert mh._save("$VIX", bars, "5m", 300_000) == 1 and saved == bars[:1]
+
+
+def test_save_bars_keeps_rows_of_an_already_gzipped_day(tmp_path):
+    import gzip as gz
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    import gex_stats
+    from datetime import date
+    row = lambda t, s: [t, s, "2026-09-01", 7800.0, "call", 1.0, 1.0, 1.0, 1.0, 5]
+    oh.save_bars({"2026-09-01": [row(100, "A"), row(200, "A")]}, str(tmp_path))
+    gex_stats.archive_old_files("SPX", today=date(2026, 10, 1), data_dir=str(tmp_path))   # gzipped, plain gone
+    assert (tmp_path / "option_trade_bars_SPX_2026-09-01.csv.gz").exists()
+    assert oh.save_bars({"2026-09-01": [row(200, "A"), row(300, "B")]}, str(tmp_path)) == 1   # 200/A already there
+    gex_stats.archive_old_files("SPX", today=date(2026, 10, 1), data_dir=str(tmp_path))   # re-gzip the superset
+    with gz.open(tmp_path / "option_trade_bars_SPX_2026-09-01.csv.gz", "rt") as f:
+        lines = f.read().splitlines()
+    assert [l.split(",")[:2] for l in lines[1:]] == [["100", "A"], ["200", "A"], ["300", "B"]]

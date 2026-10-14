@@ -168,3 +168,33 @@ def test_event_calendar():
     gf = [r for r in rows if r[0] == "2026-04-03" and r[3] == "jobs"][0]       # released on Good Friday
     assert "stock market closed" in gf[2]
     assert len(rows) == len({tuple(r) for r in rows})                          # no duplicates
+
+
+def test_es_unchanged_price_trade_sets_high_low_and_session_reset_counts(tmp_path):
+    m = at(2026, 10, 13, 18, 0)                         # the first minute after the daily halt
+    mr.es_quote({"bid": 7855.0, "ask": 7855.25, "last": 7855.25, "volume": 1_900_000}, ts=m - 3700)  # 16:58
+    mr.es_quote({"volume": 120}, ts=m + 2)               # new session: day volume restarted
+    mr.es_quote({"volume": 150, "last": 7855.0}, ts=m + 10)
+    mr.tick(now=m + 61)
+    r = [x for x in rows(tmp_path, mr.es_book, "2026-10-13") if x["time"] == str(int(m))][0]
+    assert r["volume"] == "150" and r["trades"] == "2"   # 120 since the restart + 30
+    assert (r["high"], r["low"]) == ("7855.25", "7855.0") # the volume-only trade at 7855.25 counts
+    assert float(r["low"]) <= float(r["vwap"]) <= float(r["high"])
+
+
+def test_stream_routes_internals_away_from_price_paths():
+    import streamer as st
+    got, book, ticks = [], [], []
+    s = st.SchwabStreamer(on_candle=lambda c: None, on_futures_quote=book.append,
+                          on_internal_quote=lambda sym, last, vol: got.append((sym, last, vol)))
+    s._merge_tick = lambda t: t
+    s._handle_tick = lambda t: ticks.append(t["symbol"])
+    s._handle_data({"data": [
+        {"service": "LEVELONE_EQUITIES", "content": [{"key": "$SPX", "3": 7800.5},
+                                                     {"key": "$DVOL", "3": 1.0, "8": "92233720368.54776"},
+                                                     {"key": "NVDA", "3": 229.05, "8": 1000}]},
+        {"service": "LEVELONE_FUTURES", "content": [{"key": "/ES", "1": 7855.0, "3": 7855.25, "8": 10},
+                                                    {"key": "/NQ", "3": 30769.75, "8": 55}]}]})
+    assert got == [("$DVOL", 1.0, 92233720368), ("NVDA", 229.05, 1000), ("/NQ", 30769.75, 55)]
+    assert ticks == ["$SPX", "/ES"]                       # only these build candles
+    assert [q["symbol"] for q in book] == ["/ES"]         # and only ES feeds the order-book recorder

@@ -350,7 +350,10 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
 ARCHIVE_PATTERNS = ('gex_grid_{sym}_*.jsonl', 'rolling_profile_{sym}_*.jsonl', 'gex_watchlist_{sym}_*.csv',
                     # market_recorder (model-training data)
                     'option_ticks_{sym}_*.csv', 'option_bars_{sym}_*.csv', 'option_chain_{sym}_*.csv',
-                    'es_ticks_*.csv', 'es_book_*.csv', 'internals_*.csv')
+                    'es_ticks_*.csv', 'es_book_*.csv', 'internals_*.csv',
+                    # option_history (Schwab trade bars per contract)
+                    'option_trade_bars_{sym}_*.csv', 'option_trade_bars_5m_{sym}_*.csv',
+                    'option_daily_bars_{sym}_*.csv')
 
 
 def day_file(name: str, data_dir: str = _DATA_DIR) -> str | None:
