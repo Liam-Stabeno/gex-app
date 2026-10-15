@@ -29,12 +29,28 @@ def main():
     ap.add_argument('--band', type=float, default=300, help='strikes within this of spot')
     ap.add_argument('--rate', type=float, default=1.0, help='requests per second')
     ap.add_argument('--days', type=int, default=45, help='calendar days back (Schwab keeps ~31 trading days)')
+    ap.add_argument('--traded-today', action='store_true',
+                    help="today's bars for every listed expiration within --band-pct that traded today")
+    ap.add_argument('--band-pct', type=float, default=10.0)
     a = ap.parse_args()
+
+    now = datetime.now(oh.ET)
+    today = now.date().isoformat()
+    if a.traded_today:                      # what the app's 17:15 step does, on demand
+        listed, spot = oh.all_listed_contracts(a.band_pct, traded_only=True)
+        contracts = [c[:4] for c in listed if c[1] > today]
+        start_ms, _ = oh.day_range_ms(now.date())
+        print(f'spot {spot:.2f}: {len(contracts)} contracts traded today in later expirations', flush=True)
+        with oh.history_lock(wait=3600) as lock:
+            if not lock.ok:
+                sys.exit('another option-history run holds the lock')
+            s = oh.pull(contracts, start_ms, int(now.timestamp() * 1000), rate=a.rate)
+        print(f"done: {s['contracts']} contracts, {s['with_bars']} traded, {s['bars']} bars, "
+              f"{s['added']} new rows saved, {s.get('errors', 0)} errors")
+        return
 
     chain = fetch_option_chain('$SPX', get_access_token(), strike_count=150)
     spot = chain['underlyingPrice']
-    now = datetime.now(oh.ET)
-    today = now.date().isoformat()
     if a.today:
         contracts = oh.contracts_from_chain(chain, spot, spot * 0.05, expiries={today})
         start_ms, _ = oh.day_range_ms(now.date())

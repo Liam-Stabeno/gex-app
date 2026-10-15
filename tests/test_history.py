@@ -83,14 +83,50 @@ def test_lock_held_by_a_dead_process_is_taken_over(tmp_path):
 
 
 def test_daily_request_params_and_failed_requests_not_marked_done(monkeypatch, tmp_path):
-    sent, codes = [], iter([500, 200, 200])
+    sent, codes = [], iter([500, 200, 200, 500])       # A fails, and fails its retry too
     class R:
         def __init__(self, code): self.status_code, self.ok, self.text = code, code == 200, "err"
         def json(self): return {"candles": [{"datetime": 1_791_900_000_000, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]}
     monkeypatch.setattr(oh.requests, "get", lambda url, **kw: sent.append(kw["params"]) or R(next(codes)))
-    monkeypatch.setattr(oh, "get_access_token", lambda: "t")
+    monkeypatch.setattr(oh, "get_access_token", lambda force=False: "t")
+    monkeypatch.setattr(oh.time, "sleep", lambda s: None)
     done = []
     c = [("A", "2026-12-18", 7800.0, "call"), ("B", "2026-12-18", 7800.0, "put"), ("C", "2026-12-18", 7805.0, "call")]
     s = oh.pull(c, 0, 1, rate=0, size="1d", data_dir=str(tmp_path), on_saved=done.extend)
     assert sent[0]["periodType"] == "year" and sent[0]["frequencyType"] == "daily"
     assert s["errors"] == 1 and done == ["B", "C"]          # A failed: retried next run
+
+
+def test_all_listed_contracts_every_expiration(monkeypatch):
+    class R:
+        def __init__(self, data, ok=True): self.data, self.ok = data, ok
+        def json(self): return self.data
+    def get(url, **kw):
+        if url.endswith("expirationchain"):
+            return R({"expirationList": [{"expirationDate": "2026-10-13", "expirationType": "W"},
+                                         {"expirationDate": "2026-12-18", "expirationType": "S"}]})
+        if kw["params"]["fromDate"] == "2026-10-13":
+            return R({}, ok=False)                                   # an expiration that ended today
+        o = lambda s, v: [{"symbol": s, "totalVolume": v}]
+        return R({"underlyingPrice": 7800.0, "callExpDateMap": {"2026-12-18:66": {
+            "7800.0": o("D7800", 3), "8700.0": o("D8700", 9), "7100.0": o("D7100", 0)}}, "putExpDateMap": {}})
+    monkeypatch.setattr(oh.requests, "get", get)
+    monkeypatch.setattr(oh, "get_access_token", lambda force=False: "t")
+    c, spot = oh.all_listed_contracts(10.0, pause=0)
+    assert spot == 7800.0 and [(x[0], x[4]) for x in c] == [("D7800", "S"), ("D7100", "S")]   # 8700: beyond 10% (780 pts)
+    c2, _ = oh.all_listed_contracts(10.0, traded_only=True, pause=0)
+    assert [x[0] for x in c2] == ["D7800"]                                                    # D7100 didn't trade
+
+
+def test_failed_request_is_retried_once_at_the_end(monkeypatch, tmp_path):
+    codes = iter([503, 200, 200])                     # A fails, B ok, then A's retry ok
+    class R:
+        def __init__(self, c): self.status_code, self.ok, self.text = c, c == 200, ""
+        def json(self): return {"candles": [{"datetime": 1_791_900_000_000, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]}
+    monkeypatch.setattr(oh.requests, "get", lambda url, **kw: R(next(codes)))
+    monkeypatch.setattr(oh, "get_access_token", lambda force=False: "t")
+    monkeypatch.setattr(oh.time, "sleep", lambda s: None)
+    done = []
+    s = oh.pull([("A", "2026-12-18", 7800.0, "call"), ("B", "2026-12-18", 7800.0, "put")], 0, 1, rate=0,
+                data_dir=str(tmp_path), on_saved=done.extend)
+    assert s["errors"] == 0 and sorted(done) == ["A", "B"] and s["with_bars"] == 2

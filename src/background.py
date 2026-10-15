@@ -221,7 +221,7 @@ def option_history_loop():
     """Save Schwab's 1-minute trade bars for SPX option contracts while Schwab still has
     them (option_history.py): today's 0DTE at 15:52 (contracts vanish at expiry), again
     at 16:01 if still served, then at 17:15 every later-expiration contract within
-    +-300 pts that traded today, and the latest SPX / ES / VIX / internals history at
+    +-10% (all listed expirations) that traded today, and the latest SPX / ES / VIX / internals history at
     every interval (market_history.refresh_recent). Weekdays only."""
     import market_history
     import option_history as oh
@@ -253,9 +253,10 @@ def option_history_loop():
                             print(f'[history] 0DTE bars after the close: {s}')
             elif hm >= '17:15' and 'rest' not in done:
                 _history_mark(today, 'rest')
-                chain = fetch_option_chain('$SPX', get_access_token(), strike_count=150)
-                spot = chain.get('underlyingPrice') or current_spot()
-                rest = [c for c in oh.contracts_from_chain(chain, spot, 300, traded_only=True) if c[1] > today]
+                # every listed expiration within +-10% that traded today (+-300 pts / 30 days
+                # missed far strikes and the December / LEAPS contracts)
+                listed, _ = oh.all_listed_contracts(10.0, traded_only=True)
+                rest = [c[:4] for c in listed if c[1] > today]
                 with oh.history_lock(wait=1800) as lock:
                     if lock.ok:
                         s = oh.pull(rest, oh.day_range_ms(d)[0], int(time.time() * 1000), rate=1.0)

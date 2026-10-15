@@ -48,30 +48,6 @@ def save_progress(p: dict):
     os.replace(tmp, PROGRESS)
 
 
-def all_contracts(band_pct: float):
-    """[(symbol, expiry, strike, side, expiration type)] within band_pct of spot, all
-    listed expirations (one chain request per expiration: one big one is too large)."""
-    tok = get_access_token()
-    h = {'Authorization': f'Bearer {tok}'}
-    exps = requests.get('https://api.schwabapi.com/marketdata/v1/expirationchain', timeout=SCHWAB_TIMEOUT,
-                        headers=h, params={'symbol': '$SPX'}).json()['expirationList']
-    out, spot = [], None
-    for e in exps:
-        d = e['expirationDate']
-        r = requests.get('https://api.schwabapi.com/marketdata/v1/chains', timeout=SCHWAB_TIMEOUT, headers=h,
-                         params={'symbol': '$SPX', 'contractType': 'ALL', 'fromDate': d, 'toDate': d,
-                                 'range': 'ALL', 'strikeCount': 400})
-        time.sleep(0.7)
-        if not r.ok:
-            print(f'[deep] chain {d}: HTTP {r.status_code}', flush=True)
-            continue
-        ch = r.json()
-        spot = spot or ch.get('underlyingPrice')
-        for c in oh.contracts_from_chain(ch, spot, spot * band_pct / 100):
-            out.append((*c, e.get('expirationType', '')))
-    return out, spot
-
-
 def until_ts(hhmm: str) -> float:
     h, m = map(int, hhmm.split(':'))
     now = datetime.now(ET)
@@ -98,7 +74,7 @@ def main():
     with oh.history_lock(wait=1800) as lock:
         if not lock.ok:
             sys.exit('another option-history run holds the lock')
-        contracts, spot = all_contracts(a.band_pct)
+        contracts, spot = oh.all_listed_contracts(a.band_pct)
         today = datetime.now(ET).date()
         near_cut = (today + timedelta(days=30)).isoformat()
         near = [c for c in contracts if c[1] <= near_cut]

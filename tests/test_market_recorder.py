@@ -198,3 +198,38 @@ def test_stream_routes_internals_away_from_price_paths():
     assert got == [("$DVOL", 1.0, 92233720368), ("NVDA", 229.05, 1000), ("/NQ", 30769.75, 55)]
     assert ticks == ["$SPX", "/ES"]                       # only these build candles
     assert [q["symbol"] for q in book] == ["/ES"]         # and only ES feeds the order-book recorder
+
+
+def test_full_chain_schedule():
+    t = lambda d, h, m: datetime(2026, 10, d, h, m, tzinfo=ET)
+    last, got = None, []
+    for h, m in ((9, 29), (9, 30), (9, 31), (9, 44), (9, 45), (15, 45), (15, 50), (15, 55), (15, 56), (16, 0)):
+        due, last = mr.full_chain_due(t(15, h, m), last)
+        got.append(due)
+    assert got == [False, True, False, False, True, True, False, True, False, False]
+    assert mr.full_chain_due(t(17, 10, 0), None)[0] is False                  # Saturday
+
+
+def test_full_chain_snapshot_all_expirations(tmp_path):
+    class R:
+        def __init__(self, data, code=200): self.data, self.status_code, self.ok = data, code, code == 200
+        def json(self): return self.data
+    def get(url, **kw):
+        if url.endswith('expirationchain'):
+            return R({"expirationList": [{"expirationDate": "2026-10-15"}, {"expirationDate": "2026-12-18"},
+                                         {"expirationDate": "2031-12-19"}]})
+        d = kw["params"]["fromDate"]
+        if d == "2026-10-15":
+            return R({}, 400)                                                     # skipped, not fatal
+        o = lambda oi, vol: [{"openInterest": oi, "totalVolume": vol, "gamma": 0.001, "volatility": 14.2,
+                              "delta": -0.3, "bid": 50.0, "ask": 51.0, "mark": 50.5}]
+        return R({"underlyingPrice": 7722.9,
+                  "callExpDateMap": {f"{d}:1": {"7800.0": o(1200, 15)}},
+                  "putExpDateMap": {f"{d}:1": {"7000.0": o(54000, 300), "3000.0": o(0, 0)}}})
+    snap = mr.snapshot_full_chain(get, lambda force=False: "t", pause=0)
+    assert snap["exp"] == ["2026-12-18", "2031-12-19"] and snap["spot"] == 7722.9
+    assert len(snap["rows"]) == 4                                                 # 3000 put: no OI, no volume
+    assert snap["rows"][1] == [7000.0, 0, 1, 54000, 300, 0.001, 14.2, -0.3, 50.0, 51.0, 50.5]
+    p = mr.write_full_chain(snap, str(tmp_path))
+    import json
+    assert json.loads(open(p).read().splitlines()[0])["fields"] == mr.FULL_CHAIN_ROW

@@ -60,6 +60,30 @@ BAR_SIZES = {
 _errors = {'n': 0}      # non-OK answers in this process (pull() reports them)
 
 
+def all_listed_contracts(band_pct: float = 10.0, traded_only: bool = False, pause: float = 0.7):
+    """([(symbol, expiry, strike, side, expiration type)], spot) for every listed SPX
+    expiration (one chain request each: a single all-dates chain is too large for
+    Schwab) within band_pct of spot. traded_only: today's totalVolume > 0."""
+    h = {'Authorization': f'Bearer {get_access_token()}'}
+    exps = requests.get('https://api.schwabapi.com/marketdata/v1/expirationchain', timeout=SCHWAB_TIMEOUT,
+                        headers=h, params={'symbol': '$SPX'}).json().get('expirationList', [])
+    out, spot = [], None
+    for e in exps:
+        d = e['expirationDate']
+        r = requests.get('https://api.schwabapi.com/marketdata/v1/chains', timeout=SCHWAB_TIMEOUT,
+                         headers={'Authorization': f'Bearer {get_access_token()}'},
+                         params={'symbol': '$SPX', 'contractType': 'ALL', 'fromDate': d, 'toDate': d,
+                                 'range': 'ALL', 'strikeCount': 400})
+        time.sleep(pause)
+        if not r.ok:                      # e.g. an expiration that ended today
+            continue
+        ch = r.json()
+        spot = spot or ch.get('underlyingPrice')
+        for c in contracts_from_chain(ch, spot, spot * band_pct / 100, traded_only=traded_only):
+            out.append((*c, e.get('expirationType', '')))
+    return out, spot
+
+
 def fetch_bars(symbol: str, start_ms: int, end_ms: int, token: str | None = None, size: str = '1m'):
     """Trade bars of `size` for one contract between start_ms and end_ms: [] if it
     didn't trade, None if the request failed (so a resumable run retries it)."""
@@ -126,7 +150,7 @@ def pull(contracts: list, start_ms: int, end_ms: int, rate: float = 1.0, log_eve
     resumable run records its progress there). stop_at: epoch s to stop by."""
     token, token_at = get_access_token(), time.time()
     pending, stats, batch = {}, {'contracts': 0, 'with_bars': 0, 'bars': 0, 'added': 0}, []
-    errors_before = _errors['n']
+    failed = []                             # retried once at the end
     gap = 1.0 / rate if rate > 0 else 0
 
     def flush():
@@ -147,6 +171,8 @@ def pull(contracts: list, start_ms: int, end_ms: int, rate: float = 1.0, log_eve
         stats['contracts'] += 1
         if bars is not None:                # failed requests aren't recorded as done
             batch.append(sym)
+        else:
+            failed.append((sym, exp, k, side))
         if bars:
             stats['with_bars'] += 1
             stats['bars'] += len(bars)
@@ -159,7 +185,27 @@ def pull(contracts: list, start_ms: int, end_ms: int, rate: float = 1.0, log_eve
             print(f"[option_history] {size} {i}/{len(contracts)} contracts, {stats['bars']} bars", flush=True)
         time.sleep(max(0.0, gap - (time.time() - t0)))
     flush()
-    stats['errors'] = _errors['n'] - errors_before
+    still = list(failed)
+    if failed and not (stop_at and time.time() >= stop_at):
+        # one retry for failed requests (Schwab answers 503 now and then), after a pause
+        time.sleep(30)
+        still = []
+        for sym, exp, k, side in failed:
+            bars = fetch_bars(sym, start_ms, end_ms, None, size)
+            if bars is None:
+                still.append(sym)
+                continue
+            batch.append(sym)
+            for b in bars:
+                day = datetime.fromtimestamp(b['datetime'] / 1000, ET).date().isoformat()
+                pending.setdefault(day, []).append([int(b['datetime'] // 1000), sym, exp, k, side,
+                                                    b['open'], b['high'], b['low'], b['close'], b['volume']])
+            if bars:
+                stats['with_bars'] += 1
+                stats['bars'] += len(bars)
+            time.sleep(gap)
+        flush()
+    stats['errors'] = len(still)             # contracts that failed and failed their retry
     if stats['errors']:
         print(f"[option_history] {size}: {stats['errors']} requests failed (see the first above)", flush=True)
     return stats

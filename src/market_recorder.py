@@ -17,6 +17,11 @@ One file per day in data/ (finished days are gzipped by the daily job, kept fore
   es_book_<date>.csv           /ES per minute: book at the close, spread avg/max,
                                size imbalance, quote / trade counts, traded volume,
                                VWAP, large trades, last-price high/low/close
+  gex_full_SPX_<date>.jsonl    every 15 min: the FULL chain, every listed expiration
+                               (out to years) and up to 400 strikes each: OI, volume,
+                               gamma, IV, delta, bid / ask / mark per contract. The live
+                               chain stops at 30 days, so the December / quarterly /
+                               LEAPS positions were otherwise never recorded.
 
 Options are recorded 9:30-16:00 ET on weekdays, ES during Globex hours. Rows are
 buffered and written once a second by flush_loop(); minute bars are closed there too.
@@ -407,6 +412,106 @@ def close_internal_minute(minute: int):
                 nb = _int_bar[symbol] = {'minute': minute, 'o': None, 'h': None, 'l': None,
                                          'c': b['c'], 'volume': b.get('volume'), 'n': 0, 'written': False}
                 _write_internal(symbol, nb)
+
+
+# ── full chain (every expiration) every 15 minutes ────────────────────────────
+
+FULL_CHAIN_EVERY_MIN = 15
+FULL_CHAIN_CLOSE = (15, 55)          # plus one just before the close
+FULL_CHAIN_STRIKES = 400             # per expiration: ~+-1000 pts at 5-pt spacing
+# per contract: strike, expiry index, side (0 call / 1 put), oi, volume, gamma, iv, delta, bid, ask, mark
+FULL_CHAIN_ROW = ['strike', 'exp_idx', 'side', 'oi', 'volume', 'gamma', 'iv', 'delta', 'bid', 'ask', 'mark']
+
+
+def full_chain_due(now: datetime, last_slot) -> tuple:
+    """(due, slot): a snapshot is due at :00/:15/:30/:45 from 9:30 to 15:45 and at 15:55,
+    once per slot."""
+    if now.weekday() >= 5:
+        return False, last_slot
+    hm = (now.hour, now.minute)
+    if not ((9, 30) <= hm < (16, 0)):
+        return False, last_slot
+    if hm == FULL_CHAIN_CLOSE:
+        slot = hm
+    else:
+        slot = (now.hour, now.minute - now.minute % FULL_CHAIN_EVERY_MIN)
+        if slot < (9, 30) or slot > (15, 45):
+            return False, last_slot
+    key = (now.date(), slot)
+    if last_slot is not None and key <= last_slot:   # slots only move forward (15:56 isn't 15:45 again)
+        return False, last_slot
+    return True, key
+
+
+def snapshot_full_chain(get, token_fn, pause: float = 0.5, strikes: int = FULL_CHAIN_STRIKES) -> dict | None:
+    """One snapshot of every listed SPX expiration. `get` is requests.get (injected for
+    tests). Contracts with no OI and no volume are left out."""
+    base = 'https://api.schwabapi.com/marketdata/v1'
+    r = get(f'{base}/expirationchain', timeout=(5, 20), headers={'Authorization': f'Bearer {token_fn()}'},
+            params={'symbol': '$SPX'})
+    if not r.ok:
+        return None
+    exps, rows, spot = [], [], None
+    for e in r.json().get('expirationList', []):
+        d = e['expirationDate']
+        params = {'symbol': '$SPX', 'contractType': 'ALL', 'fromDate': d, 'toDate': d,
+                  'range': 'ALL', 'strikeCount': strikes}
+        c = get(f'{base}/chains', timeout=(5, 30), headers={'Authorization': f'Bearer {token_fn()}'}, params=params)
+        if c.status_code == 401:                     # superseded token: a fresh one, once
+            c = get(f'{base}/chains', timeout=(5, 30),
+                    headers={'Authorization': f'Bearer {token_fn(force=True)}'}, params=params)
+        if pause:
+            time.sleep(pause)
+        if not c.ok:                                  # e.g. an expiration that ended today
+            continue
+        ch = c.json()
+        spot = spot or ch.get('underlyingPrice')
+        idx = len(exps)
+        exps.append(d)
+        for side, key in ((0, 'callExpDateMap'), (1, 'putExpDateMap')):
+            for _exp, by_strike in (ch.get(key) or {}).items():
+                for k, opts in by_strike.items():
+                    for o in opts or []:
+                        oi, vol = o.get('openInterest') or 0, o.get('totalVolume') or 0
+                        if not oi and not vol:
+                            continue
+                        rows.append([float(k), idx, side, oi, vol, o.get('gamma'), o.get('volatility'),
+                                     o.get('delta'), o.get('bid'), o.get('ask'), o.get('mark')])
+    if not rows:
+        return None
+    return {'ts': datetime.now(ET).isoformat(timespec='seconds'), 'spot': spot, 'exp': exps,
+            'fields': FULL_CHAIN_ROW, 'rows': rows}
+
+
+def write_full_chain(snap: dict, data_dir: str | None = None) -> str:
+    import json
+    day = snap['ts'][:10]
+    path = os.path.join(data_dir or DATA_DIR, f'gex_full_SPX_{day}.jsonl')
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(snap, separators=(',', ':')) + '\n')
+    return path
+
+
+def full_chain_loop():
+    """Every 15 minutes in the session (and at 15:55): the full chain to gex_full_SPX."""
+    import requests
+    from gex import get_access_token
+    last = None
+    while True:
+        time.sleep(20)
+        try:
+            due, slot = full_chain_due(datetime.now(ET), last)
+            if not due:
+                continue
+            last = slot
+            t0 = time.time()
+            snap = snapshot_full_chain(requests.get, get_access_token)
+            if snap:
+                write_full_chain(snap)
+                print(f"[recorder] full chain: {len(snap['exp'])} expirations, {len(snap['rows']):,} contracts "
+                      f"({time.time() - t0:.0f} s)")
+        except Exception as e:           # never kill the thread
+            print(f'[recorder] full chain failed: {e}')
 
 
 # ── background flusher ────────────────────────────────────────────────────────
