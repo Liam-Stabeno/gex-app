@@ -28,6 +28,10 @@ Wiring (dashboard.py)
 Endpoint
 --------
     GET /api/rolling_profile/SPX?window=300
+    GET /api/rolling_profile/SPX?windows=180,900,1800,session   -> {"windows": {"180": {...}, ...}}
+
+"session" = cumulative volume since the open. Each result carries `gamma` per strike
+(today's 0DTE, from background.zero_dte_gamma) so the UI can show Flow GEX.
 """
 
 import json
@@ -348,12 +352,49 @@ def _append_snapshot(sym: str, ts: float, snap: dict, spot) -> None:
     _append_line(sym, ts, snap, spot)
 
 
+SESSION = 0                      # window_sec meaning "since the open"
+_gamma_fn = None                 # () -> {strike: gamma} for today's 0DTE (background.py)
+
+
+def set_gamma_provider(fn) -> None:
+    """Per-strike 0DTE gamma for the API's `gamma` (the UI's Flow GEX = volume x gamma)."""
+    global _gamma_fn
+    _gamma_fn = fn
+
+
+def _gamma_now() -> dict:
+    if not _gamma_fn:
+        return {}
+    try:
+        return _gamma_fn() or {}
+    except Exception as e:
+        print(f"[rolling_profile] gamma provider failed: {e}")
+        return {}
+
+
+def _with_gamma(out: dict, gamma: dict) -> dict:
+    out["gamma"] = [gamma.get(float(k)) for k in out["strikes"]]
+    return out
+
+
 def rolling(symbol: str, window_sec: int, now: float | None = None) -> dict:
-    """Call/put volume per strike traded in the last `window_sec` seconds."""
+    """Call/put volume per strike traded in the last `window_sec` seconds; SESSION (0):
+    since the open (the snapshots hold cumulative volume, so that's the latest one)."""
     sym = _norm(symbol)
     with _lock:
         _ensure_loaded(sym, now or time.time())
         buf = list(_buffers.get(sym) or [])
+
+    if window_sec == SESSION and buf:
+        latest_ts, latest, spot = buf[-1]
+        open_ts = datetime.combine(datetime.fromtimestamp(latest_ts, ET).date(), SESSION_OPEN, ET).timestamp()
+        strikes = sorted(latest)
+        return {
+            "symbol": sym, "window_sec": SESSION, "covered_sec": int(max(0, latest_ts - open_ts)),
+            "partial": False, "spot": spot,
+            "updated": datetime.fromtimestamp(latest_ts, ET).strftime("%H:%M:%S"),
+            "strikes": strikes, "call": [latest[k][0] for k in strikes], "put": [latest[k][1] for k in strikes],
+        }
 
     if len(buf) < 2:
         return {"symbol": sym, "window_sec": window_sec, "covered_sec": 0,
@@ -411,12 +452,23 @@ def _reset_for_tests() -> None:
 rolling_bp = Blueprint("rolling_profile", __name__)
 
 
+def _window_arg(v) -> int:
+    if str(v).lower() == "session":
+        return SESSION
+    try:
+        w = int(v)
+    except (TypeError, ValueError):
+        return 300
+    return w if w in ALLOWED_WINDOWS or w == SESSION else 300
+
+
 @rolling_bp.route("/api/rolling_profile/<symbol>")
 def api_rolling_profile(symbol):
-    try:
-        window = int(request.args.get("window", 300))
-    except ValueError:
-        window = 300
-    if window not in ALLOWED_WINDOWS:
-        window = 300
-    return jsonify(rolling(symbol, window))
+    """?window=300 (one window) or ?windows=180,900,1800,session (several in one call:
+    {"windows": {"180": {...}, ...}})."""
+    gamma = _gamma_now()
+    many = request.args.get("windows")
+    if many:
+        return jsonify({"windows": {w: _with_gamma(rolling(symbol, _window_arg(w)), gamma)
+                                    for w in many.split(",")[:8]}})
+    return jsonify(_with_gamma(rolling(symbol, _window_arg(request.args.get("window", 300))), gamma))

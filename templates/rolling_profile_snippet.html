@@ -3,35 +3,64 @@
      Needs: Chart.js + chartjs-plugin-zoom (already loaded), the dashboard's
      openModal()/closeModal()/modalCJSChart, and /api/rolling_profile/<symbol>.
      Adds its own "ROLLING PROFILE" section right after #gex-grid.
+
+     Four charts side by side on one strike scale. Each has its own time frame
+     (defaults 3 min · 15 min · 30 min · Session) and its own Volume / Flow GEX switch.
+     Volume   = 0DTE contracts traded per strike in the window.
+     Flow GEX = that volume × gamma × 100 × spot: the gamma that changed hands at each
+                strike. Volume can't tell opening from closing trades, so this shows where
+                gamma is trading now, not the open-interest GEX in the panels above.
 ═══════════════════════════════════════════════════════════════════════ -->
 <style>
   .rp-grid { grid-template-columns: 1fr; }
   .rp-panel {
     display: flex; flex-direction: column;
     height: 640px;                       /* default size; drag the corner to resize */
-    min-height: 320px;
+    min-height: 360px;
   }
-  .rp-panel .chart-div-header { cursor: zoom-in; }
-  .rp-head-right { display: flex; align-items: center; gap: 8px; }
-  .rp-time-label { color: #b0b0c0; font-size: 11px; }
   .rp-select {
     background: #12121c; color: #ddd; border: 1px solid #2a2a3a; border-radius: 3px;
-    font-family: 'Courier New', monospace; font-size: 12px; padding: 3px 6px; cursor: pointer;
+    font-family: 'Courier New', monospace; font-size: 12px; padding: 2px 4px; cursor: pointer;
   }
   .rp-select:focus { outline: 1px solid #00bcd4; }
+  .rp-mode { display: flex; border: 1px solid #2a2a3a; border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+  .rp-mode button {
+    background: #12121c; color: #9a9aac; border: none; cursor: pointer;
+    font-family: 'Courier New', monospace; font-size: 11px; padding: 3px 7px;
+  }
+  .rp-mode button + button { border-left: 1px solid #2a2a3a; }
+  .rp-mode button.active { background: #00bcd4; color: #000; font-weight: bold; }
+  .rp-mode button:focus-visible { outline: 1px solid #00d4ff; }
   .rp-meta { display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
              font-size: 11px; color: #b0b0c0; margin: 6px 0 4px; }
-  .rp-meta .rp-c { color: #00e676; }
-  .rp-meta .rp-p { color: #ff5252; }
-  .rp-meta .rp-warn { color: #ffb300; }
   .rp-range { display: flex; align-items: center; gap: 6px; margin-left: auto; }
   .rp-range input { width: 120px; accent-color: #00d4ff; cursor: pointer; }
   .rp-range-val { color: #00d4ff; min-width: 44px; }
-  .rp-hint { color: #8a8a9c; font-size: 10px; }
+  .rp-hint { color: #8a8a9c; font-size: 10px; margin-bottom: 6px; }
+  .rp-row {
+    flex: 1; min-height: 0;
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+  }
+  .rp-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .rp-col + .rp-col { border-left: 1px solid #1e1e2e; padding-left: 10px; }
+  .rp-col-head { display: flex; justify-content: space-between; align-items: center;
+                 gap: 6px; cursor: zoom-in; }
+  .rp-col-sub { display: flex; justify-content: space-between; gap: 6px; font-size: 11px;
+                margin: 4px 0 2px; white-space: nowrap; }
+  .rp-col-tot { color: #b0b0c0; overflow: hidden; text-overflow: ellipsis; }
+  .rp-col-span { color: #8a8a9c; font-size: 10px; }
+  .rp-col-span.rp-warn { color: #ffb300; }
+  .rp-c { color: #00e676; }
+  .rp-p { color: #ff5252; }
   .rp-canvas-wrap { position: relative; flex: 1; min-height: 200px; }
   .rp-empty {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    color: #8a8a9c; font-size: 12px; pointer-events: none;
+    color: #8a8a9c; font-size: 12px; pointer-events: none; text-align: center;
+  }
+  @media (max-width: 1100px) {
+    .rp-panel { height: 1000px; }
+    .rp-row { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); }
+    .rp-col:nth-child(odd) { border-left: none; padding-left: 0; }
   }
 </style>
 
@@ -44,76 +73,131 @@
   const RP_DATA_PTS   = 350;    // data kept each side of spot, so zooming out reveals more strikes
   const RP_POLL_MS    = 5000;
   const RP_WINDOWS    = [
-    [60, '1 min'], [120, '2 min'], [180, '3 min'], [300, '5 min'],
-    [600, '10 min'], [900, '15 min'], [1800, '30 min'], [3600, '1 hr'],
+    ['60', '1 min'], ['120', '2 min'], ['180', '3 min'], ['300', '5 min'], ['600', '10 min'],
+    ['900', '15 min'], ['1800', '30 min'], ['3600', '1 hr'], ['session', 'Session'],
   ];
-  const RP_DEFAULT    = 1800;
+  const RP_COLS       = [['180', 'vol'], ['900', 'vol'], ['1800', 'vol'], ['session', 'vol']];   // defaults
+  const RP_MODES      = [['vol', 'Volume'], ['gex', 'Flow GEX']];
 
-  const load = (k, dflt) => { try { return Number(localStorage.getItem(k)) || dflt; } catch (_) { return dflt; } };
+  const load = (k, dflt) => { try { return localStorage.getItem(k) ?? dflt; } catch (_) { return dflt; } };
   const save = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
 
-  let rpWindow = load('rpWindow', RP_DEFAULT);
-  let rpRange  = Math.min(RP_RANGE_MAX, Math.max(RP_RANGE_MIN, load('rpRange', RP_RANGE_PTS)));
-  let rpChart  = null;
-  let rpModal  = null;          // the full-screen copy, while open
-  let rpSpot   = null;
-  let rpLast   = null;          // last API response, for re-render on slider / reset
+  // Each chart's own time frame and mode, remembered.
+  function loadCols() {
+    let saved = null;
+    try { saved = JSON.parse(load('rpCols', 'null')); } catch (_) {}
+    return RP_COLS.map(([w, m], i) => {
+      const s = (Array.isArray(saved) && saved[i]) || {};
+      return { w: RP_WINDOWS.some(([k]) => k === s.w) ? s.w : w, m: s.m === 'gex' || s.m === 'vol' ? s.m : m };
+    });
+  }
 
-  const fmtK   = v => v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'K' : String(v);
+  let rpRange  = Math.min(RP_RANGE_MAX, Math.max(RP_RANGE_MIN, Number(load('rpRange', RP_RANGE_PTS)) || RP_RANGE_PTS));
+  let rpCols   = loadCols();
+  let rpSpot   = null;
+  let rpLast   = null;          // last API response, for re-render on slider / mode / reset
+  let rpView   = null;          // [lo, hi] after a zoom or pan, shared by every chart; null = follow spot
+  let rpModal  = null;          // { col, chart } for the full-screen copy, while open
+  const rpCharts = [];          // column -> Chart
+
+  const fmtK = v => {
+    const a = Math.abs(v), s = v < 0 ? '-' : '';
+    if (a >= 1e9) return s + (a / 1e9).toFixed(a >= 1e10 ? 0 : 1) + 'B';
+    if (a >= 1e6) return s + (a / 1e6).toFixed(a >= 1e7 ? 0 : 1) + 'M';
+    if (a >= 1e3) return s + (a / 1e3).toFixed(a >= 1e4 ? 0 : 1) + 'K';
+    return s + String(Math.round(a));
+  };
+  const fmtSigned = v => (v >= 0 ? '+' : '-') + fmtK(Math.abs(v));
   const fmtDur = s => s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`
                                  : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;
-  const viewBounds = () => [Math.floor((rpSpot - rpRange) / 5) * 5, Math.ceil((rpSpot + rpRange) / 5) * 5];
+  const viewBounds  = () => [Math.floor((rpSpot - rpRange) / 5) * 5, Math.ceil((rpSpot + rpRange) / 5) * 5];
+  const currentView = () => rpView || viewBounds();
+  const windowLabel = w => (RP_WINDOWS.find(([k]) => k === w) || [0, ''])[1];
+  const modeLabel   = m => m === 'gex' ? 'FLOW GEX' : 'VOLUME';
+  const modalOpen   = () => rpModal && typeof modalCJSChart !== 'undefined' && modalCJSChart === rpModal.chart;
+  const allCharts   = () => [...rpCharts, ...(modalOpen() ? [rpModal.chart] : [])];
+  const fetchUrl    = () => `/api/rolling_profile/${RP_SYMBOL}?windows=${[...new Set(rpCols.map(c => c.w))].join(',')}`;
 
   // ── Panel ──────────────────────────────────────────────────────────
   function createRollingProfileDiv() {
     const div = document.createElement('div');
     div.className = 'chart-div gex-chart-div rp-panel';
     div.id = `rp-div-${RP_SYMBOL}`;
-    const opts = RP_WINDOWS.map(([s, l]) =>
-      `<option value="${s}"${s === rpWindow ? ' selected' : ''}>${l}</option>`).join('');
+    const cols = rpCols.map((c, i) => {
+      const opts = RP_WINDOWS.map(([k, l]) => `<option value="${k}"${k === c.w ? ' selected' : ''}>${l}</option>`).join('');
+      const modes = RP_MODES.map(([m, l]) =>
+        `<button type="button" id="rp-mode-${i}-${m}"${m === c.m ? ' class="active"' : ''}>${l}</button>`).join('');
+      return `
+        <div class="rp-col">
+          <div class="rp-col-head" id="rp-head-${i}" title="Double-click to expand">
+            <select id="rp-win-${i}" class="rp-select" title="Time frame">${opts}</select>
+            <div class="rp-mode" title="Volume: contracts traded. Flow GEX: volume × gamma × 100 × spot — where gamma is changing hands (can't tell opening from closing trades).">${modes}</div>
+          </div>
+          <div class="rp-col-sub">
+            <span class="rp-col-tot"><span class="rp-c">C <b id="rp-ctot-${i}">—</b></span>
+              <span class="rp-p">P <b id="rp-ptot-${i}">—</b></span> <b id="rp-net-${i}"></b></span>
+            <span class="rp-col-span" id="rp-span-${i}"></span>
+          </div>
+          <div class="rp-canvas-wrap">
+            <canvas id="rp-canvas-${i}"></canvas>
+            <div class="rp-empty" id="rp-empty-${i}">Collecting snapshots…</div>
+          </div>
+        </div>`;
+    }).join('');
     div.innerHTML = `
-      <div class="chart-div-header" id="rp-header" title="Double-click to expand">
+      <div class="chart-div-header">
         <div>
-          <div class="chart-title">ROLLING PROFILE · 0DTE VOLUME</div>
+          <div class="chart-title">ROLLING PROFILE · 0DTE</div>
           <div class="symbol">${RP_SYMBOL}</div>
-        </div>
-        <div class="rp-head-right">
-          <label class="rp-time-label" for="rp-window">Time</label>
-          <select id="rp-window" class="rp-select">${opts}</select>
         </div>
       </div>
       <div class="rp-meta">
-        <span class="rp-c">● Calls <b id="rp-call-tot">—</b></span>
-        <span class="rp-p">● Puts <b id="rp-put-tot">—</b></span>
-        <span id="rp-span">—</span>
+        <span id="rp-updated">—</span>
         <label class="rp-range" title="Strikes shown each side of spot">
           Range <input type="range" id="rp-range" min="${RP_RANGE_MIN}" max="${RP_RANGE_MAX}" step="25" value="${rpRange}">
           <span class="rp-range-val" id="rp-range-val">±${rpRange}</span>
         </label>
       </div>
-      <div class="rp-hint">scroll to zoom · drag to pan · double-click chart to reset · double-click title to expand</div>
-      <div class="rp-canvas-wrap">
-        <canvas id="rp-canvas"></canvas>
-        <div class="rp-empty" id="rp-empty">Collecting snapshots…</div>
-      </div>`;
+      <div class="rp-hint">same strikes in every chart · scroll to zoom · drag to pan · double-click a chart to reset · double-click beside a chart's controls to expand</div>
+      <div class="rp-row">${cols}</div>`;
 
     const q = sel => div.querySelector(sel);
-    q('#rp-window').addEventListener('change', e => {
-      rpWindow = Number(e.target.value);
-      save('rpWindow', rpWindow);
-      fetchRollingProfile();
+    rpCols.forEach((c, i) => {
+      RP_MODES.forEach(([m]) => {
+        const b = q(`#rp-mode-${i}-${m}`);
+        b.addEventListener('click', () => setMode(i, m));
+        b.addEventListener('dblclick', e => e.stopPropagation());
+      });
+      q(`#rp-win-${i}`).addEventListener('change', e => setWindow(i, e.target.value));
+      q(`#rp-win-${i}`).addEventListener('dblclick', e => e.stopPropagation());
+      q(`#rp-head-${i}`).addEventListener('dblclick', () => expandRollingProfile(i));
+      q(`#rp-canvas-${i}`).addEventListener('dblclick', resetView);
     });
     q('#rp-range').addEventListener('input', e => {
       rpRange = Number(e.target.value);
       save('rpRange', rpRange);
       q('#rp-range-val').textContent = `±${rpRange}`;
-      resetView(rpChart);
+      resetView();
     });
     q('#rp-range').addEventListener('dblclick', e => e.stopPropagation());
-    q('#rp-window').addEventListener('dblclick', e => e.stopPropagation());
-    q('#rp-header').addEventListener('dblclick', expandRollingProfile);
-    q('#rp-canvas').addEventListener('dblclick', () => resetView(rpChart));
     return div;
+  }
+
+  const saveCols = () => save('rpCols', JSON.stringify(rpCols));
+
+  function setMode(i, m) {
+    rpCols[i].m = m;
+    saveCols();
+    RP_MODES.forEach(([k]) => { document.getElementById(`rp-mode-${i}-${k}`).className = k === m ? 'active' : ''; });
+    if (rpLast) renderColumn(i, (rpLast.windows || {})[rpCols[i].w]);
+  }
+
+  function setWindow(i, w) {
+    rpCols[i].w = w;
+    saveCols();
+    const have = rpLast && (rpLast.windows || {})[w];
+    if (have) renderColumn(i, have);         // another chart already shows this window
+    fetchRollingProfile();
   }
 
   // ── Chart ──────────────────────────────────────────────────────────
@@ -134,12 +218,22 @@
     },
   };
 
+  // A zoom or pan in any chart moves every chart to the same strikes.
+  function syncView({ chart }) {
+    rpView = [chart.scales.y.min, chart.scales.y.max];
+    allCharts().forEach(c => {
+      if (c === chart) return;
+      c.options.scales.y.min = rpView[0];
+      c.options.scales.y.max = rpView[1];
+      c.update('none');
+    });
+  }
+
   function makeRollingChart(canvas, big = false) {
     const line = (color, fillRgba) => ({
       data: [], borderColor: color, backgroundColor: fillRgba, fill: 'origin',
       borderWidth: 1.6, pointRadius: 0, tension: 0.15,
     });
-    const markZoomed = ({ chart }) => { chart._rpZoomed = true; };
     return new Chart(canvas.getContext('2d'), {
       type: 'line',
       data: { datasets: [
@@ -162,7 +256,7 @@
           },
           x: {
             type: 'linear', beginAtZero: true, reverse: true,   // mirrored: volume grows leftward from the strike axis
-            ticks: { color: '#a8a8b8', maxTicksLimit: big ? 6 : 4, callback: fmtK,
+            ticks: { color: '#a8a8b8', maxTicksLimit: big ? 6 : 3, callback: fmtK,
                      font: { family: "'Courier New', monospace", size: 10 } },
             grid: { color: '#1a1a2a' },
           },
@@ -172,13 +266,14 @@
           tooltip: {
             callbacks: {
               title: items => `Strike ${items[0].parsed.y}`,
-              label: item => `${item.dataset.label}: ${item.parsed.x.toLocaleString('en-US')}`,
+              label: item => `${item.dataset.label}: ` + (item.chart._rpMode === 'gex'
+                ? fmtK(item.parsed.x) : item.parsed.x.toLocaleString('en-US')),
             },
           },
           zoom: {
             zoom:   { wheel: { enabled: true, speed: 0.1 }, pinch: { enabled: true }, mode: 'y',
-                      onZoomComplete: markZoomed },
-            pan:    { enabled: true, mode: 'y', onPanComplete: markZoomed },
+                      onZoom: syncView, onZoomComplete: syncView },
+            pan:    { enabled: true, mode: 'y', onPan: syncView, onPanComplete: syncView },
             limits: { y: { minRange: 20 } },
           },
         },
@@ -187,89 +282,110 @@
     });
   }
 
-  // Push data into a chart. The strike window follows spot unless the user has
-  // zoomed or panned, in which case their view is kept until they reset it.
-  function applyData(chart, calls, puts) {
-    if (!chart) return;
-    if (!chart._rpZoomed) {
-      const [lo, hi] = viewBounds();
-      chart.options.scales.y.min = lo;
-      chart.options.scales.y.max = hi;
-    }
-    chart.data.datasets[0].data = calls;
-    chart.data.datasets[1].data = puts;
-    chart.update('none');
-  }
-
-  function resetView(chart) {
-    if (!chart) return;
-    if (chart.resetZoom) chart.resetZoom('none');
-    chart._rpZoomed = false;
-    if (rpLast) renderRollingProfile(rpLast);
-  }
-
-  function renderRollingProfile(d) {
-    rpLast = d;
-    const empty = document.getElementById('rp-empty');
-    rpSpot = d.spot;
-    if (!d.strikes.length || rpSpot == null) {
-      empty.style.display = 'flex';
-      empty.textContent = d.spot == null ? 'Waiting for 0DTE data…' : 'Collecting snapshots…';
-      [rpChart, rpModal].forEach(c => { if (c) { c.data.datasets.forEach(ds => ds.data = []); c.update('none'); } });
-      document.getElementById('rp-span').textContent = '—';
-      return;
-    }
-    empty.style.display = 'none';
-
-    const [lo, hi] = viewBounds();
+  // Calls / puts per strike in the given mode, plus totals over the strikes in view.
+  function seriesFor(d, mode) {
+    if (!d || !d.strikes || !d.strikes.length || d.spot == null) return null;
+    const gexMult = mode === 'gex' ? 100 * d.spot : 0;
+    const [lo, hi] = currentView();
     const calls = [], puts = [];
     let cTot = 0, pTot = 0;
     d.strikes.forEach((k, i) => {
-      if (Math.abs(k - rpSpot) > RP_DATA_PTS) return;
-      calls.push({ x: d.call[i], y: k });
-      puts.push({ x: d.put[i], y: k });
-      if (k >= lo && k <= hi) { cTot += d.call[i]; pTot += d.put[i]; }
+      if (Math.abs(k - d.spot) > RP_DATA_PTS) return;
+      const w = gexMult ? ((d.gamma && d.gamma[i]) || 0) * gexMult : 1;
+      const c = d.call[i] * w, p = d.put[i] * w;
+      calls.push({ x: c, y: k });
+      puts.push({ x: p, y: k });
+      if (k >= lo && k <= hi) { cTot += c; pTot += p; }
     });
+    return { calls, puts, cTot, pTot };
+  }
 
-    if (!rpChart) rpChart = makeRollingChart(document.getElementById('rp-canvas'));
-    applyData(rpChart, calls, puts);
-    if (rpModal && typeof modalCJSChart !== 'undefined' && modalCJSChart === rpModal) {
-      applyData(rpModal, calls, puts);
-    } else {
-      rpModal = null;                      // modal was closed
+  // Push data into a chart. The strikes follow spot unless the user has zoomed or
+  // panned, in which case every chart keeps that view until it's reset.
+  function applySeries(chart, s, mode) {
+    if (!chart) return;
+    chart._rpMode = mode;
+    if (rpSpot != null) {
+      const [lo, hi] = currentView();
+      chart.options.scales.y.min = lo;
+      chart.options.scales.y.max = hi;
     }
+    chart.data.datasets[0].data = s ? s.calls : [];
+    chart.data.datasets[1].data = s ? s.puts : [];
+    chart.update('none');
+  }
 
-    document.getElementById('rp-call-tot').textContent = fmtK(cTot);
-    document.getElementById('rp-put-tot').textContent  = fmtK(pTot);
-    const span = document.getElementById('rp-span');
-    span.className = d.partial ? 'rp-warn' : '';
-    span.textContent = d.partial
-      ? `only ${fmtDur(d.covered_sec)} of history`
-      : `actual ${fmtDur(d.covered_sec)} · ${d.updated} ET`;
+  function resetView() {
+    allCharts().forEach(c => { if (c.resetZoom) c.resetZoom('none'); });
+    rpView = null;
+    if (rpLast) renderRollingProfile(rpLast);
+  }
+
+  function renderColumn(i, d) {
+    const { w, m } = rpCols[i];
+    const s = seriesFor(d, m);
+    const chart = rpCharts[i] ||= makeRollingChart(document.getElementById(`rp-canvas-${i}`));
+    applySeries(chart, s, m);
+    if (modalOpen() && rpModal.col === i) applySeries(rpModal.chart, s, m);
+
+    const empty = document.getElementById(`rp-empty-${i}`);
+    const span  = document.getElementById(`rp-span-${i}`);
+    const ctot  = document.getElementById(`rp-ctot-${i}`);
+    const ptot  = document.getElementById(`rp-ptot-${i}`);
+    const net   = document.getElementById(`rp-net-${i}`);
+    if (!s) {
+      empty.style.display = 'flex';
+      empty.textContent = d && d.spot != null ? 'Collecting snapshots…' : 'Waiting for 0DTE data…';
+      ctot.textContent = ptot.textContent = '—';
+      net.textContent = span.textContent = '';
+      return;
+    }
+    empty.style.display = 'none';
+    const gex = m === 'gex';
+    ctot.textContent = fmtK(s.cTot);
+    ptot.textContent = fmtK(s.pTot);
+    net.textContent  = gex ? `Net ${fmtSigned(s.cTot - s.pTot)}` : '';   // dealer sign: calls +, puts −
+    net.className    = gex ? (s.cTot >= s.pTot ? 'rp-c' : 'rp-p') : '';
+    span.className   = 'rp-col-span' + (d.partial ? ' rp-warn' : '');
+    span.textContent = w === 'session' ? `since 9:30 · ${fmtDur(d.covered_sec)}`
+                     : d.partial ? `only ${fmtDur(d.covered_sec)} of history`
+                     : `actual ${fmtDur(d.covered_sec)}`;
+  }
+
+  function renderRollingProfile(resp) {
+    rpLast = resp;
+    const wins = resp.windows || {};
+    const live = Object.values(wins).find(d => d && d.spot != null && d.strikes && d.strikes.length);
+    rpSpot = live ? live.spot : null;
+    if (!modalOpen()) rpModal = null;      // the modal was closed
+    // a reply sent before a chart's time frame changed doesn't have that window yet: keep what it shows
+    rpCols.forEach((c, i) => { if (c.w in wins) renderColumn(i, wins[c.w]); });
+    document.getElementById('rp-updated').textContent = live && live.updated
+      ? `updated ${live.updated} ET · spot ${live.spot.toFixed(2)}` : '—';
   }
 
   // ── Full screen (reuses the dashboard's modal) ─────────────────────
-  function expandRollingProfile() {
+  function expandRollingProfile(i) {
     if (typeof openModal !== 'function') return;
-    const label = (RP_WINDOWS.find(([s]) => s === rpWindow) || [0, ''])[1];
+    const { w, m } = rpCols[i];
     openModal(`
       <div style="margin-bottom:8px">
-        <div style="font-size:0.65rem;color:#9a9aac;letter-spacing:2px">ROLLING PROFILE · 0DTE VOLUME · ${label}</div>
+        <div style="font-size:0.65rem;color:#9a9aac;letter-spacing:2px">ROLLING PROFILE · 0DTE ${modeLabel(m)} · ${windowLabel(w)}</div>
         <div style="font-size:1.4rem;color:#fff;font-weight:bold">${RP_SYMBOL}</div>
         <div style="font-size:0.8rem;color:#8a8a9c">Scroll to zoom · drag to pan · double-click to reset · ESC to close</div>
       </div>`);
     const container = document.getElementById('modal-chart-container');
     container.innerHTML = '<canvas id="rp-modal-canvas"></canvas>';
     const canvas = document.getElementById('rp-modal-canvas');
-    rpModal = makeRollingChart(canvas, true);
-    modalCJSChart = rpModal;               // closeModal() destroys it
-    canvas.addEventListener('dblclick', () => resetView(rpModal));
+    rpModal = { col: i, chart: makeRollingChart(canvas, true) };
+    modalCJSChart = rpModal.chart;         // closeModal() destroys it
+    canvas.addEventListener('dblclick', resetView);
     if (rpLast) renderRollingProfile(rpLast);
   }
 
   async function fetchRollingProfile() {
     try {
-      const r = await fetch(`/api/rolling_profile/${RP_SYMBOL}?window=${rpWindow}`);
+      const r = await fetch(fetchUrl());
       if (r.ok) renderRollingProfile(await r.json());
     } catch (e) { console.warn('[rolling profile]', e); }
   }

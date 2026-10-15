@@ -291,3 +291,76 @@ def test_stream_after_close_ignored():
     rp.record_stream_volume("SPX", "2026-10-05:0|7780.0|0|0", 7780.0, "call", 900, ts=T0 + 10 * 3600)
     rp.flush_stream(now=T0 + 10 * 3600)
     assert rp.rolling("$SPX", 60)["updated"] == "10:00:00"
+
+
+# ── session window, gamma, several windows per request ───────────────
+
+def test_session_window_is_cumulative_since_open():
+    feed()                                         # 10:00 .. 10:15, cumulative volume
+    r = rp.rolling("SPX", rp.SESSION)
+    assert r["window_sec"] == rp.SESSION and not r["partial"]
+    assert at(r, 7780.0, "call") == 3000 and at(r, 7750.0, "put") == 1500
+    assert r["covered_sec"] == 45 * 60             # 9:30 -> 10:15
+    assert r["updated"] == "10:15:00"
+
+
+def test_session_window_outlives_the_rolling_buffer():
+    feed(n=37, step=300)                           # 10:00 .. 13:00, longer than KEEP_SEC
+    r = rp.rolling("SPX", rp.SESSION)
+    assert at(r, 7780.0, "call") == 3600
+    assert r["covered_sec"] == int(3.5 * 3600)
+
+
+def test_session_window_from_first_snapshot_and_empty():
+    assert rp.rolling("SPX", rp.SESSION)["strikes"] == []
+    rp.record_chain("$SPX", chain({7780.0: (40, 7)}), ts=T0)
+    r = rp.rolling("SPX", rp.SESSION)
+    assert at(r, 7780.0, "call") == 40 and at(r, 7780.0, "put") == 7
+
+
+def test_windows_endpoint_one_request_with_gamma(monkeypatch):
+    from flask import Flask
+    calls = []
+    monkeypatch.setattr(rp, "_gamma_fn", lambda: calls.append(1) or {7780.0: 0.02})
+    app = Flask(__name__)
+    app.register_blueprint(rp.rolling_bp)
+    feed()
+    j = app.test_client().get("/api/rolling_profile/SPX?windows=180,900,session,bogus").get_json()
+    assert set(j["windows"]) == {"180", "900", "session", "bogus"}
+    w = j["windows"]
+    assert w["180"]["window_sec"] == 180 and w["900"]["window_sec"] == 900
+    assert w["session"]["window_sec"] == rp.SESSION and at(w["session"], 7780.0, "call") == 3000
+    assert w["bogus"]["window_sec"] == 300
+    for d in w.values():
+        assert len(d["gamma"]) == len(d["strikes"])
+        assert at(d, 7780.0, "gamma") == 0.02 and at(d, 7750.0, "gamma") is None
+    assert len(calls) == 1, "gamma is worked out once per request"
+
+
+def test_endpoint_survives_a_failing_gamma_provider(monkeypatch):
+    from flask import Flask
+    monkeypatch.setattr(rp, "_gamma_fn", lambda: 1 / 0)
+    app = Flask(__name__)
+    app.register_blueprint(rp.rolling_bp)
+    feed()
+    j = app.test_client().get("/api/rolling_profile/SPX?window=300").get_json()
+    assert j["strikes"] and all(g is None for g in j["gamma"])
+    assert app.test_client().get("/api/rolling_profile/SPX?windows=session").get_json()["windows"]["session"]["gamma"]
+
+
+def test_zero_dte_gamma_provider(monkeypatch):
+    import background
+    import bs
+    monkeypatch.setattr(background, "_contract_meta", {
+        "C7780": {"strike": 7780.0, "side": "call", "expiry_date": "2026-10-05", "is_0dte": True, "gamma": 0.5},
+        "P7780": {"strike": 7780.0, "side": "put", "expiry_date": "2026-10-05", "is_0dte": True, "gamma": 0.5},
+        "C7800": {"strike": 7800.0, "side": "call", "expiry_date": "2026-10-05", "is_0dte": True, "gamma": 0.004},
+        "C7900": {"strike": 7900.0, "side": "call", "expiry_date": "2026-10-06", "is_0dte": False, "gamma": 0.9},
+    })
+    monkeypatch.setattr(background, "_live_iv", {("2026-10-05", 7780.0): 0.12})
+    monkeypatch.setattr(background, "current_spot", lambda: 7777.0)
+    monkeypatch.setattr(bs, "t_to_close", lambda exp, now=None: 2 / (24 * 365))
+    g = background.zero_dte_gamma()
+    assert set(g) == {7780.0, 7800.0}, "0DTE only"
+    assert g[7780.0] == pytest.approx(bs._bs_gamma(7777.0, 7780.0, 2 / (24 * 365), background._RISK_FREE, 0.12))
+    assert g[7800.0] == 0.004, "no live vol yet: the chain's gamma"

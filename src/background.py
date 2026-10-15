@@ -476,6 +476,7 @@ def init(cache, candle_cache, cache_lock, csv_lock,
     _price_sync_interval = price_sync_interval
     market_recorder.configure(meta_fn=_contract_meta_tuple, greeks_fn=_contract_greeks,
                               oi_fn=_oi_cache.get, spot_fn=current_spot)
+    rolling_profile.set_gamma_provider(zero_dte_gamma)
 
 
 # ── GEX ──────────────────────────────────────────────────────────────────────
@@ -875,6 +876,28 @@ def current_spot() -> float:
         if bars and time.time() * 1000 - bars[-1]['datetime'] < 120_000:
             spot = float(bars[-1].get('close') or 0.0) or spot
     return spot
+
+
+def zero_dte_gamma() -> dict:
+    """{strike: gamma} for today's 0DTE, from the live loop's solved vol (else Schwab's
+    chain gamma): the rolling profile's Flow GEX = traded volume x gamma."""
+    spot, out = current_spot(), {}
+    for m in list(_contract_meta.values()):
+        if not m.get('is_0dte') or not m.get('expiry_date'):
+            continue
+        k = float(m['strike'])
+        if k in out:
+            continue
+        sigma = _live_iv.get((m['expiry_date'], m['strike']))
+        try:
+            T = bs.t_to_close(m['expiry_date'])
+        except ValueError:
+            T = 0.0
+        if sigma and spot and T > 0:
+            out[k] = bs._bs_gamma(spot, k, T, _RISK_FREE, sigma)
+        elif m.get('gamma'):
+            out[k] = float(m['gamma'])
+    return out
 
 
 def _contract_meta_tuple(sym: str):
