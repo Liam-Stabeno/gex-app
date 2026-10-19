@@ -81,7 +81,8 @@ def register(app):
 
     @app.route('/api/gex_heatmap/<symbol>')
     def api_gex_heatmap(symbol):
-        """Today's net GEX by strike over time (5-min snapshots) for the gamma-zone heatmap."""
+        """A day's net GEX by strike over time (default today) for the gamma-zone heatmap,
+        with any minutes tools/rebuild_gex_grid.py rebuilt for when the app wasn't running."""
         import gex_stats
         day = None
         if request.args.get('date'):
@@ -89,7 +90,7 @@ def register(app):
                 day = datetime.strptime(request.args['date'], '%Y-%m-%d').date()
             except ValueError:
                 return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
-        return jsonify(gex_stats.load_heatmap(symbol.upper().replace('$', ''), day=day))
+        return jsonify(gex_stats.load_heatmap(symbol.upper().replace('$', ''), day=day, rebuilt=True))
 
     @app.route('/api/gamma_levels/<symbol>')
     def api_gamma_levels(symbol):

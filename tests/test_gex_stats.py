@@ -105,6 +105,49 @@ def test_heatmap_leaves_out_columns_after_the_close(tmp_path):
     assert h["all"] == [[-140_000_000]]          # expired 0DTE after 16:00 stays in the file only
 
 
+def test_finished_day_heatmap_kept_as_its_result(tmp_path, monkeypatch):
+    import gzip, json, os
+    from datetime import date
+    monkeypatch.setattr(gs, "_hm_done", {})
+    snap = lambda m, g: json.dumps({"ts": f"2026-10-06T10:{m:02d}:00-04:00", "spot": 7800.0,
+                                    "exp": ["2026-10-06"], "rows": [[7800.0, 0, 1, 0, g]]})
+    plain = tmp_path / "gex_grid_SPX_2026-10-06.jsonl"
+    plain.write_text(snap(0, 10.0) + "\n", encoding="utf-8")
+    gs.load_heatmap("SPX", day=date(2026, 10, 6), data_dir=tmp_path)          # read while live
+    assert str(plain) in gs._hm_cache
+    gz = Path(str(plain) + ".gz")                                              # the nightly archive
+    with gzip.open(gz, "wt", encoding="utf-8") as f:
+        f.write(snap(0, 10.0) + "\n" + snap(1, 20.0) + "\n")
+    plain.unlink()
+    parsed = []
+    real = gs._hm_parse
+    monkeypatch.setattr(gs, "_hm_parse", lambda *a: parsed.append(1) or real(*a))
+    h = gs.load_heatmap("SPX", day=date(2026, 10, 6), data_dir=tmp_path)
+    assert h["all"] == [[10], [20]] and len(parsed) == 2
+    assert str(plain) not in gs._hm_cache and str(gz) not in gs._hm_cache, "no raw snapshots kept"
+    assert gs.load_heatmap("SPX", day=date(2026, 10, 6), data_dir=tmp_path) is h
+    assert len(parsed) == 2, "the second load is the cached result"
+    with gzip.open(gz, "wt", encoding="utf-8") as f:                           # rewritten: read again
+        f.write(snap(0, 99.0) + "\n")
+    os.utime(gz, (1, 1))
+    assert gs.load_heatmap("SPX", day=date(2026, 10, 6), data_dir=tmp_path)["all"] == [[99]]
+
+
+def test_finished_day_cache_is_bounded(tmp_path, monkeypatch):
+    import gzip, json
+    from datetime import date
+    monkeypatch.setattr(gs, "_hm_done", {})
+    monkeypatch.setattr(gs, "HM_DONE_MAX", 3)
+    for d in range(1, 6):
+        day = f"2026-09-{d:02d}"
+        with gzip.open(tmp_path / f"gex_grid_SPX_{day}.jsonl.gz", "wt", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": f"{day}T10:00:00-04:00", "spot": 7800.0,
+                                "exp": [day], "rows": [[7800.0, 0, 1, 0, d]]}) + "\n")
+        assert gs.load_heatmap("SPX", day=date(2026, 9, d), data_dir=tmp_path)["all"] == [[d]]
+    assert len(gs._hm_done) == 3
+    assert sorted(k[0][-19:-9] for k in gs._hm_done) == ["2026-09-03", "2026-09-04", "2026-09-05"]
+
+
 def test_heatmap_reliability_by_regime(tmp_path):
     pd.DataFrame({"date": ["2026-10-06", "2026-10-07", "2026-10-08"],
                   "speed_ratio_pos": [1.97, 1.47, ""], "speed_ratio_neg": ["", "", 0.93],

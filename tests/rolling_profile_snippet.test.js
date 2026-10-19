@@ -202,6 +202,8 @@ const tick = () => new Promise(r => setTimeout(r, 20));
 
   // tick labels: strikes without separators, amounts with K/M/B
   assert.strictEqual(row[0].options.scales.y.ticks.callback(7780), '7780');
+  assert.strictEqual(row[0].options.scales.y.ticks.callback(7870.296350657283), '', 'a zoomed edge is not labelled');
+  assert.strictEqual(row[0].options.scales.y.ticks.includeBounds, false);
   const fx = row[0].options.scales.x.ticks.callback;
   assert.deepStrictEqual([fx(950), fx(1500), fx(25000), fx(2.5e6), fx(3.2e9)], ['950', '1.5K', '25K', '2.5M', '3.2B']);
   // spot plugin draws only inside chart area

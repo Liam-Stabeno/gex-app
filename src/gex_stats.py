@@ -121,7 +121,12 @@ def expected_move_now(total_gex: float, now: datetime | None = None,
 
 
 _hm_lock = threading.Lock()
-_hm_cache: dict = {}   # path -> {'sig', 'offset', 'tail', 'snaps': [(t, spot, {strike: [all, odte]})]}
+_hm_cache: dict = {}   # path -> {'offset', 'tail', 'snaps': [(t, spot, {strike: [all, odte]})]}
+# A finished (gzipped) day never changes: load_heatmap keeps its result, a few hundred KB,
+# rather than the raw snapshots (~15 MB each). The live chart loads every day it shows.
+_hm_done: dict = {}    # (gz path, size, mtime, band, rebuilt file sig) -> load_heatmap result
+HM_DONE_MAX = 20
+_hm_rebuilt_cache: dict = {}   # rebuilt file path -> ((size, mtime), snapshots); re-read if rebuilt again
 
 
 def _hm_parse(line: bytes, day_iso: str):
@@ -142,23 +147,19 @@ def _hm_parse(line: bytes, day_iso: str):
 
 
 def _hm_snapshots(path: str, day_iso: str) -> list:
-    """Parsed snapshots for a day file, cached. Today's plain file is read
-    incrementally (only lines appended since the last call); a gzipped finished day
-    is parsed once. With a snapshot every minute the file grows to ~15 MB, so
-    re-reading it every 30-60 s would cost real CPU."""
+    """Parsed snapshots for a day file. Today's plain file is cached and read
+    incrementally (only lines appended since the last call): with a snapshot every
+    minute it grows to ~15 MB, so re-reading it every 30-60 s would cost real CPU.
+    A gzipped finished day is parsed in full; load_heatmap caches its result."""
     import gzip
+    if path.endswith('.gz'):
+        with gzip.open(path, 'rb') as f:
+            return [x for x in (_hm_parse(l, day_iso) for l in f if l.strip()) if x]
     st = os.stat(path)
     with _hm_lock:
         c = _hm_cache.get(path)
-        if path.endswith('.gz'):
-            sig = (st.st_size, st.st_mtime)
-            if not c or c['sig'] != sig:
-                with gzip.open(path, 'rb') as f:
-                    snaps = [x for x in (_hm_parse(l, day_iso) for l in f if l.strip()) if x]
-                c = _hm_cache[path] = {'sig': sig, 'offset': 0, 'tail': b'', 'snaps': snaps}
-            return c['snaps']
         if not c or st.st_size < c['offset']:            # new or rewritten: start over
-            c = _hm_cache[path] = {'sig': None, 'offset': 0, 'tail': b'', 'snaps': []}
+            c = _hm_cache[path] = {'offset': 0, 'tail': b'', 'snaps': []}
         if st.st_size > c['offset']:
             with open(path, 'rb') as f:
                 f.seek(c['offset'])
@@ -175,35 +176,73 @@ def _hm_snapshots(path: str, day_iso: str) -> list:
         return c['snaps']
 
 
+def _hm_rebuilt(path: str, day_iso: str) -> list:
+    """Snapshots tools/rebuild_gex_grid.py wrote for a day, parsed once per version."""
+    st = os.stat(path)
+    sig = (st.st_size, st.st_mtime)
+    with _hm_lock:
+        hit = _hm_rebuilt_cache.get(path)
+        if hit and hit[0] == sig:
+            return hit[1]
+    with open_text(path) as f:
+        snaps = [x for x in (_hm_parse(l, day_iso) for l in f if l.strip()) if x]
+    with _hm_lock:
+        _hm_rebuilt_cache[path] = (sig, snaps)
+    return snaps
+
+
 def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
-                 data_dir: str = _DATA_DIR) -> dict:
+                 data_dir: str = _DATA_DIR, rebuilt: bool = False) -> dict:
     """Net GEX per strike over time, from gex_grid_<sym>_<date>.jsonl (one snapshot per
     chain refresh, about every minute; every 5 min before 2026-10-07).
 
     Returns {'times': [epoch s], 'spots', 'strikes': [...], 'all': [[gex per strike] per
-    time], 'odte': [...]} for strikes within `band` pts of the day's spot range.
-    Positive = dealers long gamma (hedging dampens moves); negative = amplifies.
+    time], 'odte': [...], 'rebuilt_until'} for strikes within `band` pts of the day's spot
+    range. Positive = dealers long gamma (hedging dampens moves); negative = amplifies.
+
+    rebuilt=True puts first the minutes tools/rebuild_gex_grid.py rebuilt for when the app
+    wasn't running (gex_grid_rebuilt_<sym>_<date>.jsonl, before the first recorded
+    snapshot); 'rebuilt_until' is the last rebuilt column's time. The chart asks for
+    them; the stats keep to recorded data.
     """
     day = day or datetime.now(ET).date()
     path = day_file(f'gex_grid_{sym}_{day.isoformat()}.jsonl', data_dir)
-    empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': []}
+    empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': [], 'rebuilt_until': None}
     if not path:
         return empty
+    rb_path = day_file(f'gex_grid_rebuilt_{sym}_{day.isoformat()}.jsonl', data_dir) if rebuilt else None
+    done_key = None
+    if path.endswith('.gz'):
+        st = os.stat(path)
+        rb_st = os.stat(rb_path) if rb_path else None
+        done_key = (path, st.st_size, st.st_mtime, band, rb_st and (rb_path, rb_st.st_size, rb_st.st_mtime))
+        with _hm_lock:
+            _hm_cache.pop(path[:-3], None)               # the day's plain file was archived
+            if done_key in _hm_done:
+                return _hm_done[done_key]
     # Session only: until 2026-10-08 the grid also ran 16:00-16:15, when the expired
     # 0DTE still showed huge gamma (a fake -351M wall). Those lines stay in the file.
     snaps = [x for x in _hm_snapshots(path, day.isoformat())
              if datetime.fromtimestamp(x[0], ET).time() < dtime(16, 0)]
     if not snaps:
         return empty
+    early = [x for x in _hm_rebuilt(rb_path, day.isoformat()) if x[0] < snaps[0][0]] if rb_path else []
+    snaps = early + snaps
     spots = [sp for _, sp, _ in snaps if sp]
     lo, hi = min(spots) - band, max(spots) + band
     strikes = sorted({k for _, _, by_k in snaps for k in by_k if lo <= k <= hi})
-    out = {'times': [], 'spots': [], 'strikes': strikes, 'all': [], 'odte': []}
+    out = {'times': [], 'spots': [], 'strikes': strikes, 'all': [], 'odte': [],
+           'rebuilt_until': early[-1][0] if early else None}
     for t, sp, by_k in snaps:
         out['times'].append(t)
         out['spots'].append(sp)
         out['all'].append([round(by_k[k][0]) if k in by_k else 0 for k in strikes])
         out['odte'].append([round(by_k[k][1]) if k in by_k else 0 for k in strikes])
+    if done_key:
+        with _hm_lock:
+            _hm_done[done_key] = out
+            while len(_hm_done) > HM_DONE_MAX:            # oldest first
+                _hm_done.pop(next(iter(_hm_done)))
     return out
 
 
@@ -348,6 +387,7 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
 # (~10x smaller); readers accept either form. A one-row-per-day summary CSV
 # (daily_summary_<sym>.csv) is the quick way to track things day to day.
 ARCHIVE_PATTERNS = ('gex_grid_{sym}_*.jsonl', 'rolling_profile_{sym}_*.jsonl', 'gex_watchlist_{sym}_*.csv',
+                    'gex_grid_rebuilt_{sym}_*.jsonl',  # tools/rebuild_gex_grid.py
                     'gex_full_{sym}_*.jsonl',          # full chain, every expiration (market_recorder)
                     # market_recorder (model-training data)
                     'option_ticks_{sym}_*.csv', 'option_bars_{sym}_*.csv', 'option_chain_{sym}_*.csv',

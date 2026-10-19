@@ -249,8 +249,10 @@
         scales: {
           y: {
             type: 'linear', position: 'right',
-            // every 5-pt strike gets a label while they fit; zoomed out, labels thin to avoid overlap
-            ticks: { stepSize: 5, autoSkip: true, autoSkipPadding: 2, color: '#c8c8d4', callback: v => String(v),
+            // every 5-pt strike gets a label while they fit; zoomed out, labels thin to avoid overlap.
+            // A zoom leaves the edges between strikes: label strikes only, never the raw edge value.
+            ticks: { stepSize: 5, includeBounds: false, autoSkip: true, autoSkipPadding: 2, color: '#c8c8d4',
+                     callback: v => v % 5 === 0 ? String(v) : '',
                      font: { family: "'Courier New', monospace", size: big ? 11 : 10 } },
             grid: { color: '#1a1a2a' },
           },
