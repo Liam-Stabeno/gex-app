@@ -176,10 +176,15 @@
         .price-panel.replaying { border-color: #ffb300; }
         .price-panel.replaying .chart-title { color: #ffb300; }
         .zone-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
+        .horizon-row { display: flex; align-items: center; gap: 6px; font-size: 0.6rem; color: #9a9aac; margin: 2px 0 4px; }
+        .horizon-row input { flex: 1; accent-color: #00d4ff; cursor: pointer; }
+        .horizon-label { color: #00d4ff; min-width: 190px; text-align: right; }
         .zone-regime { padding: 1px 6px; border-radius: 3px; }
         .zone-regime.pos { color: #b8f5d4; background: #0d2b1a; border: 1px solid #00ff8866; }
         .zone-regime.neg { color: #ffc4c4; background: #2b0d0d; border: 1px solid #ff444488; }
         .zone-regime b { letter-spacing: 0.5px; }
+        .zone-regime-note.pos { color: #b8f5d4; }
+        .zone-regime-note.neg { color: #ffc4c4; }
         .zone-regime.pos b { color: #00ff88; }
         .zone-regime.neg b { color: #ff5c5c; }
 
@@ -712,11 +717,12 @@
 
         function createGexDiv(symbol, slot) {
             const id    = `${symbol}-${slot}`;
-            // The non-0DTE panel is built from every expiry except today's (gex_multi).
-            const label = slot === 'zero' ? '0DTE' : 'ALL EXPIRATIONS EX-0DTE';
-            const pinLabel = slot === 'zero' ? 'Pin' : 'Pin (long-dated)';
-            const pinTip   = slot === 'zero'
-                ? 'Strike with the largest 0DTE GEX'
+            // The non-0DTE panel is built from every expiry except today's (gex_multi); the
+            // horizon panel from today's 0DTE (live) plus later expiries through a picked date.
+            const label = slot === 'zero' ? '0DTE' : slot === 'horizon' ? 'EXPIRATIONS THROUGH' : 'ALL EXPIRATIONS EX-0DTE';
+            const pinLabel = slot === 'multi' ? 'Pin (long-dated)' : 'Pin';
+            const pinTip   = slot === 'zero' ? 'Strike with the largest 0DTE GEX'
+                : slot === 'horizon' ? 'Strike with the largest GEX across the expirations picked'
                 : 'Strike with the largest GEX across longer-dated expiries. A multi-day reference, not a same-day target: the close moved away from it 60% of the time in the backtest.';
             const div   = document.createElement('div');
             div.className = 'chart-div';
@@ -749,6 +755,12 @@
                     <div class="level-item" style="color:#00e5ff">True Pin: <span id="pin-enhanced-${id}">—</span></div>
                     <div class="level-item" style="color:#888;font-size:0.75em">Strikes: <span id="strikes-${id}">—</span></div>
                 </div>
+                ${slot === 'horizon' ? `<div class="horizon-row" title="Which expirations count: today's 0DTE (live, every ~2 s) plus each later one up to the date picked (from the chain, every 60 s). Default: through this Friday. Levels here are this panel's own (not sticky).">
+                    <span>0DTE</span>
+                    <input type="range" id="horizon-${id}" min="0" max="0" step="1" value="0">
+                    <span>30 DAYS</span>
+                    <span class="horizon-label" id="horizon-label-${id}">—</span>
+                </div>` : ''}
                 <div class="gex-chart-row">
                     <div class="gex-strike-slider-wrap">
                         <span>MORE</span>
@@ -764,6 +776,11 @@
                 </div>
             `;
             div.addEventListener('dblclick', () => expandGex(symbol, slot));
+            const hz = div.querySelector(`#horizon-${id}`);
+            if (hz) {
+                hz.addEventListener('input', () => { saveHorizon(Number(hz.value)); renderHorizon(symbol); });
+                hz.addEventListener('dblclick', e => e.stopPropagation());
+            }
             // Enable drag after element is added to DOM
             requestAnimationFrame(() => makeDraggable(div));
             return div;
@@ -783,6 +800,7 @@
                     <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
                         <div class="tf-buttons" id="tf-btns-${symbol}">
                             <button class="tf-btn active" data-tf="1">1m</button>
+                            <button class="tf-btn" data-tf="3">3m</button>
                             <button class="tf-btn" data-tf="5">5m</button>
                             <button class="tf-btn" data-tf="15">15m</button>
                             <button class="tf-btn" data-tf="30">30m</button>
@@ -803,13 +821,19 @@
                     </span>
                     <span>GAMMA ZONES</span>
                     <button class="tf-btn active" data-zone="all" title="Net GEX at each strike, all expirations">All</button>
+                    <button class="tf-btn" data-zone="week" title="Net GEX at each strike, expirations through this Friday (on a Friday: today's only)">Week</button>
                     <button class="tf-btn" data-zone="odte" title="Net GEX at each strike, 0DTE only">0DTE</button>
                     <button class="tf-btn" data-zone="off">Off</button>
+                    <button class="tf-btn" id="zone-info-btn" title="Show / hide the key, the ES volume key and the gamma levels bar">Info</button>
+                    <span id="zone-regime-top" style="display:contents"></span>
+                    <span style="margin-left:auto;color:#8a8a9c">double-click: full screen · drag corner: resize</span>
+                </div>
+                <div id="zone-info-${symbol}">
+                <div class="zone-bar">
                     <span title="Brighter = bigger GEX at that strike, scaled to the day's biggest (linear). Faint bands slow price only a little."><span class="zone-swatch" style="width:26px;background:linear-gradient(90deg, rgba(0,110,70,0.2), rgba(90,245,175,0.75))"></span> positive gamma: dealers lean against moves, price <b style="color:#00c878">slows / sticks</b> (brighter = stronger)</span>
                     <span title="Brighter = bigger negative GEX at that strike, scaled to the day's biggest (linear)."><span class="zone-swatch" style="width:26px;background:linear-gradient(90deg, rgba(140,25,40,0.3), rgba(255,105,120,0.75))"></span> negative gamma: dealers chase moves, price <b style="color:#ff3c50">speeds up</b></span>
                     <span title="The 3 biggest strikes in each snapshot, boxed for as long as they stay in the top 3."><span class="zone-swatch" style="border:1px solid rgba(255,255,255,0.75)"></span> outlined: 3 strongest strikes (walls)</span>
                     <span title="Strikes with almost no gamma (under 5% of the day's biggest) in the latest snapshot, drawn from there to the right edge. Nothing slows price there, so it tends to move through quickly. Listed as 'Air' in the levels bar."><span class="zone-swatch" style="background:repeating-linear-gradient(135deg, rgba(200,200,220,0.55) 0 1px, transparent 1px 4px);border:1px solid #333"></span> hatched: air pocket, price moves through fast</span>
-                    <span style="margin-left:auto;color:#8a8a9c">double-click: full screen · drag corner: resize</span>
                 </div>
                 <div class="zone-bar" title="ES futures volume per bar, aligned to the SPX candles. Buy/sell split by the tick rule from the live stream (uptick = buy, downtick = sell). Faded bars are estimated from where the candle closed in its range (no tick data for them).">
                     <span>ES VOLUME (bottom pane)</span>
@@ -817,7 +841,8 @@
                     <span><span class="zone-swatch" style="background:#ff5252"></span> sell</span>
                     <span style="color:#8a8a9c">darker = estimated (no tick data)</span>
                 </div>
-                <div class="zone-bar" id="gamma-levels-${symbol}" title="From the latest 5-min GEX snapshot. Brakes = GEX at the current price vs today's biggest wall.">—</div>` : ''}
+                <div class="zone-bar" id="gamma-levels-${symbol}" title="From the latest 5-min GEX snapshot. Brakes = GEX at the current price vs today's biggest wall.">—</div>
+                </div>` : ''}
                 <div class="chart-container" id="price-canvas-${symbol}"></div>
             `;
             // Wire up TF buttons — stopPropagation so dblclick on a button doesn't open modal
@@ -841,6 +866,19 @@
                 e.stopPropagation();
                 setZoneMode(btn.dataset.zone);
             }));
+            // Info: show / hide the key and levels block (remembered)
+            const infoBtn = div.querySelector('#zone-info-btn'), info = div.querySelector(`#zone-info-${symbol}`);
+            if (infoBtn && info) {
+                const showInfo = on => {
+                    info.style.display = on ? '' : 'none';
+                    infoBtn.classList.toggle('active', on);
+                    try { localStorage.setItem('zoneInfo', on ? '1' : '0'); } catch (_) {}
+                };
+                let on = true;
+                try { on = localStorage.getItem('zoneInfo') !== '0'; } catch (_) {}
+                showInfo(on);
+                infoBtn.addEventListener('click', e => { e.stopPropagation(); showInfo(info.style.display === 'none'); });
+            }
             return div;
         }
 
@@ -1096,6 +1134,16 @@
             // Live GEX by strike ({all: Map, odte: Map}, from the 2 s GEX updates) for the
             // current strip, from the latest candle to the right edge. null = none (replay).
             setLive(live) { this._live = live; this._req && this._req(); }
+            // Week has no live feed of its own: live 0DTE plus the latest snapshot's later
+            // expirations through Friday (those only change with the 60 s chain refresh)
+            _liveFor(mode) {
+                const L = this._live, d = this._data;
+                if (!L) return null;
+                if (L[mode]) return L[mode];
+                if (mode !== 'week' || !L.odte || !d?.week?.length) return null;
+                const w = d.week[d.week.length - 1], o = d.odte[d.odte.length - 1];
+                return new Map(d.strikes.map((k, i) => [k, (L.odte.has(k) ? L.odte.get(k) : o[i]) + w[i] - o[i]]));
+            }
             setData(data, mode) {
                 this._data = data; this._mode = mode;
                 const cols = (data && data[mode]) || [];
@@ -1125,7 +1173,7 @@
                 const xs = d.times.map(t => ts.timeToCoordinate(Math.floor(t / bucket) * bucket));
                 const ks = d.strikes;
                 target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr }) => {
-                    const live = this._live && this._live[this._mode];
+                    const live = this._liveFor(this._mode);
                     const lastCandle = series.data().at(-1)?.time;
                     const liveXc = live && lastCandle != null ? ts.timeToCoordinate(lastCandle) : null;
                     const edge = liveXc != null ? Math.round(liveXc * hr) : bitmapSize.width;   // snapshots end here
@@ -1254,7 +1302,7 @@
         function joinHeatmaps(days) {
             const strikes = [...new Set(days.flatMap(h => h.strikes))].sort((a, b) => a - b);
             const at = new Map(strikes.map((k, i) => [k, i]));
-            const out = { times: [], spots: [], strikes, all: [], odte: [], day: [], rebuilt: [] };
+            const out = { times: [], spots: [], strikes, all: [], odte: [], week: [], day: [], rebuilt: [] };
             days.forEach((h, di) => {
                 const idx = h.strikes.map(k => at.get(k));
                 const widen = col => {
@@ -1265,7 +1313,7 @@
                 h.times.forEach((t, c) => {
                     out.times.push(t); out.spots.push(h.spots[c]); out.day.push(di);
                     out.rebuilt.push(h.rebuilt_until != null && t <= h.rebuilt_until);
-                    out.all.push(widen(h.all[c])); out.odte.push(widen(h.odte[c]));
+                    out.all.push(widen(h.all[c])); out.odte.push(widen(h.odte[c])); out.week.push(widen(h.week ? h.week[c] : []));
                 });
             });
             return out;
@@ -1445,7 +1493,7 @@
             if (!el || !e) return;
             let L = null;
             try {
-                const res = await fetch(`/api/gamma_levels/SPX?mode=${_zoneMode === 'odte' ? 'odte' : 'all'}` + replayQ('&'));
+                const res = await fetch(`/api/gamma_levels/SPX?mode=${_zoneMode === 'off' ? 'all' : _zoneMode}` + replayQ('&'));
                 L = res.ok ? await res.json() : null;
             } catch (_) {}
             _gammaLines.forEach(l => { try { e.candleSeries.removePriceLine(l); } catch (_) {} });
@@ -1454,7 +1502,7 @@
             _lastGammaLevels = L;
             drawLevelTrails();
             const sep = '<span style="color:#333">│</span>';
-            const chip = regimeChipHtml();
+            const chip = regimeChipHtml('note');
             const head = `<span id="zone-regime-wrap" style="display:contents">${chip ? chip + (L && L.brakes ? sep : '') : ''}</span>`;
             if (!L || !L.brakes) { el.innerHTML = head + (chip ? '' : '—'); return; }
 
@@ -1500,7 +1548,9 @@
             if (rec && c && c.calls) rec.textContent = `(experimental · live ${c.hits}/${c.calls})`;
         }
 
-        function regimeChipHtml() {
+        // part 'label': the regime, shown in the controls row so it's always visible (the
+        // explanation is in its tooltip); 'note': what it means, at the start of the levels bar
+        function regimeChipHtml(part = 'label') {
             let neg, label;
             if (_replayDate) {
                 const d = _hmRel?.days?.[_replayDate];
@@ -1524,7 +1574,10 @@
                 + 'bright bands are weaker brakes and red bands accelerate, so read the heatmap with the regime. '
                 + 'Past-day numbers: average 1-min move in the lowest-GEX third ÷ highest-GEX third, during minutes in that regime '
                 + '(above 1 = price slower in bright bands). From the daily scorecard; few days so far.';
-            return `<span id="zone-regime" class="zone-regime ${neg ? 'neg' : 'pos'}" title="${tip}"><b>${label}</b> — ${what}${stat}</span>`;
+            const cls = neg ? 'neg' : 'pos';
+            return part === 'note'
+                ? `<span class="zone-regime-note ${cls}" title="${tip}">${what}${stat}</span>`
+                : `<span id="zone-regime" class="zone-regime ${cls}" title="${what}${stat}.\n\n${tip}"><b>${label}</b></span>`;
         }
 
         // Only touches the DOM when the regime flips (GEX updates arrive every ~2 s)
@@ -1532,9 +1585,11 @@
             const key = _replayDate ? `r${_replayDate}` : (_liveTotalGex == null ? null : `${_liveTotalGex < 0}|${marketClosed()}`);
             if (!force && key === _regimeShown) return;
             _regimeShown = key;
+            const top = document.getElementById('zone-regime-top');
+            if (top) top.innerHTML = regimeChipHtml('label');
             const wrap = document.getElementById('zone-regime-wrap');
             if (!wrap) return;
-            const chip = regimeChipHtml();
+            const chip = regimeChipHtml('note');
             wrap.innerHTML = chip ? chip + (_lastGammaLevels?.brakes ? '<span style="color:#333">│</span>' : '') : '';
         }
 
@@ -1943,7 +1998,7 @@
         function fitGexPanel(key, n, force = false) {
             const div = document.getElementById(`gex-div-${key}`);
             if (!div || (div._userSized && !force) || (div._fitN === n && !force)) return;
-            const h = GEX_PANEL_CHROME + n * GEX_PX_PER_STRIKE;
+            const h = GEX_PANEL_CHROME + (key.endsWith('-horizon') ? 24 : 0) + n * GEX_PX_PER_STRIKE;
             div._fitN = n;
             div._autoHeight = h;
             div._userSized = false;
@@ -2026,7 +2081,86 @@
             return `${m}/${d}/${y}`;
         }
 
+        // ── Horizon panel: today's 0DTE (live, ~2 s) + later expirations through a date ──
+        let _gexByExp = null;            // /api/gex_by_expiry: later expirations per strike (60 s)
+        const _lastGexData = {};         // symbol -> latest GEX update (its live 0DTE part)
+        const isoAddDays = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+        const isoDaysBetween = (a, b) => Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 86400e3);
+        const weekFriday = iso => isoAddDays(iso, (5 - new Date(iso + 'T12:00:00Z').getUTCDay() + 7) % 7);
+        const fmtExpDay = iso => new Date(iso + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'short', month: '2-digit', day: '2-digit', timeZone: 'UTC' });
+        const todayET = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+        // The pick is remembered as 'fri' (through this Friday, the default) or days ahead of
+        // today, so it means the same thing tomorrow. Returns how many later expirations count.
+        function horizonCount(exps) {
+            let pick = 'fri';
+            try { pick = localStorage.getItem('gexHorizon') || 'fri'; } catch (_) {}
+            const until = pick === 'fri' ? weekFriday(todayET()) : isoAddDays(todayET(), Number(pick) || 0);
+            return exps.filter(e => e <= until).length;
+        }
+        function saveHorizon(n) {
+            const exps = _gexByExp?.exp || [], today = todayET();
+            const fri = exps.filter(e => e <= weekFriday(today)).length;
+            const pick = n === fri ? 'fri' : n === 0 ? '0' : String(isoDaysBetween(today, exps[n - 1]));
+            try { localStorage.setItem('gexHorizon', pick); } catch (_) {}
+        }
+
+        // find_key_levels (gex.py) on one GEX-by-strike profile
+        function keyLevels(strikes, net, spot) {
+            const none = { flip_level: null, put_wall: null, call_wall: null, pin: null };
+            if (net.reduce((a, v) => a + Math.abs(v), 0) < 1000) return none;
+            let cum = 0, flip = null, put = null, call = null, pin = null;
+            strikes.forEach((k, i) => {
+                const prev = cum;
+                cum += net[i];
+                if (flip == null && prev < 0 && cum >= 0) flip = k;
+                if (k < spot && (put == null || net[i] < net[put])) put = i;
+                if (k > spot && (call == null || net[i] > net[call])) call = i;
+                if (pin == null || Math.abs(net[i]) > Math.abs(net[pin])) pin = i;
+            });
+            return { flip_level: flip, put_wall: put != null ? strikes[put] : null,
+                     call_wall: call != null ? strikes[call] : null, pin: strikes[pin] };
+        }
+
+        function renderHorizon(symbol = 'SPX') {
+            const data = _lastGexData[symbol], key = `${symbol}-horizon`;
+            const slider = document.getElementById(`horizon-${key}`);
+            if (!data || !slider) return;
+            const exps = _gexByExp?.exp || [];
+            const n = horizonCount(exps);
+            slider.max = exps.length;
+            slider.value = n;
+            const has0 = !!data.has_0dte;
+            const sums = new Map();
+            const add = (k, v) => sums.set(k, (sums.get(k) || 0) + v);
+            if (has0) (data.zero?.strikes || []).forEach((k, i) => add(Number(k), data.zero.net_gex[i]));
+            for (let e = 0; e < n; e++) _gexByExp.strikes.forEach((k, i) => add(k, _gexByExp.gex[e][i]));
+            const all = [...sums.keys()].sort((a, b) => a - b);
+            const nz = all.filter(k => sums.get(k));
+            const strikes = nz.length ? all.filter(k => k >= nz[0] && k <= nz[nz.length - 1]) : [];
+            const net = strikes.map(k => sums.get(k));
+            const total = net.reduce((a, b) => a + b, 0);
+            const label = n === 0 ? (has0 ? '0DTE only' : 'no expirations picked')
+                : `through ${fmtExpDay(exps[n - 1])} · ${n + (has0 ? 1 : 0)} expirations`;
+            document.getElementById(`horizon-label-${key}`).textContent = label;
+            const dateEl = document.getElementById(`odte-date-${key}`);
+            if (dateEl) dateEl.textContent = n === 0 ? '· TODAY' : `· ${fmtExpDay(exps[n - 1]).toUpperCase()}`;
+            updateGexSlot(symbol, 'horizon', { strikes, net_gex: net, strike_min: strikes[0] ?? null, strike_max: strikes[strikes.length - 1] ?? null },
+                          { ...keyLevels(strikes, net, data.spot), pin_enhanced: data.levels_multi?.pin_enhanced },
+                          data.spot, total, total >= 0 ? 'POSITIVE' : 'NEGATIVE');
+        }
+
+        async function fetchGexByExpiry() {
+            try {
+                const res = await fetch('/api/gex_by_expiry/SPX');
+                if (!res.ok) return;
+                _gexByExp = await res.json();
+                renderHorizon('SPX');
+            } catch (e) { console.warn('[gex horizon]', e); }
+        }
+
         function updateGexDiv(symbol, data) {
+            _lastGexData[symbol] = data;
             // Store levels for price chart overlay (include spot for ES basis calc)
             gexLevels[symbol] = { ...data.levels_multi, spot: data.spot };
             applyGexLevels(symbol);
@@ -2088,6 +2222,8 @@
                     priceCharts.SPX.zones.setLive({ all, odte });
                 }
             }
+
+            renderHorizon(symbol);
 
             // Charm flow (0DTE panel): sign is the backtested part; $/hr gives scale
             const cfEl = document.getElementById(`cf-${symbol}`);
@@ -2672,7 +2808,9 @@
             const key   = `${symbol}-${slot}`;
             const entry = gexCharts[key];
             if (!entry || !entry._gexData) return;
-            const label = slot === 'zero' ? '0DTE' : 'ALL EXPIRATIONS EX-0DTE';
+            const label = slot === 'zero' ? '0DTE' : slot === 'horizon'
+                ? document.getElementById(`horizon-label-${key}`)?.textContent.toUpperCase() || 'EXPIRATIONS THROUGH'
+                : 'ALL EXPIRATIONS EX-0DTE';
             openModal(`
                 <div style="margin-bottom:8px">
                     <div style="font-size:0.65rem;color:#9a9aac;letter-spacing:2px">GAMMA EXPOSURE · ${label}</div>
@@ -3141,6 +3279,7 @@
         GEX_SYMBOLS.forEach(s => {
             gexGrid.appendChild(createGexDiv(s, 'multi'));
             gexGrid.appendChild(createGexDiv(s, 'zero'));
+            gexGrid.appendChild(createGexDiv(s, 'horizon'));
             if (ddoiGrid) ddoiGrid.appendChild(createDdoiDiv(s));
         });
         PRICE_SYMBOLS.forEach(s => {
@@ -3221,6 +3360,8 @@
 
         // GEX refreshes every 30 s; price every 5 min as streaming fallback
         setInterval(fetchGexAll,   GEX_REFRESH_MS);
+        fetchGexByExpiry();
+        setInterval(fetchGexByExpiry, 60000);   // later expirations change with the 60 s chain refresh
         setInterval(fetchPriceAll, PRICE_REFRESH_MS);
 
         // Connect SSE for real-time candle updates

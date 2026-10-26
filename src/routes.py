@@ -92,6 +92,14 @@ def register(app):
                 return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
         return jsonify(gex_stats.load_heatmap(symbol.upper().replace('$', ''), day=day, rebuilt=True))
 
+    @app.route('/api/gex_by_expiry/<symbol>')
+    def api_gex_by_expiry(symbol):
+        """GEX per strike for each expiration after today's (60 s chain refresh), for the
+        horizon panel: it adds up the expirations through the one picked, plus live 0DTE."""
+        import background
+        sym = symbol.upper().replace('$', '')
+        return jsonify(background._gex_by_exp.get(sym) or {'exp': [], 'strikes': [], 'gex': []})
+
     @app.route('/api/gamma_levels/<symbol>')
     def api_gamma_levels(symbol):
         """Walls, trapdoor, squeeze, support/resistance, air pockets, brakes at spot."""

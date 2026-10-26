@@ -43,6 +43,7 @@ _GEX_SNAPSHOT_FIELDS  = ['timestamp', 'spot', 'total_gex', 'regime',
                           'flip_level', 'put_wall', 'call_wall', 'pin',
                           'strike_min', 'strike_max', 'true_pin', 'charm_flow']
 _last_true_pin: dict = {}   # display symbol -> latest TRUE PIN from the live loop
+_gex_by_exp: dict = {}      # display symbol -> gex_by_expiry() from the latest chain refresh
 _true_pin_pending: dict = {}  # challenger strike waiting out TRUE_PIN_CONFIRM_SEC
 _last_charm_flow: dict = {} # display symbol -> latest charm hedge flow, $/hr
 _level_state: dict = {}     # (display symbol, 'multi'|'0dte') -> last published levels (sticky)
@@ -505,6 +506,26 @@ def _gex_to_dict(gex_df, spot):
     }
 
 
+def gex_by_expiry(raw_df) -> dict:
+    """GEX per strike for each expiration after today's, from one chain refresh (the
+    horizon panel sums the expirations up to the one picked and adds the live 0DTE).
+    Strikes run continuously between the first and last with any GEX."""
+    empty = {'exp': [], 'strikes': [], 'gex': []}
+    if raw_df is None or raw_df.empty:
+        return empty
+    df = raw_df[~raw_df['is_0dte']]
+    if df.empty:
+        return empty
+    piv = df.groupby(['expiration', 'strike'])['gex'].sum().unstack(fill_value=0.0).sort_index()
+    piv = piv.reindex(sorted(piv.columns), axis=1)
+    live = [k for k in piv.columns if (piv[k] != 0).any()]
+    if not live:
+        return empty
+    piv = piv.loc[:, live[0]:live[-1]]
+    return {'exp': [str(e) for e in piv.index], 'strikes': [float(k) for k in piv.columns],
+            'gex': [[round(float(v)) for v in row] for row in piv.to_numpy()]}
+
+
 def refresh_gex(symbol: str):
     try:
         token        = get_access_token()
@@ -513,6 +534,7 @@ def refresh_gex(symbol: str):
         chain        = drop_expired(raw_chain)   # after 16:00 ET the day's expiry is gone
         gex_all, gex_0dte, gex_multi, spot, raw_df = parse_gex(chain)
         display_sym  = symbol.replace('$', '').replace('/', '')
+        _gex_by_exp[display_sym] = gex_by_expiry(raw_df)
         _seed_level_state(display_sym)
         levels       = find_key_levels(gex_all, spot)
         total_gex    = float(gex_all['net_gex'].sum())

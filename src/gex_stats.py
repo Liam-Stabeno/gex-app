@@ -17,7 +17,8 @@ import glob
 import os
 import threading
 import time
-from datetime import datetime, time as dtime
+from datetime import date, datetime, time as dtime, timedelta
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -129,20 +130,33 @@ HM_DONE_MAX = 20
 _hm_rebuilt_cache: dict = {}   # rebuilt file path -> ((size, mtime), snapshots); re-read if rebuilt again
 
 
+@lru_cache(maxsize=64)
+def week_end(day_iso: str) -> str:
+    """That week's Friday (the day itself from Friday on)."""
+    d = date.fromisoformat(day_iso)
+    return (d + timedelta(days=max(0, 4 - d.weekday()))).isoformat()
+
+
 def _hm_parse(line: bytes, day_iso: str):
-    """One grid snapshot line -> (epoch, spot, {strike: [all, odte]}), summed over expiries."""
+    """One grid snapshot line -> (epoch, spot, {strike: [all, odte, week]}), summed over
+    expiries; week = expirations through that week's Friday."""
     import json
     try:
         s = json.loads(line)
     except ValueError:
         return None
-    today_i = s['exp'].index(day_iso) if day_iso in s.get('exp', []) else -1
+    exps = s.get('exp', [])
+    today_i = exps.index(day_iso) if day_iso in exps else -1
+    fri = week_end(day_iso)
+    week_i = {i for i, e in enumerate(exps) if e <= fri}
     by_k = {}
     for k, exp_i, _c, _p, gex in s.get('rows', []):
-        cell = by_k.setdefault(k, [0.0, 0.0])
+        cell = by_k.setdefault(k, [0.0, 0.0, 0.0])
         cell[0] += gex
         if exp_i == today_i:
             cell[1] += gex
+        if exp_i in week_i:
+            cell[2] += gex
     return int(datetime.fromisoformat(s['ts']).timestamp()), s.get('spot'), by_k
 
 
@@ -197,7 +211,8 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     chain refresh, about every minute; every 5 min before 2026-10-07).
 
     Returns {'times': [epoch s], 'spots', 'strikes': [...], 'all': [[gex per strike] per
-    time], 'odte': [...], 'rebuilt_until'} for strikes within `band` pts of the day's spot
+    time], 'odte': [...], 'week': [...] (expirations through Friday), 'rebuilt_until'} for
+    strikes within `band` pts of the day's spot
     range. Positive = dealers long gamma (hedging dampens moves); negative = amplifies.
 
     rebuilt=True puts first the minutes tools/rebuild_gex_grid.py rebuilt for when the app
@@ -207,7 +222,7 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     """
     day = day or datetime.now(ET).date()
     path = day_file(f'gex_grid_{sym}_{day.isoformat()}.jsonl', data_dir)
-    empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': [], 'rebuilt_until': None}
+    empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': [], 'week': [], 'rebuilt_until': None}
     if not path:
         return empty
     rb_path = day_file(f'gex_grid_rebuilt_{sym}_{day.isoformat()}.jsonl', data_dir) if rebuilt else None
@@ -231,13 +246,14 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     spots = [sp for _, sp, _ in snaps if sp]
     lo, hi = min(spots) - band, max(spots) + band
     strikes = sorted({k for _, _, by_k in snaps for k in by_k if lo <= k <= hi})
-    out = {'times': [], 'spots': [], 'strikes': strikes, 'all': [], 'odte': [],
+    out = {'times': [], 'spots': [], 'strikes': strikes, 'all': [], 'odte': [], 'week': [],
            'rebuilt_until': early[-1][0] if early else None}
     for t, sp, by_k in snaps:
         out['times'].append(t)
         out['spots'].append(sp)
         out['all'].append([round(by_k[k][0]) if k in by_k else 0 for k in strikes])
         out['odte'].append([round(by_k[k][1]) if k in by_k else 0 for k in strikes])
+        out['week'].append([round(by_k[k][2]) if k in by_k else 0 for k in strikes])
     if done_key:
         with _hm_lock:
             _hm_done[done_key] = out
@@ -356,7 +372,7 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
     """gamma_levels() on the latest 5-min snapshot of a day's heatmap (default today).
     For a past day, spot defaults to that day's last snapshot."""
     h = load_heatmap(sym, day=day, data_dir=data_dir)
-    if not h['times'] or mode not in ('all', 'odte'):
+    if not h['times'] or mode not in ('all', 'odte', 'week'):
         return None
     if spot is None:
         spot = next((s for s in reversed(h['spots']) if s), None)
