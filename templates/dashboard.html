@@ -185,7 +185,20 @@
         .horizon-marks i { position: absolute; width: 3px; height: 6px; margin-left: -1px; background: #ff4d5e;
                            border-radius: 1px; pointer-events: auto; cursor: help; }
         .kd-grid { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
-        .kd-panel { display: flex; flex-direction: column; height: 640px; min-height: 360px; }
+        .kd-panel { display: flex; flex-direction: column; height: 900px; min-height: 420px; }
+        .kd-notes { flex: 0 0 250px; overflow-y: auto; border-top: 1px solid #1e1e2e; margin-top: 6px;
+                    padding-top: 6px; font-size: 0.62rem; color: #b0b0c0; line-height: 1.55; }
+        .kd-note { margin-bottom: 9px; }
+        .kd-note b { display: block; color: #d0d0dc; letter-spacing: 1px; }
+        .kd-note.latest b { color: #00d4ff; }
+        .kd-note .grow { color: #7dffc4; }
+        .kd-note .shrink { color: #ff8a95; }
+        .kd-note .level { color: #ffd27d; }
+        .kd-note .move { color: #7fdcff; }
+        .kd-note .magnet { color: #d9a6ff; }
+        .kd-note .outcome { color: #ffffff; font-weight: bold; }
+        .kd-score { color: #8a8a9c; margin-bottom: 8px; }
+        .kd-score b { color: #d0d0dc; }
         .kd-panel .gex-canvas-wrap { flex: 1; min-height: 0; }
         .kd-sub { font-size: 0.62rem; color: #8a8a9c; margin-top: 2px; }
         .kd-changes { font-size: 0.65rem; color: #b0b0c0; margin: 4px 0 6px; line-height: 1.5; }
@@ -203,6 +216,14 @@
         .zone-regime.neg { color: #ffc4c4; background: #2b0d0d; border: 1px solid #ff444488; }
         .zone-regime b { letter-spacing: 0.5px; }
         .zone-regime-note.pos { color: #b8f5d4; }
+        .label-guide { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 3px 18px;
+                       font-size: 0.6rem; color: #a8a8b8; margin: 2px 0 8px; padding: 6px 8px;
+                       border: 1px solid #1e1e2e; border-radius: 4px; background: #0d0d16; }
+        .label-guide .lg-head { grid-column: 1 / -1; color: #8a8a9c; letter-spacing: 1px; }
+        .label-guide b { color: #e0e0ea; letter-spacing: 0.5px; }
+        .label-guide .lg-line { display: inline-block; width: 22px; vertical-align: middle; margin-right: 5px; }
+        .label-guide .lg-src { color: #6f6f82; }
+        .label-guide .lg-follow { color: #00d4ff; }
         .zone-regime-note.neg { color: #ffc4c4; }
         .zone-regime.pos b { color: #00ff88; }
         .zone-regime.neg b { color: #ff5c5c; }
@@ -784,7 +805,7 @@
             // The non-0DTE panel is built from every expiry except today's (gex_multi); the
             // horizon panel from today's 0DTE (live) plus later expiries through a picked date.
             const label = slot === 'zero' ? '0DTE' : slot === 'horizon' ? 'EXPIRATIONS THROUGH' : 'ALL EXPIRATIONS EX-0DTE';
-            const pinLabel = slot === 'multi' ? 'Pin (long-dated)' : 'Pin';
+            const pinLabel = slot === 'multi' ? 'Pin (long term)' : 'Pin';
             const pinTip   = slot === 'zero' ? 'Strike with the largest 0DTE GEX'
                 : slot === 'horizon' ? 'Strike with the largest GEX across the expirations picked'
                 : 'Strike with the largest GEX across longer-dated expiries. A multi-day reference, not a same-day target: the close moved away from it 60% of the time in the backtest.';
@@ -884,7 +905,7 @@
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #ffff00"></span>FLIP</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #ff4444"></span>PUT WALL</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #00ff88"></span>CALL WALL</span>
-                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #cc44ff"></span>PIN LT</span>
+                            <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #cc44ff"></span>PIN LONG TERM</span>
                             <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #00e5ff"></span>TRUE PIN</span>
                         </div>
                     </div>
@@ -894,20 +915,40 @@
                         REPLAY <select id="replay-date" class="rp-select" style="font-size:0.62rem;padding:1px 4px"><option value="">LIVE</option></select>
                     </span>
                     <span>GAMMA ZONES</span>
-                    <button class="tf-btn active" data-zone="all" title="Net GEX at each strike, all expirations">All</button>
-                    <button class="tf-btn" data-zone="week" title="Net GEX at each strike, expirations through this Friday (on a Friday: today's only)">Week</button>
-                    <span id="zone-red-btns" style="display:contents"></span>
+                    <span id="zone-mode-btns" style="display:contents"><!-- soonest first; red days slot in by date -->
                     <button class="tf-btn" data-zone="odte" title="Net GEX at each strike, 0DTE only">0DTE</button>
+                    <button class="tf-btn" data-zone="week" title="Net GEX at each strike, expirations through this Friday (on a Friday: today's only)">Week</button>
+                    <button class="tf-btn active" data-zone="all" title="Net GEX at each strike, all expirations">All</button>
+                    </span>
                     <button class="tf-btn" data-zone="off">Off</button>
                     <button class="tf-btn" id="zone-info-btn" title="Show / hide the key, the ES volume key and the gamma levels bar">Info</button>
+                    <button class="tf-btn" id="label-guide-btn" title="Show / hide what each level label on the chart means">Labels</button>
+                    <span title="Level lines (walls, pins, flip, support / resist, trapdoor / squeeze): History = how each moved through the day, Now = one flat line at the current level, Off = none. Always behind the candles.">LINES</span>
+                    <button class="tf-btn" data-lines="history">History</button>
+                    <button class="tf-btn" data-lines="now">Now</button>
+                    <button class="tf-btn" data-lines="off">Off</button>
+                    <span title="The 3 strongest strikes in each heatmap snapshot. Boxes: outlined for as long as a strike stays top 3. Medals: gold / silver / bronze lines by rank, with each one's current size on the price axis.">WALLS</span>
+                    <button class="tf-btn" data-walls="boxes">Boxes</button>
+                    <button class="tf-btn" data-walls="medals">Medals</button>
+                    <button class="tf-btn" data-walls="off">Off</button>
                     <span id="zone-regime-top" style="display:contents"></span>
                     <span style="margin-left:auto;color:#8a8a9c">double-click: full screen · drag corner: resize</span>
+                </div>
+                <div class="label-guide" id="label-guide-${symbol}">
+                    <span class="lg-head">LEVEL LABELS · <span class="lg-follow">blue = follows the gamma-zone button</span> · the rest are fixed · every level moves only when a new strike beats it by 15%</span>
+                    <span><span class="lg-line" style="border-top:1px dotted #00ff88"></span><b>CALL WALL</b> biggest positive GEX above spot <span class="lg-src">· all expirations except today's</span></span>
+                    <span><span class="lg-line" style="border-top:1px dotted #ff4444"></span><b>PUT WALL</b> most negative GEX below spot <span class="lg-src">· all expirations except today's</span></span>
+                    <span><span class="lg-line" style="border-top:2px dashed #cc44ff"></span><b>PIN LONG TERM</b> strike with the largest GEX, either sign: a multi-day level, not today's target <span class="lg-src">· all expirations except today's</span></span>
+                    <span><span class="lg-line" style="border-top:1px dashed #ffff00"></span><b>FLIP</b> where total GEX turns from negative to positive, below it dealers chase moves <span class="lg-src">· all expirations except today's</span></span>
+                    <span><span class="lg-line" style="border-top:2px solid #00e5ff"></span><b>TRUE PIN</b> where today is most likely to settle: 90% gamma, 10% charm, live <span class="lg-src">· today's 0DTE + next expiration</span></span>
+                    <span><span class="lg-line" style="border-top:1px solid #00c878"></span><b>SUPPORT</b> / <b>RESIST</b> biggest positive GEX below / above spot (within 150 pts, at least 25% of the biggest, 7.5+ pts away): price slows there <span class="lg-follow">· gamma-zone view</span></span>
+                    <span><span class="lg-line" style="border-top:2px dashed #ff3c50"></span><b>TRAPDOOR</b> / <b>SQUEEZE</b> nearest strike below / above spot where GEX turns clearly negative (−10% of the biggest): past it, moves can speed up <span class="lg-follow">· gamma-zone view</span></span>
                 </div>
                 <div id="zone-info-${symbol}">
                 <div class="zone-bar">
                     <span title="Brighter = bigger GEX at that strike, scaled to the day's biggest (linear). Faint bands slow price only a little."><span class="zone-swatch" style="width:26px;background:linear-gradient(90deg, rgba(0,110,70,0.2), rgba(90,245,175,0.75))"></span> positive gamma: dealers lean against moves, price <b style="color:#00c878">slows / sticks</b> (brighter = stronger)</span>
                     <span title="Brighter = bigger negative GEX at that strike, scaled to the day's biggest (linear)."><span class="zone-swatch" style="width:26px;background:linear-gradient(90deg, rgba(140,25,40,0.3), rgba(255,105,120,0.75))"></span> negative gamma: dealers chase moves, price <b style="color:#ff3c50">speeds up</b></span>
-                    <span title="The 3 biggest strikes in each snapshot, boxed for as long as they stay in the top 3."><span class="zone-swatch" style="border:1px solid rgba(255,255,255,0.75)"></span> outlined: 3 strongest strikes (walls)</span>
+                    <span title="The 3 biggest strikes in each snapshot, boxed for as long as they stay in the top 3."><span class="zone-swatch" style="border:1px solid rgba(255,255,255,0.75)"></span> walls: 3 strongest strikes, outlined (Boxes) or gold / silver / bronze (Medals)</span>
                     <span title="Strikes with almost no gamma (under 5% of the day's biggest) in the latest snapshot, drawn from there to the right edge. Nothing slows price there, so it tends to move through quickly. Listed as 'Air' in the levels bar."><span class="zone-swatch" style="background:repeating-linear-gradient(135deg, rgba(200,200,220,0.55) 0 1px, transparent 1px 4px);border:1px solid #333"></span> hatched: air pocket, price moves through fast</span>
                 </div>
                 <div class="zone-bar" title="ES futures volume per bar, aligned to the SPX candles. Buy/sell split by the tick rule from the live stream (uptick = buy, downtick = sell). Faded bars are estimated from where the candle closed in its range (no tick data for them).">
@@ -941,6 +982,27 @@
                 e.stopPropagation();
                 setZoneMode(btn.dataset.zone);
             }));
+            div.querySelectorAll('[data-lines]').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.lines === _linesMode);
+                btn.addEventListener('click', e => { e.stopPropagation(); setLinesMode(btn.dataset.lines); });
+            });
+            div.querySelectorAll('[data-walls]').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.walls === _wallStyle);
+                btn.addEventListener('click', e => { e.stopPropagation(); setWallStyle(btn.dataset.walls); });
+            });
+            // Labels: show / hide the level-label guide (remembered)
+            const guideBtn = div.querySelector('#label-guide-btn'), guide = div.querySelector(`#label-guide-${symbol}`);
+            if (guideBtn && guide) {
+                const showGuide = on => {
+                    guide.style.display = on ? '' : 'none';
+                    guideBtn.classList.toggle('active', on);
+                    try { localStorage.setItem('labelGuide', on ? '1' : '0'); } catch (_) {}
+                };
+                let on = true;
+                try { on = localStorage.getItem('labelGuide') !== '0'; } catch (_) {}
+                showGuide(on);
+                guideBtn.addEventListener('click', e => { e.stopPropagation(); showGuide(guide.style.display === 'none'); });
+            }
             // Info: show / hide the key and levels block (remembered)
             const infoBtn = div.querySelector('#zone-info-btn'), info = div.querySelector(`#zone-info-${symbol}`);
             if (infoBtn && info) {
@@ -977,7 +1039,7 @@
                         <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dashed #ffff00"></span>FLIP</span>
                         <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #ff4444"></span>PUT WALL</span>
                         <span class="gex-key-item"><span class="gex-key-line" style="border-top:1px dotted #00ff88"></span>CALL WALL</span>
-                        <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #cc44ff"></span>PIN LT</span>
+                        <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #cc44ff"></span>PIN LONG TERM</span>
                         <span class="gex-key-item"><span class="gex-key-line" style="border-top:2px solid #00e5ff"></span>TRUE PIN</span>
                     </div>
                 </div>
@@ -1011,7 +1073,7 @@
                 flipSeries:     make('#ffff00', 1, LWC.LineStyle.Dashed,      'FLIP'),
                 putWallSeries:  make('#ff4444', 1, LWC.LineStyle.Dotted,      'PUT WALL'),
                 callWallSeries: make('#00ff88', 1, LWC.LineStyle.Dotted,      'CALL WALL'),
-                pinSeries:      make('#cc44ff', 2, LWC.LineStyle.LargeDashed, 'PIN LT'),
+                pinSeries:      make('#cc44ff', 2, LWC.LineStyle.LargeDashed, 'PIN LONG TERM'),
                 truePinSeries:  make('#00e5ff', 2, LWC.LineStyle.Solid,       'TRUE PIN'),
             };
         }
@@ -1209,6 +1271,17 @@
             // Live GEX by strike ({all: Map, odte: Map}, from the 2 s GEX updates) for the
             // current strip, from the latest candle to the right edge. null = none (replay).
             setLive(live) { this._live = live; this._req && this._req(); }
+            setWallStyle(style) { this._wallStyle = style; this._req && this._req(); }
+            // the 3 strongest strikes now (live values where there are any, else the latest
+            // snapshot): [{strike, gex}], strongest first
+            currentTop3() {
+                const d = this._data, cols = d && d[this._mode];
+                if (!cols || !cols.length) return [];
+                const live = this._liveFor(this._mode), last = cols[cols.length - 1];
+                const vals = d.strikes.map((k, i) => (live && live.has(k) ? live.get(k) : last[i]));
+                return vals.map((g, i) => [Math.abs(g), i]).filter(([a]) => a > 0)
+                    .sort((a, b) => b[0] - a[0]).slice(0, 3).map(([, i]) => ({ strike: d.strikes[i], gex: vals[i] }));
+            }
             // Week has no live feed of its own: live 0DTE plus the latest snapshot's later
             // expirations through Friday (those only change with the 60 s chain refresh)
             _liveFor(mode) {
@@ -1235,9 +1308,11 @@
                 // columns rebuilt for minutes the app wasn't running (tools/rebuild_gex_grid.py)
                 this._rebuilt = cols.map((_, c) => data.rebuilt ? data.rebuilt[c]
                     : data.rebuilt_until != null && data.times[c] <= data.rebuilt_until);
-                // the 3 strongest strikes per column (walls), once per data change, not per frame
-                this._top3 = cols.map(col => new Set(col.map((g, i) => [Math.abs(g), i])
-                    .filter(([m]) => m > 0).sort((a, b) => b[0] - a[0]).slice(0, 3).map(([, i]) => i)));
+                // the 3 strongest strikes per column (walls), strongest first, once per data
+                // change, not per frame
+                this._rank3 = cols.map(col => col.map((g, i) => [Math.abs(g), i])
+                    .filter(([m]) => m > 0).sort((a, b) => b[0] - a[0]).slice(0, 3).map(([, i]) => i));
+                this._top3 = this._rank3.map(r => new Set(r));
                 this._req && this._req();
             }
             _draw(target) {
@@ -1343,6 +1418,46 @@
                         for (let n = c + 1; n < xs.length; n++) if (xs[n] != null) return Math.min(edge, Math.round(xs[n] * hr));
                         return edge;
                     };
+                    if (this._wallStyle === 'medals') {
+                        // gold / silver / bronze through each snapshot by rank; one stroke per run
+                        // of the same strike at the same rank. The strip right of "now" uses the
+                        // current ranking.
+                        const rank3 = this._rank3 || [];
+                        ctx.lineWidth = Math.max(2, Math.round(2 * hr));
+                        for (let r = 0; r < 3; r++) {
+                            ctx.strokeStyle = MEDAL_COLORS[r];
+                            let run = null;                    // [strike index, start column]
+                            const flush = c => {
+                                const y = run && cells[run[0]];
+                                if (y) {
+                                    const x0 = Math.round(xs[run[1]] * hr), x1 = colEnd(c), ym = y[0] + y[1] / 2;
+                                    ctx.beginPath(); ctx.moveTo(x0, ym); ctx.lineTo(x1, ym); ctx.stroke();
+                                }
+                                run = null;
+                            };
+                            let lastC = null;
+                            for (let c = 0; c < cols.length; c++) {
+                                if (xs[c] == null) continue;
+                                const i = rank3[c]?.[r];
+                                if (run && run[0] !== i) flush(lastC);
+                                if (i != null && !run) run = [i, c];
+                                lastC = c;
+                            }
+                            if (run) flush(lastC);
+                        }
+                        if (liveXc != null && edge < bitmapSize.width) {
+                            const idx = new Map(ks.map((k, i) => [k, i]));
+                            this.currentTop3().forEach((w, r) => {
+                                const y = cells[idx.get(w.strike)];
+                                if (!y) return;
+                                const ym = y[0] + y[1] / 2;
+                                ctx.strokeStyle = MEDAL_COLORS[r];
+                                ctx.beginPath(); ctx.moveTo(edge, ym); ctx.lineTo(bitmapSize.width, ym); ctx.stroke();
+                            });
+                        }
+                        return;
+                    }
+                    if (this._wallStyle === 'off') return;
                     ctx.lineWidth = Math.max(1, Math.round(hr));
                     for (let i = 0; i < ks.length; i++) {
                         const y = cells[i];
@@ -1362,6 +1477,35 @@
                     }
                 });
             }
+        }
+
+        // ── Walls: Boxes / Medals / Off ────────────────────────────────────────
+        // Medals: the strongest strike gold, then silver, bronze, with each one's current size
+        // on the price axis (live values where there are any).
+        const MEDAL_COLORS = ['#ffd700', '#c9ccd6', '#cd7f32'];
+        const MEDAL_NAMES  = ['GOLD', 'SILVER', 'BRONZE'];
+        let _wallStyle = 'boxes';
+        try { const w = localStorage.getItem('wallStyle'); if (['boxes', 'medals', 'off'].includes(w)) _wallStyle = w; } catch (_) {}
+        let _medalLines = [];          // the axis labels, on the candle series
+        const fmtSize = g => (g >= 0 ? '+' : '−') + (Math.abs(g) >= 1e9 ? (Math.abs(g) / 1e9).toFixed(2) + 'B' : (Math.abs(g) / 1e6).toFixed(1) + 'M');
+        function updateMedalLabels() {
+            const e = priceCharts.SPX;
+            if (!e) return;
+            const top = _wallStyle === 'medals' && _zoneMode !== 'off' && e.zones ? e.zones.currentTop3() : [];
+            while (_medalLines.length > top.length) { try { e.candleSeries.removePriceLine(_medalLines.pop()); } catch (_) {} }
+            top.forEach((w, r) => {
+                const o = { price: w.strike, color: MEDAL_COLORS[r], lineVisible: false, axisLabelVisible: true,
+                            axisLabelColor: MEDAL_COLORS[r], axisLabelTextColor: '#000', title: `${MEDAL_NAMES[r]} ${fmtSize(w.gex)}` };
+                if (_medalLines[r]) _medalLines[r].applyOptions(o);
+                else _medalLines[r] = e.candleSeries.createPriceLine(o);
+            });
+        }
+        function setWallStyle(w) {
+            _wallStyle = w;
+            try { localStorage.setItem('wallStyle', w); } catch (_) {}
+            document.querySelectorAll('[data-walls]').forEach(b => b.classList.toggle('active', b.dataset.walls === w));
+            priceCharts.SPX?.zones?.setWallStyle(w);
+            updateMedalLabels();
         }
 
         let _heatmap  = null;          // what the chart draws: past days + today, or the replayed day
@@ -1403,18 +1547,29 @@
                             'QUARTERLY OPEX': 'QUAD OPEX', 'MONTH END': 'EOM', 'QUARTER END': 'QTR END', 'YEAR END': 'YEAR END' };
         let _redZoneSig = null;
         function renderRedZoneButtons(red) {
-            const wrap = document.getElementById('zone-red-btns');
-            if (!wrap || !red) return;
-            const sig = red.map(r => r.key).join();
+            const box = document.getElementById('zone-mode-btns');
+            if (!box || !red) return;
+            const sig = red.map(r => r.key).join() + '|' + todayET();
             if (sig !== _redZoneSig) {
                 _redZoneSig = sig;
-                wrap.innerHTML = red.map(r =>
-                    `<button class="tf-btn red-zone" data-zone="${r.key}" title="GEX of the ${r.date} expiration only (${r.tags.join(', ')}): watch dealers' gamma build into it">`
-                    + `${r.tags.map(t => RED_SHORT[t] || t).join('+')} ${r.date.slice(5).replace('-', '/')}</button>`).join('');
-                wrap.querySelectorAll('[data-zone]').forEach(b => b.addEventListener('click', e => {
-                    e.stopPropagation();
-                    setZoneMode(b.dataset.zone);
-                }));
+                box.querySelectorAll('.red-zone').forEach(b => b.remove());
+                red.forEach(r => {
+                    const b = document.createElement('button');
+                    b.className = 'tf-btn red-zone';
+                    b.dataset.zone = r.key;
+                    b.title = `GEX of the ${r.date} expiration only (${r.tags.join(', ')}): watch dealers' gamma build into it`;
+                    b.textContent = `${r.tags.map(t => RED_SHORT[t] || t).join('+')} ${r.date.slice(5).replace('-', '/')}`;
+                    b.addEventListener('click', e => { e.stopPropagation(); setZoneMode(b.dataset.zone); });
+                    box.appendChild(b);
+                });
+                // soonest first, by the last expiration each view reaches: 0DTE (today), red days
+                // (their date), Week (Friday), All (30 days); on a tie the single expiration first
+                const today = todayET(), fri = weekFriday(today);
+                const rank = b => { const z = b.dataset.zone;
+                    return z === 'odte' ? [today, 0] : z === 'week' ? [fri, 1] : z === 'all' ? ['9999', 1] : [z.slice(2), 0]; };
+                [...box.querySelectorAll('[data-zone]')]
+                    .sort((a, b) => { const [da, ca] = rank(a), [db, cb] = rank(b); return da < db ? -1 : da > db ? 1 : ca - cb; })
+                    .forEach(b => box.appendChild(b));
             }
             // a saved red day that has passed: back to All
             if (_zoneMode.startsWith('x:') && !red.some(r => r.key === _zoneMode)) { setZoneMode('all'); return; }
@@ -1426,6 +1581,7 @@
             _heatmap = past.length ? joinHeatmaps(_heatmapDay ? [...past, _heatmapDay] : past) : _heatmapDay;
             renderRedZoneButtons(_heatmapDay?.red);
             priceCharts.SPX?.zones?.setData(_zoneMode === 'off' ? null : _heatmap, _zoneMode);
+            updateMedalLabels();
         }
 
         // The finished sessions the chart has candles for (it shows the last two): loaded once
@@ -1547,6 +1703,35 @@
                                                             color: col(a.buy < a.sell, a) })));
         }
 
+        // ── Level lines: History / Now / Off ──────────────────────────────────
+        // History: each level's trail through the day. Now: one flat line across the chart at
+        // the current level (the series' last value), same colour and style. Off: none. The
+        // candles are drawn last, over the lines; the heatmap stays behind everything.
+        let _linesMode = 'history';
+        try { const m = localStorage.getItem('linesMode'); if (['history', 'now', 'off'].includes(m)) _linesMode = m; } catch (_) {}
+        function applyLinesMode() {
+            document.querySelectorAll('[data-lines]').forEach(b => b.classList.toggle('active', b.dataset.lines === _linesMode));
+            const e = priceCharts.SPX;
+            if (e) {
+                [...Object.values(e.trail || {}), ...Object.values(e.levelSeries || {})].forEach(sr => {
+                    const o = sr.options();
+                    sr.applyOptions({
+                        visible: _linesMode !== 'off',
+                        lineVisible: _linesMode === 'history',
+                        priceLineVisible: _linesMode === 'now',
+                        priceLineColor: o.color, priceLineWidth: o.lineWidth, priceLineStyle: o.lineStyle,
+                    });
+                });
+                try { e.candleSeries.setSeriesOrder(e.chart.panes()[0].getSeries().length - 1); } catch (_) {}
+            }
+            if (typeof applyGexLevels === 'function') applyGexLevels('ES');   // ES draws flat lines: shown or not
+        }
+        function setLinesMode(m) {
+            _linesMode = m;
+            try { localStorage.setItem('linesMode', m); } catch (_) {}
+            applyLinesMode();
+        }
+
         // ── Trading levels from the gamma profile ─────────────────────────────
         let _gammaLines = [];
         const fmtM = g => `${g >= 0 ? '+' : '−'}${Math.abs(g / 1e6).toFixed(0)}M`;
@@ -1574,6 +1759,7 @@
                         autoscaleInfoProvider: () => null,
                         priceFormat: { type: 'price', precision: 0, minMove: 1 },
                     })]));
+                applyLinesMode();                  // new series: History / Now / Off, behind the candles
             }
             const hist = (_zoneMode === 'off' || !_lastGammaLevels) ? [] : (_lastGammaLevels.history || []);
             const bucket = (selectedTF.SPX || 1) * 60;
@@ -1701,6 +1887,7 @@
             try { localStorage.setItem('zoneMode', mode); } catch (_) {}
             document.querySelectorAll('[data-zone]').forEach(b => b.classList.toggle('active', b.dataset.zone === mode));
             priceCharts.SPX?.zones?.setData(mode === 'off' ? null : _heatmap, mode);
+            updateMedalLabels();
             fetchGammaLevels();
         }
 
@@ -2308,7 +2495,8 @@
                     </div>
                 </div>
                 <div class="kd-changes" id="kd-changes-${i}" title="Where open interest changed most against the session compared with (strikes on the chart). OI is reported once a day, so this is positions added (+) or closed (-) since then.">—</div>
-                <div class="gex-canvas-wrap"><canvas id="kd-canvas-${i}"></canvas></div>`;
+                <div class="gex-canvas-wrap"><canvas id="kd-canvas-${i}"></canvas></div>
+                <div class="kd-notes" id="kd-notes-${i}" title="One note per recorded session, newest first: open interest added (growing) and closed (shrinking) against the session before, and the biggest gamma within 100 pts above and below spot in this expiration, with the session it first took that spot."></div>`;
             return div;
         }
 
@@ -2318,7 +2506,8 @@
             const label = document.createElement('div');
             label.className = 'section-label';
             label.innerHTML = `KEY DATES · DEALER POSITIONING<span class="kd-compare">bars: now · outline:
-                <button class="tf-btn" data-kdcmp="prev">previous session</button><button class="tf-btn" data-kdcmp="first">first recorded</button></span>`;
+                <button class="tf-btn" data-kdcmp="prev">previous session</button><button class="tf-btn" data-kdcmp="first">first recorded</button></span>
+                <span class="kd-compare" id="kd-score-all" title="How the levels named in every saved red-day note did the next session: broke = closed or opened beyond it, held = touched and closed back, not reached = never got there."></span>`;
             const grid = document.createElement('div');
             grid.className = 'grid kd-grid';
             grid.id = 'kd-grid';
@@ -2359,12 +2548,54 @@
             };
         }
 
+        // Daily notes for a red day's expiration, one per recorded session (newest first):
+        // what grew and shrank (open interest against the session before), the biggest
+        // gamma within 100 pts above and below spot and since when it has been there, and
+        // the sign of dealers' gamma in it. The levels to plan 0DTE risk around.
+        const kdDay = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'short', month: '2-digit', day: '2-digit', timeZone: 'UTC' });
+        const kdM = v => (v >= 0 ? '+' : '-') + (Math.abs(v) >= 1e9 ? (Math.abs(v) / 1e9).toFixed(2) + 'B' : (Math.abs(v) / 1e6).toFixed(1) + 'M');
+        function kdNotes(kd, near = 100, top = 3) {
+            const ks = kd.strikes, ss = kd.sessions || [], out = [], lead = {};
+            const signed = v => (v > 0 ? '+' : '') + fmtOI(v);
+            ss.forEach((s, i) => {
+                const p = i ? ss[i - 1] : null, spot = s.spot;
+                const idx = ks.map((_, j) => j).filter(j => Math.abs(ks[j] - spot) <= near);
+                const lines = [{ text: `OI ${fmtOI(s.total_oi)}${p ? ` (${signed(s.total_oi - p.total_oi)})` : ''}`
+                    + ` · GEX ${kdM(s.total_gex)}${p ? ` (was ${kdM(p.total_gex)})` : ''}`
+                    + ` · spot ${Math.round(spot)}${p ? ` (${spot >= p.spot ? '+' : ''}${Math.round(spot - p.spot)})` : ''}` }];
+                if (p) {
+                    const ch = idx.flatMap(j => [[s.call_oi[j] - p.call_oi[j], ks[j], 'C', s.call_oi[j]],
+                                                 [s.put_oi[j] - p.put_oi[j], ks[j], 'P', s.put_oi[j]]]);
+                    const grow = ch.filter(c => c[0] > 0).sort((a, b) => b[0] - a[0]).slice(0, top);
+                    const shrink = ch.filter(c => c[0] < 0).sort((a, b) => a[0] - b[0]).slice(0, 2);
+                    lines.push({ cls: 'grow', text: 'Growing: ' + (grow.length
+                        ? grow.map(([d, k, sd, now]) => `${k}${sd} ${signed(d)} (now ${fmtOI(now)})`).join(', ') : 'no new positions in size') });
+                    lines.push({ cls: 'shrink', text: 'Shrinking: ' + (shrink.length
+                        ? shrink.map(([d, k, sd]) => `${k}${sd} ${fmtOI(d)}`).join(', ') : 'nothing closed in size') });
+                }
+                for (const [side, name, onSide] of [['below', 'Biggest gamma below spot', j => ks[j] < spot],
+                                                    ['above', 'Biggest gamma above spot', j => ks[j] > spot]]) {
+                    const js = idx.filter(onSide);
+                    if (!js.length) continue;
+                    const j = js.reduce((a, b) => (Math.abs(s.gex[b]) > Math.abs(s.gex[a]) ? b : a));
+                    if (!lead[side] || lead[side].k !== ks[j]) lead[side] = { k: ks[j], since: s.day };
+                    const age = !i ? 'first recorded' : lead[side].since === s.day ? 'new today' : `there since ${kdDay(lead[side].since)}`;
+                    lines.push({ cls: 'level', text: `${name}: ${ks[j]} ${kdM(s.gex[j])} (${age})` });
+                }
+                lines.push({ text: s.total_gex < 0 ? 'Dealers short gamma in this expiration: their hedging adds to moves'
+                                                   : 'Dealers long gamma in this expiration: their hedging damps moves' });
+                out.push({ day: s.day, lines });
+            });
+            return out.reverse();
+        }
+
         function renderKeyDate(i, kd) {
             const $ = id => document.getElementById(`kd-${id}-${i}`);
             if (!$('title')) return;
             const clear = msg => {
                 $('gex').textContent = $('oi').textContent = '—';
                 $('changes').textContent = msg || '';
+                $('notes').innerHTML = '';
                 if (kdCharts[i]) { kdCharts[i].destroy(); kdCharts[i] = null; }
             };
             if (!kd) { $('title').textContent = '—'; $('sub').textContent = 'no red day in the calendar'; clear(); return; }
@@ -2414,11 +2645,23 @@
             chart.data.datasets[1].label = base ? `${base.day.slice(5)} close` : '';
             chart._spotPrice = _lastGexData.SPX?.spot || now.spot;
             chart.update('none');
+
+            const live = d => d === todayET() && !marketClosed();
+            // the server's notes (priced move, who traded, magnets, what happened next); the
+            // page's own simpler ones if the server is older
+            if (kd.event?.text) $('sub').textContent += ` · ${kd.event.text}`;
+            const score = kd.scorecard ? `<div class="kd-score"><b>Scorecard, this expiration:</b> ${kd.scorecard}</div>` : '';
+            $('notes').innerHTML = score + (kd.notes || kdNotes(kd)).map((n, j) =>
+                `<div class="kd-note${j === 0 ? ' latest' : ''}"><b>${kdDay(n.day)}${live(n.day) ? ' · today so far' : ''}</b>`
+                + n.lines.map(l => `<div class="${l.cls || ''}">${l.text}</div>`).join('') + '</div>').join('');
         }
 
         function renderKeyDates() {
             const list = _keyDates?.next || [];
             for (let i = 0; i < 2; i++) renderKeyDate(i, list[i]);
+            const all = document.getElementById('kd-score-all');
+            if (all) all.textContent = _keyDates?.scorecard_all
+                ? `all saved red-day notes (${_keyDates.notes_saved}): ${_keyDates.scorecard_all}` : '';
         }
 
         async function fetchKeyDates() {
@@ -2472,7 +2715,7 @@
                 date.style.fontWeight = tags ? 'bold' : '';
             }
             if (pin) {
-                pin.querySelector('.pin-name').textContent = odte ? 'Pin' : 'Pin (long-dated)';
+                pin.querySelector('.pin-name').textContent = odte ? 'Pin' : 'Pin (long term)';
                 pin.title = odte ? 'Strike with the largest 0DTE GEX'
                     : 'Strike with the largest GEX across longer-dated expiries. A multi-day reference, not a same-day target: the close moved away from it 60% of the time in the backtest.';
             }
@@ -2524,6 +2767,7 @@
                     (data.multi?.strikes || []).forEach((k, i) => all.set(Number(k), (all.get(Number(k)) || 0) + data.multi.net_gex[i]));
                     priceCharts.SPX.zones.setLive({ all, odte });
                 }
+                updateMedalLabels();
             }
 
             renderHorizon(symbol);
@@ -2676,6 +2920,7 @@
                 if (TRAIL_ON_PRICE.has(symbol)) {
                     priceCharts[symbol].trail = addTrailSeries(chart);
                     setTrailData(priceCharts[symbol].trail, symbol);
+                    applyLinesMode();
                 }
                 if (symbol === 'SPX') {
                     // ES volume pane under the candles: dominant side on top, smaller side at the bottom
@@ -2691,8 +2936,11 @@
                     try { chart.panes()[1].setHeight(110); } catch (_) {}
                     fetchEsVolume();
                     priceCharts.SPX.zones = new GammaZones(() => (selectedTF.SPX || 1) * 60);
+                    priceCharts.SPX.zones.setWallStyle(_wallStyle);
                     candleSeries.attachPrimitive(priceCharts.SPX.zones);
                     if (_heatmap) priceCharts.SPX.zones.setData(_heatmap, _zoneMode);
+                    _medalLines = [];                  // a new candle series: the old labels went with the old one
+                    updateMedalLabels();
                     fetchGammaLevels();
                 }
             }
@@ -2719,7 +2967,7 @@
             flip_level:   { color: '#ffff00', title: 'FLIP',     lineStyle: LWC.LineStyle.Dashed,      lineWidth: 1 },
             put_wall:     { color: '#ff4444', title: 'PUT WALL', lineStyle: LWC.LineStyle.Dotted,      lineWidth: 1 },
             call_wall:    { color: '#00ff88', title: 'CALL WALL',lineStyle: LWC.LineStyle.Dotted,      lineWidth: 1 },
-            pin:          { color: '#cc44ff', title: 'PIN LT',   lineStyle: LWC.LineStyle.LargeDashed, lineWidth: 1 },   // long-dated (ex-0DTE)
+            pin:          { color: '#cc44ff', title: 'PIN LONG TERM', lineStyle: LWC.LineStyle.LargeDashed, lineWidth: 1 },   // every expiry but today's
             pin_enhanced: { color: '#00e5ff', title: 'TRUE PIN', lineStyle: LWC.LineStyle.Solid,       lineWidth: 2 },
         };
 
@@ -2757,8 +3005,8 @@
                 });
             }
 
-            if (TRAIL_ON_PRICE.has(symbol)) {
-                // trailing lines instead: just clear any flat lines drawn earlier
+            if (TRAIL_ON_PRICE.has(symbol) || _linesMode === 'off') {
+                // trailing lines instead (or lines switched off): clear any flat lines drawn earlier
                 const e = priceCharts[symbol];
                 (_gexPriceLines[symbol] || []).forEach(l => { try { e?.candleSeries.removePriceLine(l); } catch (_) {} });
                 _gexPriceLines[symbol] = [];

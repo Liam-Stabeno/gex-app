@@ -102,6 +102,18 @@ def _alert(message: str):
         pass
 
 
+def _keep_awake() -> bool:
+    """Ask Windows not to sleep from idleness while the dashboard runs (this thread holds
+    the request; it ends with the process). The evening history pull takes ~2 h: on
+    2026-10-20 the PC slept at 18:12 ET in the middle of it. A manual sleep, closing the
+    lid or the power button still work."""
+    if sys.platform != 'win32':
+        return False
+    import ctypes
+    ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+    return bool(ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED))
+
+
 if __name__ == '__main__':
     import single_instance
     if not single_instance.acquire():
@@ -120,6 +132,7 @@ if __name__ == '__main__':
     except Exception as e:   # pywin32 missing: just no exit reason in the log
         print(f"[EXIT] console event logging unavailable: {e}")
     print("Starting GEX Dashboard..." + (" (console hidden; output in logs/)" if console_hidden else ""))
+    print("Keeping the PC awake while the dashboard runs" if _keep_awake() else "[warn] couldn't ask Windows to stay awake")
 
     # Sync price history from Schwab REST API
     print("\nSyncing price history...")

@@ -130,3 +130,52 @@ def test_failed_request_is_retried_once_at_the_end(monkeypatch, tmp_path):
     s = oh.pull([("A", "2026-12-18", 7800.0, "call"), ("B", "2026-12-18", 7800.0, "put")], 0, 1, rate=0,
                 data_dir=str(tmp_path), on_saved=done.extend)
     assert s["errors"] == 0 and sorted(done) == ["A", "B"] and s["with_bars"] == 2
+
+
+def test_timeouts_are_retried_not_fatal(monkeypatch, tmp_path):
+    """2026-10-15 / 10-26: one read timeout ended the whole night's pull."""
+    import requests
+    calls = {"A": 0, "B": 0}
+    class R:
+        status_code, ok, text = 200, True, ""
+        def json(self): return {"candles": [{"datetime": 1_791_900_000_000, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]}
+    def get(url, **kw):
+        sym = kw["params"]["symbol"]
+        calls[sym] += 1
+        if sym == "A" or calls[sym] == 1:          # A always times out; B once, then answers
+            raise requests.exceptions.ReadTimeout("Read timed out. (read timeout=5)")
+        return R()
+    monkeypatch.setattr(oh.requests, "get", get)
+    monkeypatch.setattr(oh, "get_access_token", lambda force=False: "t")
+    monkeypatch.setattr(oh.time, "sleep", lambda s: None)
+    done = []
+    s = oh.pull([("A", "2026-12-18", 7800.0, "call"), ("B", "2026-12-18", 7800.0, "put")], 0, 1, rate=0,
+                data_dir=str(tmp_path), on_saved=done.extend)
+    assert done == ["B"] and s["errors"] == 1, "B saved after its retry; A counted failed, the pull went on"
+    assert calls["A"] == 6, "3 tries, then 3 more when pull() retries the failed ones"
+
+
+def test_listing_survives_a_timeout(monkeypatch):
+    import requests
+    seen = []
+    class R:
+        def __init__(self, data, ok=True): self.data, self.ok = data, ok
+        def json(self): return self.data
+    def get(url, **kw):
+        if url.endswith("expirationchain"):
+            return R({"expirationList": [{"expirationDate": "2026-11-20", "expirationType": "S"},
+                                         {"expirationDate": "2026-12-18", "expirationType": "S"}]})
+        d = kw["params"]["fromDate"]
+        seen.append(d)
+        if d == "2026-11-20":
+            raise requests.exceptions.ConnectionError("dropped")           # every try
+        if seen.count(d) == 1:
+            raise requests.exceptions.ReadTimeout("slow")                  # once, then fine
+        return R({"underlyingPrice": 7800.0, "callExpDateMap": {"2026-12-18:53": {
+            "7800.0": [{"symbol": "D7800", "totalVolume": 3}]}}, "putExpDateMap": {}})
+    monkeypatch.setattr(oh.requests, "get", get)
+    monkeypatch.setattr(oh, "get_access_token", lambda force=False: "t")
+    monkeypatch.setattr(oh.time, "sleep", lambda s: None)
+    c, spot = oh.all_listed_contracts(10.0, pause=0)
+    assert [x[0] for x in c] == ["D7800"] and spot == 7800.0
+    assert seen.count("2026-11-20") == 3 and seen.count("2026-12-18") == 2

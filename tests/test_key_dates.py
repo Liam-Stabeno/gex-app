@@ -33,6 +33,9 @@ def cal(tmp_path, monkeypatch):
     p.write_text(CSV, encoding="utf-8")
     monkeypatch.setattr(kd, "_events", {"sig": None, "red": {}, "holidays": set()})
     monkeypatch.setattr(kd, "_snaps", {})
+    monkeypatch.setattr(kd, "_sides", {})
+    monkeypatch.setattr(kd, "_ohlc", {})
+    monkeypatch.setattr(kd, "_notes_saved", {"sig": None, "rows": []})
     return str(p)
 
 
@@ -89,7 +92,102 @@ def test_positioning_follows_one_expiry_session_by_session(cal, tmp_path):
 
 
 def test_summary(cal, tmp_path):
-    s = kd.summary(2, datetime(2026, 10, 26, 17, 0, tzinfo=ET), str(tmp_path), cal)
+    s = kd.summary(2, datetime(2026, 10, 26, 17, 0, tzinfo=ET), str(tmp_path), cal, notes_file=str(tmp_path / "notes.jsonl"))
     assert [n["date"] for n in s["next"]] == ["2026-10-28", "2026-10-30"]
     assert s["next"][0]["sessions_away"] == 2 and s["next"][0]["sessions"] == []
     assert "2026-12-31" in s["red"] and all(d >= "2026-10-26" for d in s["red"])
+
+
+def test_expiry_stats_and_atm():
+    cells = {7600.0: [0, 100, -50.0], 7650.0: [10, 40, -20.0], 7700.0: [80, 0, 90.0], 7750.0: [50, 0, 30.0]}
+    st = kd.expiry_stats(cells, 7690.0)
+    # max pain: puts 7600 x100, 7650 x40; calls 7650 x10, 7700 x80, 7750 x50 -> least paid out at 7650
+    assert st["max_pain"] == 7650.0
+    assert st["flip"] == 7700.0, "cumulative -50, -70, +20: turns positive at 7700"
+    assert st["top_oi"] == [7600.0, 7700.0, 7650.0], "7650 and 7750 tie at 50: lower strike first"
+    snap = _snap("2026-10-26T15:56:00-04:00", 7702.0, [[7700.0, 0, 0, 10, 0, 0, 14.0, 0, 9, 10, 9.5],
+                                                       [7700.0, 0, 1, 10, 0, 0, 15.0, 0, 7, 8, 7.5],
+                                                       [7705.0, 0, 0, 0, 0, 0, 13.0, 0, 6, 7, 6.5]], ["2026-10-28"])
+    t = kd._table(snap)
+    assert t["atm"]["2026-10-28"] == {"strike": 7700.0, "straddle": 17.0, "iv": 14.5}, "nearest strike with both sides"
+
+
+def test_trade_sides(tmp_path):
+    (tmp_path / "option_chain_SPX_2026-10-23.csv").write_text("\n".join([
+        "time,expiry,dte,strike,side,root,bid,ask,last,mark,volume,oi,iv,delta,gamma,theta,vega,spot",
+        "1,2026-10-28,5,7650.0,put,SPXW,9.0,10.0,9.5,9.5,0,0,0,0,0,0,0,0",
+        "2,2026-10-28,5,7650.0,put,SPXW,9.0,10.0,10.0,9.5,100,0,0,0,0,0,0,0",     # +100 at the ask
+        "3,2026-10-28,5,7650.0,put,SPXW,9.0,10.0,9.0,9.5,130,0,0,0,0,0,0,0",      # +30 at the bid
+        "4,2026-10-28,5,7650.0,put,SPXW,9.0,10.0,9.5,9.5,140,0,0,0,0,0,0,0",      # +10 between
+        "1,2026-11-20,25,7650.0,put,SPXW,9.0,10.0,9.5,9.5,0,0,0,0,0,0,0,0"]) + "\n", encoding="utf-8")
+    sides = kd.trade_sides("2026-10-23", str(tmp_path), {"2026-10-28"})
+    assert sides == {("2026-10-28", 7650.0, "p"): [100, 30, 10]}
+
+
+def test_level_result():
+    o = {"open": 7640.0, "high": 7702.0, "low": 7640.0, "close": 7677.0}
+    assert kd.level_result(7630.0, 7624.0, o)[0] == "broke", "opened above it"
+    assert kd.level_result(7600.0, 7624.0, o) == ("not reached", "low 7640")
+    assert kd.level_result(7690.0, 7624.0, o) == ("held", "rejected, high 7702")
+    assert kd.level_result(7650.0, 7660.0, {"open": 7655.0, "high": 7660.0, "low": 7645.0, "close": 7652.0})[0] == "held"
+    assert kd.level_result(7650.0, 7660.0, {"open": 7655.0, "high": 7660.0, "low": 7640.0, "close": 7645.0})[0] == "broke"
+
+
+def test_notes_scored_and_saved(cal, tmp_path, monkeypatch):
+    exps = ["2026-10-23", "2026-10-30"]
+
+    def day_file(day, spot, oi_put, mark):
+        snap = _snap(f"{day}T15:56:00-04:00", spot, [[7700.0, 1, 0, 50, 0, 0, 15.0, 0, mark - 0.5, mark + 0.5, mark],
+                                                     [7700.0, 1, 1, oi_put, 0, 0, 16.0, 0, mark - 0.5, mark + 0.5, mark],
+                                                     [7650.0, 1, 1, 300, 0, 0, 18.0, 0, 1, 2, 1.5]], exps)
+        (tmp_path / f"gex_full_SPX_{day}.jsonl").write_text(json.dumps(snap) + "\n", encoding="utf-8")
+    day_file("2026-10-21", 7710.0, 40, 20.0)
+    day_file("2026-10-22", 7705.0, 140, 22.0)
+    bars = {"2026-10-22": [(9, 30, 7712, 7715, 7700, 7704), (15, 59, 7704, 7706, 7703, 7705)],
+            "2026-10-23": [(9, 30, 7700, 7701, 7640, 7645), (15, 59, 7645, 7660, 7644, 7655)]}
+
+    def load_range(sym, a, b=None, interval="1m"):
+        if interval == "1d":
+            return []
+        out = []
+        for day, rows in bars.items():
+            for hh, mm, o, h, l, c in rows:
+                t = int(datetime.fromisoformat(f"{day}T{hh:02d}:{mm:02d}:00-04:00").timestamp() * 1000)
+                if a <= t < b:
+                    out.append({"datetime": t, "open": o, "high": h, "low": l, "close": c, "volume": 0})
+        return out
+    monkeypatch.setattr(kd, "load_range", load_range)
+    pos = kd.positioning("2026-10-30", str(tmp_path))
+    now = datetime(2026, 10, 23, 17, 0, tzinfo=ET)
+    notes, rows, card = kd.build_notes("2026-10-30", ["MONTH END"], pos, now, str(tmp_path), cal)
+    newest = [l["text"] for l in notes[0]["lines"]]
+    assert notes[0]["day"] == "2026-10-22" and newest[0].startswith("OI 490 (+100)"), newest[0]
+    assert any(t.startswith("Priced move to Fri 10/30: ±44 pts") for t in newest), newest
+    assert any(t.startswith("Growing: 7700P +100") for t in newest), newest
+    assert any(t.startswith("Biggest gamma below spot: 7650") for t in newest), newest
+    assert any(t.startswith("Magnets: max pain") for t in newest)
+    assert newest[-1].startswith("Next session (Fri 10/23): O 7700 H 7701 L 7640 C 7655"), newest[-1]
+    assert "7650 held" in newest[-1], "low 7640 under 7650, closed 7655 back above it"
+    assert rows[1]["outcome"]["below"] == "held" and card["neg"]["held"] == 1
+    saved = kd.save_red_day_notes(now, str(tmp_path), cal, str(tmp_path / "notes.jsonl"))
+    assert {(r["exp"], r["day"]) for r in saved} == {("2026-10-30", "2026-10-21"), ("2026-10-30", "2026-10-22")}
+    again = kd.save_notes([], str(tmp_path / "notes.jsonl"))
+    assert len(again) == 2, "kept on disk"
+    assert kd.tally(again)["neg"]["held"] == 1
+
+
+def test_event_history(cal, monkeypatch, tmp_path):
+    events = tmp_path / "ev.csv"
+    events.write_text("\n".join(["date,time_et,event,category,importance,source",
+                                 "2026-09-16,14:00,FOMC decision,fomc,high,fed",
+                                 "2026-10-28,14:00,FOMC decision,fomc,high,fed"]) + "\n", encoding="utf-8")
+
+    def load_range(sym, a, b=None, interval="1m"):
+        mk = lambda d, h, l, c: {"datetime": int(datetime.fromisoformat(f"{d}T00:00:00-04:00").timestamp() * 1000),
+                                 "open": c, "high": h, "low": l, "close": c, "volume": 0}
+        return [mk("2026-09-15", 6600, 6550, 6600), mk("2026-09-16", 6700, 6580, 6666)]
+    monkeypatch.setattr(kd, "load_range", load_range)
+    h = kd.event_history("fomc", "2026-10-26", str(events))
+    assert h == {"n": 1, "move_pct": 1.0, "range": 120}
+    info = kd.event_info("2026-10-28", ["FOMC"], "2026-10-26", str(events))
+    assert info["text"].startswith("FOMC decision at 14:00 ET") and "±1.00%" in info["text"]

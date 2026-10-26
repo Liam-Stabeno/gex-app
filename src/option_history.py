@@ -60,21 +60,39 @@ BAR_SIZES = {
 _errors = {'n': 0}      # non-OK answers in this process (pull() reports them)
 
 
+def _get(url: str, params: dict, tries: int = 3):
+    """GET a Schwab market-data URL with the current token. A timeout or dropped
+    connection is tried again after a short pause; None if every try failed.
+    (2026-10-15 and 10-26: one 5 s read timeout ended the night's whole pull.)"""
+    for i in range(tries):
+        try:
+            return requests.get(url, timeout=SCHWAB_TIMEOUT, params=params,
+                                headers={'Authorization': f'Bearer {get_access_token()}'})
+        except requests.RequestException as e:
+            if i == tries - 1:
+                print(f'[option_history] {url.rsplit("/", 1)[-1]} failed {tries}x: {type(e).__name__}', flush=True)
+                return None
+            time.sleep(2 * (i + 1))
+
+
 def all_listed_contracts(band_pct: float = 10.0, traded_only: bool = False, pause: float = 0.7):
     """([(symbol, expiry, strike, side, expiration type)], spot) for every listed SPX
     expiration (one chain request each: a single all-dates chain is too large for
     Schwab) within band_pct of spot. traded_only: today's totalVolume > 0."""
-    h = {'Authorization': f'Bearer {get_access_token()}'}
-    exps = requests.get('https://api.schwabapi.com/marketdata/v1/expirationchain', timeout=SCHWAB_TIMEOUT,
-                        headers=h, params={'symbol': '$SPX'}).json().get('expirationList', [])
+    r = _get('https://api.schwabapi.com/marketdata/v1/expirationchain', {'symbol': '$SPX'})
+    if r is None or not r.ok:
+        raise RuntimeError('SPX expiration list unavailable')
+    exps = r.json().get('expirationList', [])
     out, spot = [], None
     for e in exps:
         d = e['expirationDate']
-        r = requests.get('https://api.schwabapi.com/marketdata/v1/chains', timeout=SCHWAB_TIMEOUT,
-                         headers={'Authorization': f'Bearer {get_access_token()}'},
-                         params={'symbol': '$SPX', 'contractType': 'ALL', 'fromDate': d, 'toDate': d,
-                                 'range': 'ALL', 'strikeCount': 400})
+        r = _get('https://api.schwabapi.com/marketdata/v1/chains',
+                 {'symbol': '$SPX', 'contractType': 'ALL', 'fromDate': d, 'toDate': d,
+                  'range': 'ALL', 'strikeCount': 400})
         time.sleep(pause)
+        if r is None:                     # the network failed it three times: say so, go on
+            print(f'[option_history] {d}: chain unavailable, expiration skipped', flush=True)
+            continue
         if not r.ok:                      # e.g. an expiration that ended today
             continue
         ch = r.json()
@@ -90,9 +108,20 @@ def fetch_bars(symbol: str, start_ms: int, end_ms: int, token: str | None = None
     freq, _ = BAR_SIZES[size]
     for attempt in range(3):
         token = get_access_token()          # per request: picks up a refresh at once
-        r = requests.get('https://api.schwabapi.com/marketdata/v1/pricehistory', timeout=SCHWAB_TIMEOUT,
-                         headers={'Authorization': f'Bearer {token}'},
-                         params={'symbol': symbol, **freq, 'startDate': int(start_ms), 'endDate': int(end_ms)})
+        try:
+            r = requests.get('https://api.schwabapi.com/marketdata/v1/pricehistory', timeout=SCHWAB_TIMEOUT,
+                             headers={'Authorization': f'Bearer {token}'},
+                             params={'symbol': symbol, **freq, 'startDate': int(start_ms), 'endDate': int(end_ms)})
+        except requests.RequestException as e:
+            # a timeout or dropped connection: try again shortly, then count it failed so
+            # pull() retries it at the end (one 5 s read timeout used to end the whole pull)
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+            _errors['n'] += 1
+            if _errors['n'] <= 3:
+                print(f'[option_history] {size} {symbol}: {type(e).__name__}', flush=True)
+            return None
         if r.status_code == 401 and attempt == 0:
             get_access_token(force=True)    # superseded / expired token: get a new one, retry
             continue
@@ -106,7 +135,11 @@ def fetch_bars(symbol: str, start_ms: int, end_ms: int, token: str | None = None
             if _errors['n'] <= 3:
                 print(f'[option_history] {size} {symbol}: HTTP {r.status_code} {r.text[:160]}', flush=True)
             return None
-        return r.json().get('candles', []) or []
+        try:
+            return r.json().get('candles', []) or []
+        except ValueError:                  # a cut-off response
+            _errors['n'] += 1
+            return None
     _errors['n'] += 1                       # still rate limited after 3 tries
     return None
 
