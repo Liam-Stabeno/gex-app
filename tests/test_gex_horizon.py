@@ -50,3 +50,22 @@ def test_heatmap_week_column_counts_expirations_through_friday(tmp_path):
     assert h["week"] == [[60, 0]], "today + Wednesday + Friday, not next Monday"
     levels = gs.current_gamma_levels(7700.0, "week", data_dir=tmp_path, day=date(2026, 10, 26))
     assert levels is not None
+
+
+def test_heatmap_red_day_columns(tmp_path, monkeypatch):
+    import key_dates
+    monkeypatch.setattr(key_dates, "next_red_days", lambda n=2, now=None, path=None:
+                        [("2026-10-28", ["FOMC"]), ("2026-10-30", ["MONTH END"])][:n])
+    snaps = [{"ts": f"2026-10-26T10:0{m}:00-04:00", "spot": 7700.0,
+              "exp": ["2026-10-26", "2026-10-28", "2026-10-30"],
+              "rows": [[7700.0, 0, 1, 1, 10.0], [7700.0, 1, 1, 1, 20.0 + m], [7710.0, 2, 1, 0, 5.0]]}
+             for m in range(2)]
+    (tmp_path / "gex_grid_SPX_2026-10-26.jsonl").write_text("\n".join(json.dumps(s) for s in snaps) + "\n", encoding="utf-8")
+    h = gs.load_heatmap("SPX", day=date(2026, 10, 26), data_dir=tmp_path, red=2)
+    assert [r["key"] for r in h["red"]] == ["x:2026-10-28", "x:2026-10-30"]
+    assert h["strikes"] == [7700.0, 7710.0]
+    assert h["x:2026-10-28"] == [[20, 0], [21, 0]], "that expiration only, minute by minute"
+    assert h["x:2026-10-30"] == [[0, 5], [0, 5]]
+    assert "x:2026-10-28" not in gs.load_heatmap("SPX", day=date(2026, 10, 26), data_dir=tmp_path)
+    assert gs.current_gamma_levels(7700.0, "x:2026-10-28", data_dir=tmp_path, day=date(2026, 10, 26)) is not None
+    assert gs.current_gamma_levels(7700.0, "x:2026-11-20", data_dir=tmp_path, day=date(2026, 10, 26)) is None

@@ -137,15 +137,23 @@ def week_end(day_iso: str) -> str:
     return (d + timedelta(days=max(0, 4 - d.weekday()))).isoformat()
 
 
-def _hm_parse(line: bytes, day_iso: str):
+def _hm_parse(line: bytes, day_iso: str, exp: str | None = None):
     """One grid snapshot line -> (epoch, spot, {strike: [all, odte, week]}), summed over
-    expiries; week = expirations through that week's Friday."""
+    expiries; week = expirations through that week's Friday. With `exp`, that one
+    expiration only: (epoch, spot, {strike: gex})."""
     import json
     try:
         s = json.loads(line)
     except ValueError:
         return None
     exps = s.get('exp', [])
+    if exp is not None:
+        ei = exps.index(exp) if exp in exps else -1
+        one = {}
+        for k, exp_i, _c, _p, gex in s.get('rows', []):
+            if exp_i == ei:
+                one[k] = one.get(k, 0.0) + gex
+        return int(datetime.fromisoformat(s['ts']).timestamp()), s.get('spot'), one
     today_i = exps.index(day_iso) if day_iso in exps else -1
     fri = week_end(day_iso)
     week_i = {i for i, e in enumerate(exps) if e <= fri}
@@ -160,20 +168,22 @@ def _hm_parse(line: bytes, day_iso: str):
     return int(datetime.fromisoformat(s['ts']).timestamp()), s.get('spot'), by_k
 
 
-def _hm_snapshots(path: str, day_iso: str) -> list:
-    """Parsed snapshots for a day file. Today's plain file is cached and read
-    incrementally (only lines appended since the last call): with a snapshot every
-    minute it grows to ~15 MB, so re-reading it every 30-60 s would cost real CPU.
-    A gzipped finished day is parsed in full; load_heatmap caches its result."""
+def _hm_snapshots(path: str, day_iso: str, exp: str | None = None) -> list:
+    """Parsed snapshots for a day file (with `exp`: that one expiration). Today's plain
+    file is cached and read incrementally (only lines appended since the last call):
+    with a snapshot every minute it grows to ~15 MB, so re-reading it every 30-60 s
+    would cost real CPU. A gzipped finished day is parsed in full; load_heatmap caches
+    its result."""
     import gzip
     if path.endswith('.gz'):
         with gzip.open(path, 'rb') as f:
-            return [x for x in (_hm_parse(l, day_iso) for l in f if l.strip()) if x]
+            return [x for x in (_hm_parse(l, day_iso, exp) for l in f if l.strip()) if x]
     st = os.stat(path)
+    key = path if exp is None else (path, exp)
     with _hm_lock:
-        c = _hm_cache.get(path)
+        c = _hm_cache.get(key)
         if not c or st.st_size < c['offset']:            # new or rewritten: start over
-            c = _hm_cache[path] = {'offset': 0, 'tail': b'', 'snaps': []}
+            c = _hm_cache[key] = {'offset': 0, 'tail': b'', 'snaps': []}
         if st.st_size > c['offset']:
             with open(path, 'rb') as f:
                 f.seek(c['offset'])
@@ -181,32 +191,32 @@ def _hm_snapshots(path: str, day_iso: str) -> list:
                 c['offset'] = f.tell()
             lines = chunk.split(b'\n')
             c['tail'] = lines.pop()                       # last line, possibly still being written
-            c['snaps'].extend(x for x in (_hm_parse(l, day_iso) for l in lines if l.strip()) if x)
+            c['snaps'].extend(x for x in (_hm_parse(l, day_iso, exp) for l in lines if l.strip()) if x)
             if c['tail'].strip():                         # complete JSON without a final newline:
-                x = _hm_parse(c['tail'], day_iso)         # a half-written line can't parse
+                x = _hm_parse(c['tail'], day_iso, exp)    # a half-written line can't parse
                 if x:
                     c['snaps'].append(x)
                     c['tail'] = b''
         return c['snaps']
 
 
-def _hm_rebuilt(path: str, day_iso: str) -> list:
+def _hm_rebuilt(path: str, day_iso: str, exp: str | None = None) -> list:
     """Snapshots tools/rebuild_gex_grid.py wrote for a day, parsed once per version."""
     st = os.stat(path)
     sig = (st.st_size, st.st_mtime)
     with _hm_lock:
-        hit = _hm_rebuilt_cache.get(path)
+        hit = _hm_rebuilt_cache.get((path, exp))
         if hit and hit[0] == sig:
             return hit[1]
     with open_text(path) as f:
-        snaps = [x for x in (_hm_parse(l, day_iso) for l in f if l.strip()) if x]
+        snaps = [x for x in (_hm_parse(l, day_iso, exp) for l in f if l.strip()) if x]
     with _hm_lock:
-        _hm_rebuilt_cache[path] = (sig, snaps)
+        _hm_rebuilt_cache[(path, exp)] = (sig, snaps)
     return snaps
 
 
 def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
-                 data_dir: str = _DATA_DIR, rebuilt: bool = False) -> dict:
+                 data_dir: str = _DATA_DIR, rebuilt: bool = False, red: int = 0) -> dict:
     """Net GEX per strike over time, from gex_grid_<sym>_<date>.jsonl (one snapshot per
     chain refresh, about every minute; every 5 min before 2026-10-07).
 
@@ -219,6 +229,9 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     wasn't running (gex_grid_rebuilt_<sym>_<date>.jsonl, before the first recorded
     snapshot); 'rebuilt_until' is the last rebuilt column's time. The chart asks for
     them; the stats keep to recorded data.
+
+    red=n adds the next n red days' expirations (key_dates: opex, month end, FOMC, CPI,
+    jobs) as 'x:<date>' columns, each that one expiration's GEX, and lists them in 'red'.
     """
     day = day or datetime.now(ET).date()
     path = day_file(f'gex_grid_{sym}_{day.isoformat()}.jsonl', data_dir)
@@ -226,13 +239,19 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     if not path:
         return empty
     rb_path = day_file(f'gex_grid_rebuilt_{sym}_{day.isoformat()}.jsonl', data_dir) if rebuilt else None
+    red_list = []
+    if red:
+        import key_dates
+        red_list = [{'date': d, 'tags': tags, 'key': f'x:{d}'} for d, tags in key_dates.next_red_days(red)]
+    exps = tuple(r['date'] for r in red_list)
     done_key = None
     if path.endswith('.gz'):
         st = os.stat(path)
         rb_st = os.stat(rb_path) if rb_path else None
-        done_key = (path, st.st_size, st.st_mtime, band, rb_st and (rb_path, rb_st.st_size, rb_st.st_mtime))
+        done_key = (path, st.st_size, st.st_mtime, band, rb_st and (rb_path, rb_st.st_size, rb_st.st_mtime), exps)
         with _hm_lock:
-            _hm_cache.pop(path[:-3], None)               # the day's plain file was archived
+            for key in [k for k in _hm_cache if (k if isinstance(k, str) else k[0]) == path[:-3]]:
+                _hm_cache.pop(key)                       # the day's plain file was archived
             if done_key in _hm_done:
                 return _hm_done[done_key]
     # Session only: until 2026-10-08 the grid also ran 16:00-16:15, when the expired
@@ -254,6 +273,12 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
         out['all'].append([round(by_k[k][0]) if k in by_k else 0 for k in strikes])
         out['odte'].append([round(by_k[k][1]) if k in by_k else 0 for k in strikes])
         out['week'].append([round(by_k[k][2]) if k in by_k else 0 for k in strikes])
+    for e in exps:                                        # one expiration per red day
+        one = {t: g for t, _, g in _hm_snapshots(path, day.isoformat(), e)}
+        if early:
+            one.update({t: g for t, _, g in _hm_rebuilt(rb_path, day.isoformat(), e)})
+        out[f'x:{e}'] = [[round(one.get(t, {}).get(k, 0)) for k in strikes] for t in out['times']]
+    out['red'] = red_list
     if done_key:
         with _hm_lock:
             _hm_done[done_key] = out
@@ -371,8 +396,9 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
                          data_dir: str = _DATA_DIR, day=None) -> dict | None:
     """gamma_levels() on the latest 5-min snapshot of a day's heatmap (default today).
     For a past day, spot defaults to that day's last snapshot."""
-    h = load_heatmap(sym, day=day, data_dir=data_dir)
-    if not h['times'] or mode not in ('all', 'odte', 'week'):
+    # 'x:<date>': one red day's expiration (the next two are offered)
+    h = load_heatmap(sym, day=day, data_dir=data_dir, red=2 if mode.startswith('x:') else 0)
+    if not h['times'] or not (mode in ('all', 'odte', 'week') or (mode.startswith('x:') and mode in h)):
         return None
     if spot is None:
         spot = next((s for s in reversed(h['spots']) if s), None)

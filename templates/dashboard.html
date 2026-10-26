@@ -119,7 +119,7 @@
         .symbol      { font-size: 1.1rem; font-weight: bold; color: #fff; letter-spacing: 2px; }
         .spot        { font-size: 0.95rem; color: #00d4ff; }
 
-        .regime { font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; font-weight: bold; letter-spacing: 1px; }
+        .regime { display: inline-block; font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; font-weight: bold; letter-spacing: 1px; }
         .regime.POSITIVE { background: #0d2b1a; color: #00ff88; border: 1px solid #00ff88; }
         .regime.NEGATIVE { background: #2b0d0d; color: #ff4444; border: 1px solid #ff4444; }
         .regime.CLOSED   { background: #1a1a1a; color: #888;    border: 1px solid #555; }
@@ -176,9 +176,28 @@
         .price-panel.replaying { border-color: #ffb300; }
         .price-panel.replaying .chart-title { color: #ffb300; }
         .zone-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
+        .red-day { color: #ff4d5e !important; font-weight: bold; }
+        .tf-btn.red-zone { border-color: #ff4d5e66; color: #ff8a95; }
+        .tf-btn.red-zone.active { border-color: #ff4d5e; color: #ff4d5e; font-weight: bold; }
+        .horizon-track { position: relative; flex: 1; display: flex; align-items: center; }
+        .horizon-track input { width: 100%; }
+        .horizon-marks { position: absolute; left: 0; right: 0; bottom: -7px; height: 6px; pointer-events: none; }
+        .horizon-marks i { position: absolute; width: 3px; height: 6px; margin-left: -1px; background: #ff4d5e;
+                           border-radius: 1px; pointer-events: auto; cursor: help; }
+        .kd-grid { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+        .kd-panel { display: flex; flex-direction: column; height: 640px; min-height: 360px; }
+        .kd-panel .gex-canvas-wrap { flex: 1; min-height: 0; }
+        .kd-sub { font-size: 0.62rem; color: #8a8a9c; margin-top: 2px; }
+        .kd-changes { font-size: 0.65rem; color: #b0b0c0; margin: 4px 0 6px; line-height: 1.5; }
+        .kd-compare { margin-left: 12px; letter-spacing: 0; color: #8a8a9c; }
+        .kd-compare .tf-btn { margin-left: 4px; padding: 0 6px; font-size: 0.6rem; }
+        .gex-mode-btns { display: inline-flex; gap: 4px; margin-left: 8px; vertical-align: 1px; }
+        .gex-mode-btns .tf-btn { padding: 0 6px; font-size: 0.6rem; }
         .horizon-row { display: flex; align-items: center; gap: 6px; font-size: 0.6rem; color: #9a9aac; margin: 2px 0 4px; }
         .horizon-row input { flex: 1; accent-color: #00d4ff; cursor: pointer; }
-        .horizon-label { color: #00d4ff; min-width: 190px; text-align: right; }
+        /* fixed width: a longer label (red-day tags) must not resize the slider under its ticks */
+        .horizon-label { color: #00d4ff; flex: 0 0 340px; text-align: right; white-space: nowrap;
+                         overflow: hidden; text-overflow: ellipsis; }
         .zone-regime { padding: 1px 6px; border-radius: 3px; }
         .zone-regime.pos { color: #b8f5d4; background: #0d2b1a; border: 1px solid #00ff8866; }
         .zone-regime.neg { color: #ffc4c4; background: #2b0d0d; border: 1px solid #ff444488; }
@@ -476,6 +495,7 @@
             font-size: 0.75rem;
             letter-spacing: 2px;
         }
+        #clock-btn { font-size: 0.6rem; padding: 1px 7px; }
 
         #odte-session-phase {
             font-size: 0.65rem;
@@ -510,6 +530,8 @@
         <span id="odte-countdown-timer">--:--:--</span>
         <span id="odte-session-phase" class="phase-closed">CLOSED</span>
         <span id="odte-session-clock">--:--:--</span>
+        <button class="tf-btn" id="clock-btn" onclick="setClock(_clock === 'et' ? 'pt' : 'et')"
+                title="Show times in Eastern (24-hour) or Pacific (12-hour). Charts, flow, labels.">ET 24h</button>
     </div>
 
     <div class="section-label">GAMMA EXPOSURE</div>
@@ -602,23 +624,65 @@
         const _truePinTrail  = {};
         let   modalLWChart = null;
 
-        // ── Timezone helpers — uses browser local time ──────────────────────
+        // ── Clock: Eastern 24-hour (default) or Pacific 12-hour ──────────────
+        // Toggled next to the session clock; every time shown goes through these (chart
+        // axes and crosshairs, flow, labels). Market logic (session dates, 9:30-16:00)
+        // stays in ET.
+        const CLOCKS = { et: { tz: 'America/New_York',    hour12: false, tag: 'ET', name: 'ET 24h' },
+                         pt: { tz: 'America/Los_Angeles', hour12: true,  tag: 'PT', name: 'PT 12h' } };
+        let _clock = 'et';
+        try { _clock = localStorage.getItem('clock') === 'pt' ? 'pt' : 'et'; } catch (_) {}
+        const clockTag = () => CLOCKS[_clock].tag;
 
-        function fmtET24(utcSecs) {
-            return new Date(utcSecs * 1000).toLocaleTimeString('en-US', {
-                timeZone: 'America/New_York',
-                hour12: false,
-                hour: '2-digit',
-                minute: '2-digit',
+        // a moment (epoch ms or Date) on the chosen clock: '15:56' / '12:56 PM' (+ seconds)
+        function fmtClock(when, seconds = false) {
+            const c = CLOCKS[_clock];
+            return new Date(when).toLocaleTimeString('en-US', {
+                timeZone: c.tz, hour12: c.hour12, hour: c.hour12 ? 'numeric' : '2-digit', minute: '2-digit',
+                ...(seconds ? { second: '2-digit' } : {}),
             });
         }
 
+        // an Eastern wall-clock 'HH:MM[:SS]' (as the server sends it) on the chosen clock, with
+        // its zone. Pacific is 3 hours behind all year (both change for DST together).
+        function etToClock(hms) {
+            if (!hms) return '';
+            if (_clock === 'et') return `${hms} ET`;
+            const [h, m, s] = hms.split(':').map(Number);
+            return new Date(Date.UTC(2000, 0, 1, (h + 21) % 24, m, s || 0)).toLocaleTimeString('en-US', {
+                timeZone: 'UTC', hour12: true, hour: 'numeric', minute: '2-digit',
+                ...(hms.split(':').length > 2 ? { second: '2-digit' } : {}),
+            }) + ' PT';
+        }
+
+        // chart axis / crosshair formatters (names kept from when they were ET-only)
+        function fmtET24(utcSecs) { return fmtClock(utcSecs * 1000); }
         function fmtETDate(utcSecs) {
             return new Date(utcSecs * 1000).toLocaleDateString('en-US', {
-                timeZone: 'America/New_York',
-                month: 'short',
-                day: 'numeric',
+                timeZone: CLOCKS[_clock].tz, month: 'short', day: 'numeric',
             });
+        }
+
+        function setClock(c) {
+            _clock = c;
+            try { localStorage.setItem('clock', c); } catch (_) {}
+            const btn = document.getElementById('clock-btn');
+            if (btn) btn.textContent = CLOCKS[c].name;
+            // LW charts keep their axis labels: hand them the formatters again so they redraw
+            const tick = (t, type) => (type <= 2 ? fmtETDate(t) : fmtET24(t));
+            [...Object.values(priceCharts).map(p => p?.chart),
+             typeof deltaChart !== 'undefined' ? deltaChart : null,
+             typeof deltaChart0dte !== 'undefined' ? deltaChart0dte : null, modalLWChart]
+                .filter(Boolean)
+                .forEach(ch => { try { ch.applyOptions({ localization: { timeFormatter: fmtET24 }, timeScale: { tickMarkFormatter: tick } }); } catch (_) {} });
+            document.querySelectorAll('.flow-row').forEach(r => {
+                const ts = r.querySelector('.flow-ts');
+                if (ts && r.dataset.alertTime) ts.textContent = fmtClock(r.dataset.alertTime * 1000, true);
+            });
+            if (typeof tickCountdown === 'function') tickCountdown();
+            if (typeof renderKeyDates === 'function') renderKeyDates();
+            const lu = document.getElementById('last-update');
+            if (lu && lu._at) lu.textContent = `GEX updated: ${fmtClock(lu._at, true)} ${clockTag()}`;
         }
 
         // ── Formatters ──────────────────────────────────────────────────────
@@ -734,7 +798,9 @@
                     <div style="display:flex;align-items:center;gap:6px">
                         <span class="gex-drag-handle" title="Drag to move">⠿</span>
                         <div>
-                            <div class="chart-title">GEX · ${label}<span id="odte-date-${id}" style="margin-left:6px;color:#9a9aac;font-size:0.6rem;letter-spacing:1px;"></span></div>
+                            <div class="chart-title">GEX · <span id="gex-label-${id}">${label}</span><span id="odte-date-${id}" style="margin-left:6px;color:#9a9aac;font-size:0.6rem;letter-spacing:1px;"></span>${slot === 'multi' ? `<span class="gex-mode-btns" id="gex-mode-${symbol}">
+                                <button class="tf-btn" data-gexmode="all" title="Every expiration except today's (next 30 days)">All</button>
+                                <button class="tf-btn" data-gexmode="odte" title="Today's expiration only (live, every ~2 s)">0DTE</button></span>` : ''}</div>
                             <div class="symbol">${symbol}</div>
                             <div class="spot" id="spot-${id}">Loading...</div>
                         </div>
@@ -742,7 +808,7 @@
                     <div style="text-align:right">
                         <div class="regime" id="regime-${id}">—</div>
                         <div class="total-gex">GEX: <span id="gex-${id}">—</span></div>
-                        ${slot === 'zero' ? `
+                        ${slot === 'multi' ? `
                         <div class="total-gex" title="Typical distance from now to the 16:00 close on past days in the same GEX regime (median, and the 80th percentile). From saved history; see tools/pin_backtest.py.">Move to close: <span id="em-${symbol}">—</span></div>
                         <div class="total-gex" title="EXPERIMENTAL. Dealer hedge flow from charm alone (time decay of their option delta), assuming dealers long calls / short puts. Backtest: its sign matched the move into the close on 71-76% of days at 13:00-15:00 (~22 days, 2026-06 to 10). 'live' = how often its 13:00/14:00/15:00 sign matched the move into the close on recorded days (from 2026-10-07, daily scorecard); treat it as unproven until ~20 live days. Hidden after 15:30: charm explodes as 0DTE expiry nears (billions per hour), which says nothing about direction.">Charm flow <span id="cf-rec-${symbol}" style="color:#8a8a9c">(experimental)</span>: <span id="cf-${symbol}">—</span></div>` : ''}
                     </div>
@@ -751,13 +817,16 @@
                     <div class="level-item">Flip: <span id="flip-${id}">—</span></div>
                     <div class="level-item">Put Wall: <span id="put-${id}">—</span></div>
                     <div class="level-item">Call Wall: <span id="call-${id}">—</span></div>
-                    <div class="level-item" title="${pinTip}">${pinLabel}: <span id="pin-${id}">—</span></div>
+                    <div class="level-item" id="pin-label-${id}" title="${pinTip}"><span class="pin-name">${pinLabel}</span>: <span id="pin-${id}">—</span></div>
                     <div class="level-item" style="color:#00e5ff">True Pin: <span id="pin-enhanced-${id}">—</span></div>
                     <div class="level-item" style="color:#888;font-size:0.75em">Strikes: <span id="strikes-${id}">—</span></div>
                 </div>
                 ${slot === 'horizon' ? `<div class="horizon-row" title="Which expirations count: today's 0DTE (live, every ~2 s) plus each later one up to the date picked (from the chain, every 60 s). Default: through this Friday. Levels here are this panel's own (not sticky).">
                     <span>0DTE</span>
-                    <input type="range" id="horizon-${id}" min="0" max="0" step="1" value="0">
+                    <div class="horizon-track">
+                        <input type="range" id="horizon-${id}" min="0" max="0" step="1" value="0">
+                        <div class="horizon-marks" id="horizon-marks-${id}"></div>
+                    </div>
                     <span>30 DAYS</span>
                     <span class="horizon-label" id="horizon-label-${id}">—</span>
                 </div>` : ''}
@@ -776,6 +845,11 @@
                 </div>
             `;
             div.addEventListener('dblclick', () => expandGex(symbol, slot));
+            div.querySelectorAll('[data-gexmode]').forEach(b => {
+                b.classList.toggle('active', b.dataset.gexmode === gexLeftMode());
+                b.addEventListener('click', e => { e.stopPropagation(); setGexLeftMode(symbol, b.dataset.gexmode); });
+                b.addEventListener('dblclick', e => e.stopPropagation());
+            });
             const hz = div.querySelector(`#horizon-${id}`);
             if (hz) {
                 hz.addEventListener('input', () => { saveHorizon(Number(hz.value)); renderHorizon(symbol); });
@@ -822,6 +896,7 @@
                     <span>GAMMA ZONES</span>
                     <button class="tf-btn active" data-zone="all" title="Net GEX at each strike, all expirations">All</button>
                     <button class="tf-btn" data-zone="week" title="Net GEX at each strike, expirations through this Friday (on a Friday: today's only)">Week</button>
+                    <span id="zone-red-btns" style="display:contents"></span>
                     <button class="tf-btn" data-zone="odte" title="Net GEX at each strike, 0DTE only">0DTE</button>
                     <button class="tf-btn" data-zone="off">Off</button>
                     <button class="tf-btn" id="zone-info-btn" title="Show / hide the key, the ES volume key and the gamma levels bar">Info</button>
@@ -1302,7 +1377,10 @@
         function joinHeatmaps(days) {
             const strikes = [...new Set(days.flatMap(h => h.strikes))].sort((a, b) => a - b);
             const at = new Map(strikes.map((k, i) => [k, i]));
-            const out = { times: [], spots: [], strikes, all: [], odte: [], week: [], day: [], rebuilt: [] };
+            // every view the days carry: all / odte / week and the red days' 'x:<date>' columns
+            const modes = ['all', 'odte', 'week', ...new Set(days.flatMap(h => Object.keys(h).filter(k => k.startsWith('x:'))))];
+            const out = { times: [], spots: [], strikes, day: [], rebuilt: [], red: days[days.length - 1].red };
+            modes.forEach(m => { out[m] = []; });
             days.forEach((h, di) => {
                 const idx = h.strikes.map(k => at.get(k));
                 const widen = col => {
@@ -1313,15 +1391,40 @@
                 h.times.forEach((t, c) => {
                     out.times.push(t); out.spots.push(h.spots[c]); out.day.push(di);
                     out.rebuilt.push(h.rebuilt_until != null && t <= h.rebuilt_until);
-                    out.all.push(widen(h.all[c])); out.odte.push(widen(h.odte[c])); out.week.push(widen(h.week ? h.week[c] : []));
+                    modes.forEach(m => out[m].push(widen(h[m] ? h[m][c] : [])));
                 });
             });
             return out;
         }
 
+        // Gamma-zone buttons for the next two red days (opex, month end, FOMC, CPI, jobs):
+        // each paints just that expiration's GEX, to watch it build into the day.
+        const RED_SHORT = { 'FOMC': 'FOMC', 'CPI': 'CPI', 'JOBS REPORT': 'JOBS', 'MONTHLY OPEX': 'OPEX',
+                            'QUARTERLY OPEX': 'QUAD OPEX', 'MONTH END': 'EOM', 'QUARTER END': 'QTR END', 'YEAR END': 'YEAR END' };
+        let _redZoneSig = null;
+        function renderRedZoneButtons(red) {
+            const wrap = document.getElementById('zone-red-btns');
+            if (!wrap || !red) return;
+            const sig = red.map(r => r.key).join();
+            if (sig !== _redZoneSig) {
+                _redZoneSig = sig;
+                wrap.innerHTML = red.map(r =>
+                    `<button class="tf-btn red-zone" data-zone="${r.key}" title="GEX of the ${r.date} expiration only (${r.tags.join(', ')}): watch dealers' gamma build into it">`
+                    + `${r.tags.map(t => RED_SHORT[t] || t).join('+')} ${r.date.slice(5).replace('-', '/')}</button>`).join('');
+                wrap.querySelectorAll('[data-zone]').forEach(b => b.addEventListener('click', e => {
+                    e.stopPropagation();
+                    setZoneMode(b.dataset.zone);
+                }));
+            }
+            // a saved red day that has passed: back to All
+            if (_zoneMode.startsWith('x:') && !red.some(r => r.key === _zoneMode)) { setZoneMode('all'); return; }
+            document.querySelectorAll('[data-zone]').forEach(b => b.classList.toggle('active', b.dataset.zone === _zoneMode));
+        }
+
         function showHeatmap() {
             const past = _replayDate ? [] : _heatmapPast;
             _heatmap = past.length ? joinHeatmaps(_heatmapDay ? [...past, _heatmapDay] : past) : _heatmapDay;
+            renderRedZoneButtons(_heatmapDay?.red);
             priceCharts.SPX?.zones?.setData(_zoneMode === 'off' ? null : _heatmap, _zoneMode);
         }
 
@@ -1939,13 +2042,14 @@
             const canvas = document.getElementById(`gex-canvas-${key}`);
             if (!canvas) return;
             if (!chartData.strikes.length) {
+                if (gexCharts[key]) { gexCharts[key].destroy(); delete gexCharts[key]; }
                 const ctx = canvas.getContext('2d');
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 ctx.save();                        // the chart drawn here later shares this context
                 ctx.fillStyle = '#333';
                 ctx.font = '11px Courier New';
                 ctx.textAlign = 'center';
-                ctx.fillText('Waiting for OI data...', canvas.width / 2, canvas.height / 2);
+                ctx.fillText(chartData.emptyText || 'Waiting for OI data...', canvas.width / 2, canvas.height / 2);
                 ctx.restore();
                 return;
             }
@@ -2088,6 +2192,7 @@
 
         // ── Horizon panel: today's 0DTE (live, ~2 s) + later expirations through a date ──
         let _gexByExp = null;            // /api/gex_by_expiry: later expirations per strike (60 s)
+        let _redDays  = {};              // date -> tags (opex, month end, FOMC, CPI, jobs), /api/key_dates
         const _lastGexData = {};         // symbol -> latest GEX update (its live 0DTE part)
         const isoAddDays = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
         const isoDaysBetween = (a, b) => Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 86400e3);
@@ -2145,15 +2250,196 @@
             const strikes = nz.length ? all.filter(k => k >= nz[0] && k <= nz[nz.length - 1]) : [];
             const net = strikes.map(k => sums.get(k));
             const total = net.reduce((a, b) => a + b, 0);
-            const label = n === 0 ? (has0 ? '0DTE only' : 'no expirations picked')
-                : `through ${fmtExpDay(exps[n - 1])} · ${n + (has0 ? 1 : 0)} expirations`;
-            document.getElementById(`horizon-label-${key}`).textContent = label;
+            // red days (opex, month end, big news) in red, with what they are
+            const endDay = n === 0 ? todayET() : exps[n - 1];
+            const tags = _redDays[endDay], tagTxt = tags ? ' · ' + tags.join(' · ') : '';
+            const hzLabel = document.getElementById(`horizon-label-${key}`);
+            hzLabel.innerHTML = n === 0
+                ? (has0 ? `0DTE only${tags ? `<span class="red-day">${tagTxt}</span>` : ''}` : 'no expirations picked')
+                : `through <span class="${tags ? 'red-day' : ''}">${fmtExpDay(endDay)}${tagTxt}</span> · ${n + (has0 ? 1 : 0)} expirations`;
+            hzLabel.title = hzLabel.textContent;
             const dateEl = document.getElementById(`odte-date-${key}`);
-            if (dateEl) dateEl.textContent = n === 0 ? '· TODAY' : `· ${fmtExpDay(exps[n - 1]).toUpperCase()}`;
+            if (dateEl) {
+                dateEl.textContent = `· ${n === 0 ? 'TODAY' : fmtExpDay(endDay).toUpperCase()}${tagTxt}`;
+                dateEl.style.color = tags ? '#ff4d5e' : '#9a9aac';
+                dateEl.style.fontWeight = tags ? 'bold' : '';
+            }
+            const marks = document.getElementById(`horizon-marks-${key}`);
+            const sig = exps.join() + '|' + exps.map(e => (_redDays[e] || []).join('+')).join();
+            if (marks && marks._sig !== sig) {
+                marks._sig = sig;
+                marks.innerHTML = exps.map((e, j) => _redDays[e]
+                    // where the thumb's centre sits at that value: it travels from half a thumb
+                    // in from each end (16 px thumb)
+                    ? `<i style="left:calc(${((j + 1) / exps.length * 100).toFixed(3)}% + ${(8 - 16 * (j + 1) / exps.length).toFixed(2)}px)" title="${fmtExpDay(e)} · ${_redDays[e].join(' · ')}"></i>` : '').join('');
+            }
             updateGexSlot(symbol, 'horizon', { strikes, net_gex: net, strike_min: strikes[0] ?? null, strike_max: strikes[strikes.length - 1] ?? null },
                           { ...keyLevels(strikes, net, data.spot), pin_enhanced: data.levels_multi?.pin_enhanced },
                           data.spot, total, total >= 0 ? 'POSITIVE' : 'NEGATIVE');
         }
+
+        // ── Key dates: dealer positioning into the next two red days ────────────
+        // Open interest and GEX per strike of that one expiration at each recorded
+        // session's close (today: the latest 15-min full-chain snapshot), against the
+        // previous session or the first one recorded. OI changes overnight: the change
+        // is where positions were added or closed. From key_dates.py.
+        let _keyDates = null;
+        const kdCharts = [];
+        let kdCompare = 'prev';
+        try { kdCompare = localStorage.getItem('kdCompare') === 'first' ? 'first' : 'prev'; } catch (_) {}
+        const KD_STRIKES = 40;
+        const fmtOI = v => { const a = Math.abs(v), sg = v < 0 ? '-' : '';
+            return sg + (a >= 1e6 ? (a / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (a / 1e3).toFixed(1) + 'K' : String(a)); };
+
+        function createKeyDateDiv(i) {
+            const div = document.createElement('div');
+            div.className = 'chart-div gex-chart-div kd-panel';
+            div.id = `kd-div-${i}`;
+            div.innerHTML = `
+                <div class="chart-div-header">
+                    <div>
+                        <div class="chart-title">NEXT RED DAY ${i + 1} · POSITIONING IN THAT EXPIRATION</div>
+                        <div class="symbol red-day" id="kd-title-${i}">—</div>
+                        <div class="kd-sub" id="kd-sub-${i}">—</div>
+                    </div>
+                    <div style="text-align:right">
+                        <div class="total-gex" title="Net GEX of this one expiration (calls +, puts -), worked out from each contract's vol">GEX: <span id="kd-gex-${i}">—</span></div>
+                        <div class="total-gex" title="Open interest, calls + puts, in this expiration">Open interest: <span id="kd-oi-${i}">—</span></div>
+                    </div>
+                </div>
+                <div class="kd-changes" id="kd-changes-${i}" title="Where open interest changed most against the session compared with (strikes on the chart). OI is reported once a day, so this is positions added (+) or closed (-) since then.">—</div>
+                <div class="gex-canvas-wrap"><canvas id="kd-canvas-${i}"></canvas></div>`;
+            return div;
+        }
+
+        function createKeyDatesSection() {
+            const gexGrid = document.getElementById('gex-grid');
+            if (!gexGrid || document.getElementById('kd-grid')) return;
+            const label = document.createElement('div');
+            label.className = 'section-label';
+            label.innerHTML = `KEY DATES · DEALER POSITIONING<span class="kd-compare">bars: now · outline:
+                <button class="tf-btn" data-kdcmp="prev">previous session</button><button class="tf-btn" data-kdcmp="first">first recorded</button></span>`;
+            const grid = document.createElement('div');
+            grid.className = 'grid kd-grid';
+            grid.id = 'kd-grid';
+            for (let i = 0; i < 2; i++) grid.appendChild(createKeyDateDiv(i));
+            gexGrid.parentNode.insertBefore(label, gexGrid.nextSibling);
+            gexGrid.parentNode.insertBefore(grid, label.nextSibling);
+            label.querySelectorAll('[data-kdcmp]').forEach(b => {
+                b.classList.toggle('active', b.dataset.kdcmp === kdCompare);
+                b.addEventListener('click', () => {
+                    kdCompare = b.dataset.kdcmp;
+                    try { localStorage.setItem('kdCompare', kdCompare); } catch (_) {}
+                    label.querySelectorAll('[data-kdcmp]').forEach(x => x.classList.toggle('active', x === b));
+                    renderKeyDates();
+                });
+            });
+        }
+
+        function kdChartConfig() {
+            const money = v => (v >= 0 ? '+' : '-') + (Math.abs(v) >= 1e9 ? (Math.abs(v) / 1e9).toFixed(1) + 'B' : (Math.abs(v) / 1e6).toFixed(0) + 'M');
+            return {
+                type: 'bar',
+                data: { labels: [], datasets: [
+                    { label: 'now', data: [], backgroundColor: [], borderWidth: 0, grouped: false, order: 1 },
+                    // the comparison as an outline over the bars (lower order draws on top)
+                    { label: 'then', data: [], backgroundColor: 'rgba(0,0,0,0)', borderColor: 'rgba(210,210,230,0.9)', borderWidth: 1, grouped: false, order: 0 },
+                ]},
+                options: {
+                    indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
+                    plugins: { legend: { display: false },
+                               tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtGex(c.raw)}` } } },
+                    scales: {
+                        x: { grid: { color: '#1e1e2e' }, ticks: { color: '#a8a8b8', font: { size: 9 }, callback: money } },
+                        y: { reverse: true, grid: { color: '#1e1e2e' },
+                             ticks: { color: '#888', font: { size: 9, family: 'Courier New' }, autoSkip: false,
+                                      callback: function (v) { return this.getLabelForValue(v); } } },
+                    },
+                },
+            };
+        }
+
+        function renderKeyDate(i, kd) {
+            const $ = id => document.getElementById(`kd-${id}-${i}`);
+            if (!$('title')) return;
+            const clear = msg => {
+                $('gex').textContent = $('oi').textContent = '—';
+                $('changes').textContent = msg || '';
+                if (kdCharts[i]) { kdCharts[i].destroy(); kdCharts[i] = null; }
+            };
+            if (!kd) { $('title').textContent = '—'; $('sub').textContent = 'no red day in the calendar'; clear(); return; }
+            $('title').textContent = `${fmtExpDay(kd.date).toUpperCase()} · ${kd.tags.join(' · ')}`;
+            const away = kd.sessions_away === 0 ? 'today' : `in ${kd.sessions_away} session${kd.sessions_away === 1 ? '' : 's'}`;
+            const ss = kd.sessions || [];
+            if (!ss.length) { $('sub').textContent = `${away} · not in the recorded chains yet`; clear(); return; }
+            const now = ss[ss.length - 1];
+            const base = ss.length > 1 ? (kdCompare === 'first' ? ss[0] : ss[ss.length - 2]) : null;
+            $('sub').textContent = `${away} · ${ss.length} session${ss.length === 1 ? '' : 's'} recorded since ${ss[0].day.slice(5)} · `
+                + `now = ${now.ts.slice(5, 10)} ${fmtClock(Date.parse(now.ts))} ${clockTag()}` + (base ? ` · outline = ${base.day.slice(5)} close` : '');
+            $('gex').textContent = fmtGex(now.total_gex) + (base ? ` (was ${fmtGex(base.total_gex)})` : '');
+            $('oi').textContent = fmtOI(now.total_oi) + (base ? ` (${now.total_oi >= base.total_oi ? '+' : ''}${fmtOI(now.total_oi - base.total_oi)})` : '');
+
+            // the strikes around spot
+            const ks = kd.strikes;
+            let c = 0;
+            ks.forEach((k, j) => { if (Math.abs(k - now.spot) < Math.abs(ks[c] - now.spot)) c = j; });
+            const lo = Math.max(0, Math.min(c - KD_STRIKES / 2, ks.length - KD_STRIKES)), hi = Math.min(ks.length, lo + KD_STRIKES);
+            const idx = Array.from({ length: hi - lo }, (_, j) => j + lo);
+            if (base) {
+                const ch = [];
+                idx.forEach(j => {
+                    ch.push([ks[j], 'C', now.call_oi[j] - base.call_oi[j]]);
+                    ch.push([ks[j], 'P', now.put_oi[j] - base.put_oi[j]]);
+                });
+                const top = ch.filter(x => x[2]).sort((a, b) => Math.abs(b[2]) - Math.abs(a[2])).slice(0, 6);
+                $('changes').innerHTML = top.length
+                    ? `Biggest OI changes since ${base.day.slice(5)}: ` + top.map(([k, sd, v]) =>
+                        `<b style="color:${sd === 'C' ? '#00ff88' : '#ff4466'}">${k}${sd}</b> ${v > 0 ? '+' : ''}${fmtOI(v)}`).join(' · ')
+                    : `No open-interest change since ${base.day.slice(5)} at these strikes`;
+            } else {
+                $('changes').textContent = 'First recorded session: nothing to compare with yet';
+            }
+
+            const canvas = $('canvas');
+            let chart = kdCharts[i];
+            if (!chart || chart.canvas !== canvas) {
+                if (chart) chart.destroy();
+                chart = kdCharts[i] = new Chart(canvas.getContext('2d'), kdChartConfig());
+            }
+            const nowG = idx.map(j => now.gex[j]);
+            chart.data.labels = idx.map(j => ks[j]);
+            chart.data.datasets[0].data = nowG;
+            chart.data.datasets[0].backgroundColor = nowG.map(v => v >= 0 ? 'rgba(0,255,136,0.7)' : 'rgba(255,68,68,0.7)');
+            chart.data.datasets[1].data = base ? idx.map(j => base.gex[j]) : [];
+            chart.data.datasets[1].label = base ? `${base.day.slice(5)} close` : '';
+            chart._spotPrice = _lastGexData.SPX?.spot || now.spot;
+            chart.update('none');
+        }
+
+        function renderKeyDates() {
+            const list = _keyDates?.next || [];
+            for (let i = 0; i < 2; i++) renderKeyDate(i, list[i]);
+        }
+
+        async function fetchKeyDates() {
+            try {
+                const res = await fetch('/api/key_dates/SPX');
+                if (!res.ok) return;
+                _keyDates = await res.json();
+                _redDays = _keyDates.red || {};
+                renderKeyDates();
+                renderHorizon('SPX');
+                if (_lastGexData.SPX) renderGexLeft('SPX', _lastGexData.SPX);
+            } catch (e) { console.warn('[key dates]', e); }
+        }
+
+        // after the rolling profile has put its section after the GEX grid, so this one
+        // goes between them
+        document.addEventListener('DOMContentLoaded', () => {
+            createKeyDatesSection();
+            fetchKeyDates();
+            setInterval(fetchKeyDates, 5 * 60000);   // full-chain snapshots come every 15 min
+        });
 
         async function fetchGexByExpiry() {
             try {
@@ -2162,6 +2448,42 @@
                 _gexByExp = await res.json();
                 renderHorizon('SPX');
             } catch (e) { console.warn('[gex horizon]', e); }
+        }
+
+        // ── Left GEX panel: All (every expiry but today's) or 0DTE, switched in its header ──
+        function gexLeftMode() {
+            try { return localStorage.getItem('gexLeftMode') === 'odte' ? 'odte' : 'all'; } catch (_) { return 'all'; }
+        }
+        function setGexLeftMode(symbol, mode) {
+            try { localStorage.setItem('gexLeftMode', mode); } catch (_) {}
+            document.querySelectorAll(`#gex-mode-${symbol} [data-gexmode]`).forEach(b => b.classList.toggle('active', b.dataset.gexmode === mode));
+            if (_lastGexData[symbol]) renderGexLeft(symbol, _lastGexData[symbol]);
+        }
+        function renderGexLeft(symbol, data) {
+            const id = `${symbol}-multi`, odte = gexLeftMode() === 'odte';
+            const label = document.getElementById(`gex-label-${id}`);
+            const date  = document.getElementById(`odte-date-${id}`);
+            const pin   = document.getElementById(`pin-label-${id}`);
+            if (label) label.textContent = odte ? '0DTE' : 'ALL EXPIRATIONS EX-0DTE';
+            if (date) {
+                const show = odte && data.has_0dte && data.odte_date, tags = show ? _redDays[data.odte_date] : null;
+                date.textContent = show ? `· ${fmtOdteDate(data.odte_date)}${tags ? ' · ' + tags.join(' · ') : ''}` : '';
+                date.style.color = tags ? '#ff4d5e' : '#9a9aac';
+                date.style.fontWeight = tags ? 'bold' : '';
+            }
+            if (pin) {
+                pin.querySelector('.pin-name').textContent = odte ? 'Pin' : 'Pin (long-dated)';
+                pin.title = odte ? 'Strike with the largest 0DTE GEX'
+                    : 'Strike with the largest GEX across longer-dated expiries. A multi-day reference, not a same-day target: the close moved away from it 60% of the time in the backtest.';
+            }
+            // each view shows its own regime and total, not the combined one
+            const src    = odte ? (data.has_0dte ? data.zero : { strikes: [], net_gex: [] }) : data.multi;
+            const total  = (src.net_gex || []).reduce((a, b) => a + b, 0);
+            const chart  = odte && !(src.strikes || []).length
+                ? { strikes: [], net_gex: [], emptyText: 'No 0DTE expiration right now (today\'s expired at 16:00)' } : src;
+            // TRUE PIN is computed once (0DTE + next expiry) and sent with the multi levels
+            const levels = odte ? { ...data.levels_0dte, pin_enhanced: data.levels_multi?.pin_enhanced } : data.levels_multi;
+            updateGexSlot(symbol, 'multi', chart, levels || {}, data.spot, total, total >= 0 ? 'POSITIVE' : 'NEGATIVE');
         }
 
         function updateGexDiv(symbol, data) {
@@ -2184,31 +2506,7 @@
             // Feed 0DTE expiry date into the countdown clock (use SPX as authoritative)
             if (symbol === 'SPX' && data.odte_date) setOdteDate(data.odte_date);
 
-            const multiTotal = data.multi.net_gex.reduce((a, b) => a + b, 0);
-            const zeroTotal  = data.zero.net_gex.reduce((a, b) => a + b, 0);
-
-            // Each chart shows its own regime, not the combined total
-            const multiRegime = multiTotal >= 0 ? 'POSITIVE' : 'NEGATIVE';
-            const zeroRegime  = zeroTotal  >= 0 ? 'POSITIVE' : 'NEGATIVE';
-            updateGexSlot(symbol, 'multi', data.multi, data.levels_multi, data.spot,
-                          multiTotal, multiRegime);
-
-            const zeroDiv  = document.getElementById(`gex-div-${symbol}-zero`);
-            const dateEl   = document.getElementById(`odte-date-${symbol}-zero`);
-
-            if (data.has_0dte) {
-                if (zeroDiv) zeroDiv.style.display = '';
-                // Stamp the 0DTE expiry date into the title
-                if (dateEl && data.odte_date) {
-                    dateEl.textContent = `· ${fmtOdteDate(data.odte_date)}`;
-                }
-                // TRUE PIN is computed once (0DTE + next expiry) and sent with the multi levels
-                updateGexSlot(symbol, 'zero', data.zero,
-                              { ...data.levels_0dte, pin_enhanced: data.levels_multi?.pin_enhanced }, data.spot,
-                              zeroTotal, zeroTotal >= 0 ? 'POSITIVE' : 'NEGATIVE');
-            } else {
-                if (zeroDiv) zeroDiv.style.display = 'none';
-            }
+            renderGexLeft(symbol, data);
 
             if (symbol === 'SPX' && data.total_gex != null) {
                 _liveTotalGex = data.total_gex;
@@ -2251,8 +2549,8 @@
 
             // After the close: backend serves the last in-session OI snapshot
             if (data.last_session) {
-                const asOf = `last session · as of ${data.last_session.slice(5, 16)} ET`;
-                for (const slot of ['multi', 'zero']) {
+                const asOf = `last session · as of ${data.last_session.slice(5, 10)} ${etToClock(data.last_session.slice(11, 16))}`;
+                for (const slot of ['multi']) {
                     const r = document.getElementById(`regime-${symbol}-${slot}`);
                     if (r) { r.textContent = 'CLOSED'; r.className = 'regime CLOSED'; r.title = asOf; }
                     const s = document.getElementById(`spot-${symbol}-${slot}`);
@@ -2595,14 +2893,14 @@
             const fmtSpot = candle.close.toLocaleString('en-US', {minimumFractionDigits: 2});
             const gexMultiSpotEl = document.getElementById(`spot-${symbol}-multi`);
             if (gexMultiSpotEl) gexMultiSpotEl.textContent = fmtSpot;
-            const gexZeroSpotEl = document.getElementById(`spot-${symbol}-zero`);
-            if (gexZeroSpotEl) gexZeroSpotEl.textContent = fmtSpot;
+            const gexHorizonSpotEl = document.getElementById(`spot-${symbol}-horizon`);
+            if (gexHorizonSpotEl) gexHorizonSpotEl.textContent = fmtSpot;
 
             // Update GEX chart spot lines (horizontal dashed line moves)
             const multiKey = `${symbol}-multi`;
-            const zeroKey  = `${symbol}-zero`;
-            if (gexCharts[multiKey]) { gexCharts[multiKey]._spotPrice = candle.close; gexCharts[multiKey].update(); }
-            if (gexCharts[zeroKey])  { gexCharts[zeroKey]._spotPrice  = candle.close; gexCharts[zeroKey].update(); }
+            const horizonKey = `${symbol}-horizon`;
+            if (gexCharts[multiKey])   { gexCharts[multiKey]._spotPrice   = candle.close; gexCharts[multiKey].update(); }
+            if (gexCharts[horizonKey]) { gexCharts[horizonKey]._spotPrice = candle.close; gexCharts[horizonKey].update(); }
             if (modalCJSChart && modalCJSChart._key?.startsWith(`${symbol}-`)) {
                 modalCJSChart._spotPrice = candle.close; modalCJSChart.update('none');
             }
@@ -2704,7 +3002,7 @@
 
             // Timestamp from server time_s (unix seconds)
             const ts = a.time
-                ? new Date(a.time * 1000).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false})
+                ? fmtClock(a.time * 1000, true)
                 : '';
 
             const row = document.createElement('div');
@@ -2813,7 +3111,7 @@
             const key   = `${symbol}-${slot}`;
             const entry = gexCharts[key];
             if (!entry || !entry._gexData) return;
-            const label = slot === 'zero' ? '0DTE' : slot === 'horizon'
+            const label = slot === 'zero' || (slot === 'multi' && gexLeftMode() === 'odte') ? '0DTE' : slot === 'horizon'
                 ? document.getElementById(`horizon-label-${key}`)?.textContent.toUpperCase() || 'EXPIRATIONS THROUGH'
                 : 'ALL EXPIRATIONS EX-0DTE';
             openModal(`
@@ -3202,7 +3500,7 @@
             const h = et.h, m = et.m, s = et.s;
 
             // Session clock
-            document.getElementById('odte-session-clock').textContent = et.timeStr;
+            document.getElementById('odte-session-clock').textContent = `${fmtClock(Date.now(), true)} ${clockTag()}`;
 
             // Session phase
             const phase = document.getElementById('odte-session-phase');
@@ -3268,8 +3566,9 @@
 
         async function fetchGexAll() {
             await Promise.all(GEX_SYMBOLS.map(fetchGex));
-            document.getElementById('last-update').textContent =
-                `GEX updated: ${new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'America/New_York' })} ET`;
+            const lu = document.getElementById('last-update');
+            lu._at = Date.now();
+            lu.textContent = `GEX updated: ${fmtClock(lu._at, true)} ${clockTag()}`;
         }
 
         async function fetchPriceAll() {
@@ -3283,7 +3582,6 @@
         const priceGrid = document.getElementById('price-grid');
         GEX_SYMBOLS.forEach(s => {
             gexGrid.appendChild(createGexDiv(s, 'multi'));
-            gexGrid.appendChild(createGexDiv(s, 'zero'));
             gexGrid.appendChild(createGexDiv(s, 'horizon'));
             if (ddoiGrid) ddoiGrid.appendChild(createDdoiDiv(s));
         });
@@ -3348,6 +3646,7 @@
         fetchHeatmapReliability();
         setInterval(fetchHeatmapReliability, 30 * 60000);   // the scorecard gains a row after each close
         setZoneMode(_zoneMode);
+        document.getElementById('clock-btn').textContent = CLOCKS[_clock].name;
 
         // Expected move to the close for the current regime (server table rebuilt hourly)
         async function fetchExpectedMove() {
@@ -3737,8 +4036,10 @@
     if (!modalOpen()) rpModal = null;      // the modal was closed
     // a reply sent before a chart's time frame changed doesn't have that window yet: keep what it shows
     rpCols.forEach((c, i) => { if (c.w in wins) renderColumn(i, wins[c.w]); });
+    // the server sends ET; the dashboard's clock toggle (etToClock) shows it as ET or PT
+    const clock = hms => (typeof etToClock === 'function' ? etToClock(hms) : `${hms} ET`);
     document.getElementById('rp-updated').textContent = live && live.updated
-      ? `updated ${live.updated} ET · spot ${live.spot.toFixed(2)}` : '—';
+      ? `updated ${clock(live.updated)} · spot ${live.spot.toFixed(2)}` : '—';
   }
 
   // ── Full screen (reuses the dashboard's modal) ─────────────────────

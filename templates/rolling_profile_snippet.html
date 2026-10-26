@@ -362,8 +362,10 @@
     if (!modalOpen()) rpModal = null;      // the modal was closed
     // a reply sent before a chart's time frame changed doesn't have that window yet: keep what it shows
     rpCols.forEach((c, i) => { if (c.w in wins) renderColumn(i, wins[c.w]); });
+    // the server sends ET; the dashboard's clock toggle (etToClock) shows it as ET or PT
+    const clock = hms => (typeof etToClock === 'function' ? etToClock(hms) : `${hms} ET`);
     document.getElementById('rp-updated').textContent = live && live.updated
-      ? `updated ${live.updated} ET · spot ${live.spot.toFixed(2)}` : '—';
+      ? `updated ${clock(live.updated)} · spot ${live.spot.toFixed(2)}` : '—';
   }
 
   // ── Full screen (reuses the dashboard's modal) ─────────────────────

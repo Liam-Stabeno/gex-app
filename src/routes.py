@@ -90,7 +90,7 @@ def register(app):
                 day = datetime.strptime(request.args['date'], '%Y-%m-%d').date()
             except ValueError:
                 return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
-        return jsonify(gex_stats.load_heatmap(symbol.upper().replace('$', ''), day=day, rebuilt=True))
+        return jsonify(gex_stats.load_heatmap(symbol.upper().replace('$', ''), day=day, rebuilt=True, red=2))
 
     @app.route('/api/gex_by_expiry/<symbol>')
     def api_gex_by_expiry(symbol):
@@ -99,6 +99,13 @@ def register(app):
         import background
         sym = symbol.upper().replace('$', '')
         return jsonify(background._gex_by_exp.get(sym) or {'exp': [], 'strikes': [], 'gex': []})
+
+    @app.route('/api/key_dates/<symbol>')
+    def api_key_dates(symbol):
+        """Red days (opex, month / quarter end, FOMC, CPI, jobs) for the next ~4 months,
+        and dealer positioning into the next two of them (key_dates.py)."""
+        import key_dates
+        return jsonify(key_dates.summary(n=2))
 
     @app.route('/api/gamma_levels/<symbol>')
     def api_gamma_levels(symbol):
