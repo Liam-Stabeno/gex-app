@@ -1657,6 +1657,7 @@
                 ctx.lineWidth = 1;
                 ctx.strokeRect(bx + 0.5, by + 0.5, tw + pad * 2 - 1, bh - 1);
                 ctx.fillStyle = '#00d4ff';
+                ctx.textAlign = 'left';            // set here: the canvas keeps whatever was drawn last
                 ctx.textBaseline = 'middle';
                 ctx.fillText(label, bx + pad, spotY);
                 ctx.restore();
@@ -1828,8 +1829,10 @@
             if (!ddoi?.strikes?.length) {
                 const ctx = canvas.getContext('2d');
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.save();
                 ctx.fillStyle = '#333'; ctx.font = '11px Courier New'; ctx.textAlign = 'center';
                 ctx.fillText('Waiting for OI data...', canvas.width/2, canvas.height/2);
+                ctx.restore();
                 return;
             }
 
@@ -1938,10 +1941,12 @@
             if (!chartData.strikes.length) {
                 const ctx = canvas.getContext('2d');
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.save();                        // the chart drawn here later shares this context
                 ctx.fillStyle = '#333';
                 ctx.font = '11px Courier New';
                 ctx.textAlign = 'center';
                 ctx.fillText('Waiting for OI data...', canvas.width / 2, canvas.height / 2);
+                ctx.restore();
                 return;
             }
 
