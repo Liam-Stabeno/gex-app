@@ -20,7 +20,7 @@ import json
 import os
 import time
 import threading
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
 from gex import (get_access_token, fetch_option_chain, parse_gex, find_key_levels, get_watch_contracts,
@@ -301,6 +301,10 @@ def daily_jobs_loop():
             if write_today:
                 gex_stats.write_daily_summary(datetime.now(_ET).date(), 'SPX')
                 gex_stats.write_scorecard(datetime.now(_ET).date(), 'SPX')
+            # grade and save every finished day's GEX predictions (after the close, today's too)
+            import predictions
+            tomorrow = (datetime.now(_ET).date() + timedelta(days=1)).isoformat()
+            predictions.save_finished_days(today=tomorrow if write_today else None)
             done = gex_stats.archive_old_files('SPX')
             if done:
                 print(f'[daily] archived {len(done)} file(s)')

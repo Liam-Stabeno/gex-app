@@ -200,6 +200,33 @@
         .kd-score { color: #8a8a9c; margin-bottom: 8px; }
         .kd-score b { color: #d0d0dc; }
         .kd-panel .gex-canvas-wrap { flex: 1; min-height: 0; }
+        /* ── prediction scoreboard ── */
+        .pred-panel { cursor: default; }
+        .pred-intro { font-size: 0.62rem; color: #8a8a9c; margin-bottom: 8px; line-height: 1.5; }
+        .pred-scroll { overflow-x: auto; }
+        .pred-table { width: 100%; border-collapse: collapse; font-size: 0.66rem; min-width: 760px; }
+        .pred-table th { color: #8a8a9c; font-weight: normal; text-align: left; letter-spacing: 1px;
+                         padding: 4px 8px; border-bottom: 1px solid #1e1e2e; }
+        .pred-table td { padding: 8px; border-bottom: 1px solid #16162a; vertical-align: top; color: #b0b0c0; }
+        .pred-table td:first-child { width: 15%; }
+        .pred-table td:nth-child(2) { width: 43%; }
+        .pred-title { color: #e0e0ea; font-weight: bold; letter-spacing: 0.5px; }
+        .pred-days, .pred-vs, .pred-detail, .pred-sub { color: #7a7a8c; }
+        .pred-says { color: #c8c8d4; }
+        .pred-vs, .pred-detail { margin-top: 3px; }
+        .pred-sub { font-size: 0.6rem; }
+        .pred-rate { font-size: 1.05rem; font-weight: bold; color: #d0d0dc; }
+        .pred-rate.good { color: #00ff88; }
+        .pred-rate.bad { color: #ff5c6c; }
+        .pred-rate.few { color: #6f6f82; }
+        .pred-today-head { color: #8a8a9c; letter-spacing: 2px; font-size: 0.6rem; margin: 12px 0 4px; }
+        .pred-today { max-height: 260px; overflow-y: auto; font-size: 0.64rem; line-height: 1.7; color: #b0b0c0; }
+        .pred-item .k { color: #d0d0dc; }
+        .pred-item .st { padding: 0 5px; border-radius: 3px; margin-left: 6px; }
+        .pred-item .st.hit { color: #b8f5d4; background: #0d2b1a; }
+        .pred-item .st.miss { color: #ffc4c4; background: #2b0d0d; }
+        .pred-item .st.pending { color: #9fe8ff; background: #0d2230; }
+        .pred-item .st.undecided, .pred-item .st.comparison { color: #8a8a9c; background: #1a1a26; }
         .kd-sub { font-size: 0.62rem; color: #8a8a9c; margin-top: 2px; }
         .kd-changes { font-size: 0.65rem; color: #b0b0c0; margin: 4px 0 6px; line-height: 1.5; }
         .kd-compare { margin-left: 12px; letter-spacing: 0; color: #8a8a9c; }
@@ -702,6 +729,7 @@
             });
             if (typeof tickCountdown === 'function') tickCountdown();
             if (typeof renderKeyDates === 'function') renderKeyDates();
+            if (typeof renderPredictions === 'function') renderPredictions();
             const lu = document.getElementById('last-update');
             if (lu && lu._at) lu.textContent = `GEX updated: ${fmtClock(lu._at, true)} ${clockTag()}`;
         }
@@ -2708,7 +2736,106 @@
             createKeyDatesSection();
             fetchKeyDates();
             setInterval(fetchKeyDates, 5 * 60000);   // full-chain snapshots come every 15 min
+            createPredictionsSection();
+            fetchPredictions();
+            setInterval(fetchPredictions, 60000);
         });
+
+        // ── Prediction scoreboard (predictions.py) ──────────────────────────
+        // Every 15 min the app writes down what GEX predicts, then grades it against SPX, over
+        // every recorded day and today live. Each hit rate sits next to the score of a guess
+        // that doesn't use GEX, so the colour says whether GEX added anything.
+        let _pred = null;
+        const PRED_NAME = { size_regime: 'SIZE · regime', size_price: 'SIZE · GEX at price', level: 'LEVEL',
+                            run: 'BREAK', pin_true: 'PIN · True Pin', pin_0dte: 'PIN · 0DTE pin' };
+        const PRED_STATUS = { hit: 'right', miss: 'wrong', pending: 'pending', undecided: 'undecided', comparison: 'comparison' };
+        const predMoney = v => { const a = Math.abs(v);
+            return (v < 0 ? '-' : '+') + (a >= 1e9 ? (a / 1e9).toFixed(1) + 'B' : a >= 1e6 ? (a / 1e6).toFixed(0) + 'M' : (a / 1e3).toFixed(0) + 'K'); };
+
+        function createPredictionsSection() {
+            const priceGrid = document.getElementById('price-grid');
+            if (!priceGrid || document.getElementById('pred-panel')) return;
+            const label = document.createElement('div');
+            label.className = 'section-label';
+            label.innerHTML = 'PREDICTION SCOREBOARD · DOES GEX CALL THE MOVE?<span class="kd-compare" id="pred-meta"></span>';
+            const panel = document.createElement('div');
+            panel.className = 'chart-div pred-panel';
+            panel.id = 'pred-panel';
+            panel.innerHTML = `
+                <div class="pred-intro">Every 15 minutes the app writes down what GEX predicts, then grades it against SPX once the time is up,
+                    over every recorded session and today live. Each hit rate is next to what a guess <b>without</b> GEX scored on the same moments:
+                    <span style="color:#00ff88">green</span> = GEX beat it by more than the ±, white = no better, <span style="color:#ff5c6c">red</span> = worse,
+                    grey = too few yet. Predictions in one session overlap, so read the ± as a minimum.</div>
+                <div class="pred-scroll"><table class="pred-table">
+                    <thead><tr><th>PREDICTION</th><th>WHAT IT SAYS · COMPARED WITH</th><th>15 MIN</th><th>30 MIN</th><th>60 MIN</th></tr></thead>
+                    <tbody id="pred-body"><tr><td colspan="5" class="pred-sub">Loading…</td></tr></tbody>
+                </table></div>
+                <div class="pred-today-head">TODAY · NEWEST FIRST</div>
+                <div class="pred-today" id="pred-today"></div>`;
+            priceGrid.parentNode.insertBefore(label, priceGrid.nextSibling);
+            priceGrid.parentNode.insertBefore(panel, label.nextSibling);
+        }
+
+        function predCell(c, span) {
+            if (!c || c.rate == null) return `<td${span ? ' colspan="3"' : ''} class="pred-sub">—</td>`;
+            const edge = c.base == null ? null : c.rate - c.base;
+            const margin = Math.max(c.ci || 0, 2);
+            const cls = c.n < 30 ? 'few' : edge == null ? '' : edge > margin ? 'good' : edge < -margin ? 'bad' : '';
+            return `<td${span ? ' colspan="3"' : ''}><div class="pred-rate ${cls}">${c.rate}%</div>
+                <div class="pred-sub">${span ? c.label + ' · ' : ''}${c.base != null ? `vs ${c.base}% · ` : ''}n ${c.n} ±${c.ci}${c.n < 30 ? ' · too few yet' : ''}</div></td>`;
+        }
+
+        function predText(r) {
+            const set = _pred?.settings || {};
+            switch (r.kind) {
+                case 'size_regime': case 'size_price': {
+                    const hz = '30' in r.h ? '30' : '15', v = r.h[hz];
+                    return `${r.kind === 'size_regime' ? 'net GEX' : 'GEX at price'} ${predMoney(r.gex)} → next ${hz} min ${r.predict} than usual`
+                        + (v ? ` · moved ${v[0].toFixed(1)} vs usual ${v[1].toFixed(1)}` : '');
+                }
+                case 'level':
+                    return `${r.strike} ${r.names.join(' / ')} (GEX ${predMoney(r.gex)}) reached from ${r.from} → ${r.predict}`
+                        + (r.first ? ` · ${r.first === 'hold' ? 'held' : 'broke'} in ${r.min} min` : '');
+                case 'run':
+                    return `broke ${r.dir} through ${r.strike} (GEX ${predMoney(r.gex)})`
+                        + (r.predict ? ` → runs ${set.run} more pts` : ' · for comparison (positive GEX)')
+                        + (r.first ? ` · ${r.first === 'run' ? 'ran' : 'reclaimed'} in ${r.min} min` : '');
+                default:
+                    return `pin ${r.pin} with price ${r.spot.toFixed(1)}, 0DTE GEX ${predMoney(r.gex0)}`
+                        + (r.predict ? ' → the close lands nearer the pin' : ' · for comparison (0DTE gamma negative)')
+                        + (r.close != null ? ` · closed ${r.close.toFixed(1)}` : '');
+            }
+        }
+
+        function renderPredictions() {
+            const d = _pred, body = document.getElementById('pred-body');
+            if (!d || !body) return;
+            body.innerHTML = d.cards.map(c => {
+                const cells = c.cols.length === 1 ? predCell(c.cols[0], true) : c.cols.map(x => predCell(x)).join('');
+                return `<tr><td><div class="pred-title">${c.title}</div><div class="pred-days">${c.days} session${c.days === 1 ? '' : 's'}</div></td>
+                    <td><div class="pred-says">${c.says}</div><div class="pred-vs">vs ${c.vs}</div>${c.detail ? `<div class="pred-detail">${c.detail}</div>` : ''}</td>${cells}</tr>`;
+            }).join('');
+            document.getElementById('pred-meta').textContent =
+                `${d.days} sessions graded · rules v${d.rules}${d.building ? ' · grading past sessions…' : ''}`;
+            document.getElementById('pred-today').innerHTML = d.today.length ? d.today.map(r =>
+                `<div class="pred-item">${fmtClock(r.t * 1000)} · <span class="k">${PRED_NAME[r.kind] || r.kind}</span> · ${predText(r)}
+                    <span class="st ${r.status}">${PRED_STATUS[r.status] || r.status}</span></div>`).join('')
+                : '<div class="pred-sub">The first predictions come at 9:45 ET.</div>';
+        }
+
+        async function fetchPredictions() {
+            try {
+                const res = await fetch('/api/predictions/SPX');
+                if (res.status === 404) {                 // the page reloaded before the server did
+                    document.getElementById('pred-body').innerHTML =
+                        '<tr><td colspan="5" class="pred-sub">The scoreboard starts with the app\'s next restart.</td></tr>';
+                    return;
+                }
+                if (!res.ok) return;
+                _pred = await res.json();
+                renderPredictions();
+            } catch (e) { console.warn('[predictions]', e); }
+        }
 
         async function fetchGexByExpiry() {
             try {

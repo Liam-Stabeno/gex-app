@@ -107,6 +107,13 @@ def register(app):
         import key_dates
         return jsonify(key_dates.summary(n=2))
 
+    @app.route('/api/predictions/<symbol>')
+    def api_predictions(symbol):
+        """Prediction scoreboard: what GEX predicted every 15 min, graded against SPX over
+        every recorded day and today live (predictions.py)."""
+        import predictions
+        return jsonify(predictions.summary())
+
     @app.route('/api/gamma_levels/<symbol>')
     def api_gamma_levels(symbol):
         """Walls, trapdoor, squeeze, support/resistance, air pockets, brakes at spot."""
