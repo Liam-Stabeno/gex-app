@@ -996,6 +996,7 @@
                 const showGuide = on => {
                     guide.style.display = on ? '' : 'none';
                     guideBtn.classList.toggle('active', on);
+                    div._fitPanel?.();
                     try { localStorage.setItem('labelGuide', on ? '1' : '0'); } catch (_) {}
                 };
                 let on = true;
@@ -1009,6 +1010,7 @@
                 const showInfo = on => {
                     info.style.display = on ? '' : 'none';
                     infoBtn.classList.toggle('active', on);
+                    div._fitPanel?.();
                     try { localStorage.setItem('zoneInfo', on ? '1' : '0'); } catch (_) {}
                 };
                 let on = true;
@@ -1016,7 +1018,31 @@
                 showInfo(on);
                 infoBtn.addEventListener('click', e => { e.stopPropagation(); showInfo(info.style.display === 'none'); });
             }
+            if (symbol === 'SPX') fitPricePanel(div, div.querySelector(`#price-canvas-${symbol}`));
             return div;
+        }
+
+        // The chart keeps PRICE_CHART_PX when the label guide or the info block show (or wrap
+        // onto more lines): the panel grows by what they take, instead of the candles shrinking
+        // (to ~130 px with both on). Dragging the corner sizes it yourself from then on; full
+        // screen fills the window as before.
+        const PRICE_CHART_PX = 440;
+        function fitPricePanel(div, chartBox) {
+            if (!chartBox || !window.ResizeObserver) return;
+            const fit = () => {
+                if (div._userSized || div.classList.contains('fullscreen') || !div.isConnected) return;
+                const cs = getComputedStyle(div);
+                const above = chartBox.getBoundingClientRect().top - div.getBoundingClientRect().top;
+                div._autoHeight = Math.round(above + PRICE_CHART_PX + parseFloat(cs.paddingBottom) + parseFloat(cs.borderBottomWidth));
+                div.style.height = `${div._autoHeight}px`;
+            };
+            div._fitPanel = fit;                           // the Labels / Info buttons call it too
+            const watch = new ResizeObserver(fit);
+            [...div.children].filter(c => c !== chartBox).forEach(c => watch.observe(c));
+            new ResizeObserver(() => {                     // a corner drag (not our own resize)
+                if (div._autoHeight && !div.classList.contains('fullscreen')
+                    && Math.abs(div.offsetHeight - div._autoHeight) > 6) div._userSized = true;
+            }).observe(div);
         }
 
         // Returns a wrapper div with trail chart (left) + lines chart (right)
@@ -2933,7 +2959,9 @@
                     priceCharts.SPX.esVolTotal.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0 } });
                     // the price pane's 18% bottom margin was room for SPX volume, which doesn't exist
                     candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.05 } });
-                    try { chart.panes()[1].setHeight(110); } catch (_) {}
+                    // a quarter of the chart at any size (a 110 px height was set while the chart
+                    // was still small, and grew with it to more than the candles' pane)
+                    try { chart.panes()[0].setStretchFactor(3); chart.panes()[1].setStretchFactor(1); } catch (_) {}
                     fetchEsVolume();
                     priceCharts.SPX.zones = new GammaZones(() => (selectedTF.SPX || 1) * 60);
                     priceCharts.SPX.zones.setWallStyle(_wallStyle);

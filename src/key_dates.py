@@ -30,7 +30,7 @@ from datetime import date, datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
 import bs
-from gex_stats import day_file, open_text, week_end
+from gex_stats import archived, day_file, open_text, week_end
 from price_history import load_range
 
 ET = ZoneInfo('America/New_York')
@@ -189,6 +189,7 @@ def expiry_stats(cells: dict, spot: float) -> dict:
 
 
 def _file_table(path: str) -> dict | None:
+    path = archived(path)
     st = os.stat(path)
     sig = (st.st_size, st.st_mtime)
     with _lock:

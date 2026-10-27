@@ -69,3 +69,7 @@ def test_heatmap_red_day_columns(tmp_path, monkeypatch):
     assert "x:2026-10-28" not in gs.load_heatmap("SPX", day=date(2026, 10, 26), data_dir=tmp_path)
     assert gs.current_gamma_levels(7700.0, "x:2026-10-28", data_dir=tmp_path, day=date(2026, 10, 26)) is not None
     assert gs.current_gamma_levels(7700.0, "x:2026-11-20", data_dir=tmp_path, day=date(2026, 10, 26)) is None
+    pre = gs.load_heatmap("SPX", day=date(2026, 10, 27), data_dir=tmp_path, red=2)
+    assert pre["times"] == [] and [r["key"] for r in pre["red"]] == ["x:2026-10-28", "x:2026-10-30"], \
+        "before the first snapshot: no columns, but the red days (the page's buttons)"
+    assert pre["x:2026-10-28"] == []

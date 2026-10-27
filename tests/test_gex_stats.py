@@ -157,3 +157,18 @@ def test_heatmap_reliability_by_regime(tmp_path):
     assert r["pos"] == {"ratio": 1.72, "n": 2} and r["neg"] == {"ratio": 0.93, "n": 1}
     assert r["days"]["2026-10-08"]["neg_share"] == 0.9 and r["charm"] == {"hits": 1, "calls": 5}
     assert gs.heatmap_reliability("SPX", data_dir=tmp_path / "none") == {"pos": None, "neg": None, "days": {}, "charm": None}
+
+
+def test_readers_follow_a_file_archived_after_lookup(tmp_path):
+    """The archive runs at startup; a request that looked a day file up just before it was
+    gzipped still reads it."""
+    import gzip
+    import json
+    plain = tmp_path / "gex_grid_rebuilt_SPX_2026-10-26.jsonl"
+    line = json.dumps({"ts": "2026-10-26T09:31:00-04:00", "spot": 7700.0, "exp": ["2026-10-26"],
+                       "rows": [[7700.0, 0, 10, 5, 1.5e6]]}) + "\n"
+    with gzip.open(str(plain) + ".gz", "wt", encoding="utf-8") as f:
+        f.write(line)
+    assert gs.archived(str(plain)) == str(plain) + ".gz"
+    assert len(gs._hm_rebuilt(str(plain), "2026-10-26")) == 1
+    assert len(gs._hm_snapshots(str(plain), "2026-10-26")) == 1

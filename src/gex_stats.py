@@ -175,6 +175,7 @@ def _hm_snapshots(path: str, day_iso: str, exp: str | None = None) -> list:
     would cost real CPU. A gzipped finished day is parsed in full; load_heatmap caches
     its result."""
     import gzip
+    path = archived(path)
     if path.endswith('.gz'):
         with gzip.open(path, 'rb') as f:
             return [x for x in (_hm_parse(l, day_iso, exp) for l in f if l.strip()) if x]
@@ -202,6 +203,7 @@ def _hm_snapshots(path: str, day_iso: str, exp: str | None = None) -> list:
 
 def _hm_rebuilt(path: str, day_iso: str, exp: str | None = None) -> list:
     """Snapshots tools/rebuild_gex_grid.py wrote for a day, parsed once per version."""
+    path = archived(path)
     st = os.stat(path)
     sig = (st.st_size, st.st_mtime)
     with _hm_lock:
@@ -234,16 +236,18 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     jobs) as 'x:<date>' columns, each that one expiration's GEX, and lists them in 'red'.
     """
     day = day or datetime.now(ET).date()
-    path = day_file(f'gex_grid_{sym}_{day.isoformat()}.jsonl', data_dir)
-    empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': [], 'week': [], 'rebuilt_until': None}
-    if not path:
-        return empty
-    rb_path = day_file(f'gex_grid_rebuilt_{sym}_{day.isoformat()}.jsonl', data_dir) if rebuilt else None
     red_list = []
     if red:
         import key_dates
         red_list = [{'date': d, 'tags': tags, 'key': f'x:{d}'} for d, tags in key_dates.next_red_days(red)]
     exps = tuple(r['date'] for r in red_list)
+    path = day_file(f'gex_grid_{sym}_{day.isoformat()}.jsonl', data_dir)
+    # no columns yet (pre-market), but still the red days: the page builds their buttons from it
+    empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': [], 'week': [], 'rebuilt_until': None,
+             **({'red': red_list} if red else {}), **{f'x:{e}': [] for e in exps}}
+    if not path:
+        return empty
+    rb_path = day_file(f'gex_grid_rebuilt_{sym}_{day.isoformat()}.jsonl', data_dir) if rebuilt else None
     done_key = None
     if path.endswith('.gz'):
         st = os.stat(path)
@@ -446,6 +450,13 @@ def day_file(name: str, data_dir: str = _DATA_DIR) -> str | None:
         if os.path.exists(p):
             return p
     return None
+
+
+def archived(path: str) -> str:
+    """`path`, or its .gz once archive_old_files has gzipped it (it can do that between a
+    reader looking the file up and opening it: the archive runs at startup, while the
+    page's first requests come in)."""
+    return path if path.endswith('.gz') or os.path.exists(path) else path + '.gz'
 
 
 def open_text(path: str):
