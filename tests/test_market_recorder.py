@@ -233,3 +233,17 @@ def test_full_chain_snapshot_all_expirations(tmp_path):
     p = mr.write_full_chain(snap, str(tmp_path))
     import json
     assert json.loads(open(p).read().splitlines()[0])["fields"] == mr.FULL_CHAIN_ROW
+
+
+def test_option_ticks_sizes_and_an_older_file_keeps_its_columns(tmp_path):
+    m = at(2026, 10, 13, 10, 0)
+    mr.option_quote("A", 1.9, 2.1, 2.0, 500, ts=m, bid_size=12, ask_size=30, last_size=4)
+    r = rows(tmp_path, mr.option_ticks, "2026-10-13")
+    assert list(r[0]) == mr.OPTION_TICK_FIELDS and (r[0]["bid_size"], r[0]["ask_size"], r[0]["last_size"]) == ("12", "30", "4")
+    # a day file written before the size columns: its rows stay in its own 6 columns
+    old = tmp_path / "option_ticks_SPX_2026-10-14.csv"
+    old.write_text("ts_ms,symbol,bid,ask,last,volume\n1,A,1.0,1.2,1.1,5\n", encoding="utf-8")
+    mr.option_quote("A", 1.9, 2.1, 2.0, 7, ts=at(2026, 10, 14, 10, 0), bid_size=1, ask_size=2, last_size=2)
+    mr.option_ticks.flush(str(tmp_path))
+    lines = old.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "ts_ms,symbol,bid,ask,last,volume" and lines[-1].endswith(",A,1.9,2.1,2.0,7"), lines

@@ -5,7 +5,8 @@ option's price was, where it went, and what ES and GEX were doing around it.
 One file per day in data/ (finished days are gzipped by the daily job, kept forever):
 
   option_ticks_SPX_<date>.csv  every streamed option quote (0DTE book + the next
-                               expiry's top strikes): bid, ask, last, day volume
+                               expiry's top strikes): bid, ask, last, day volume,
+                               bid / ask size, last trade size (from 2026-10-29)
   option_bars_SPX_<date>.csv   per streamed contract per minute: mid open/high/low/
                                close, bid/ask/last at the close, day volume, quote
                                count, live IV / delta / gamma, open interest, SPX
@@ -44,7 +45,7 @@ CHAIN_NEAR_DAYS  = 7        # expirations this close are saved every refresh
 CHAIN_FAR_EVERY  = 300      # seconds between snapshots of the other expirations
 ES_LARGE_LOTS    = 20       # a trade this size or bigger counts as large
 
-OPTION_TICK_FIELDS = ['ts_ms', 'symbol', 'bid', 'ask', 'last', 'volume']
+OPTION_TICK_FIELDS = ['ts_ms', 'symbol', 'bid', 'ask', 'last', 'volume', 'bid_size', 'ask_size', 'last_size']
 OPTION_BAR_FIELDS  = ['time', 'symbol', 'expiry', 'strike', 'side', 'mid_open', 'mid_high',
                       'mid_low', 'mid_close', 'bid', 'ask', 'last', 'volume', 'quotes',
                       'iv', 'delta', 'gamma', 'oi', 'spot']
@@ -112,6 +113,7 @@ class _DayCsv:
     def __init__(self, prefix: str, fields: list):
         self.prefix, self.fields = prefix, fields
         self._rows = {}                            # day -> [row, ...]
+        self._cols = {}                            # path -> the columns that file was started with
         self._lock = threading.Lock()
 
     def add(self, day: str, row: list):
@@ -125,14 +127,31 @@ class _DayCsv:
             path = os.path.join(data_dir or DATA_DIR, f'{self.prefix}_{day}.csv')
             buf = io.StringIO()
             w = csv.writer(buf, lineterminator='\n')
-            if not os.path.exists(path):
+            cols = self._columns(path)
+            if cols is None:
                 w.writerow(self.fields)
+                self._cols[path] = cols = self.fields
+            if cols != self.fields:                # a file started before columns were added
+                at = {c: i for i, c in enumerate(self.fields)}
+                rows = [[r[at[c]] if c in at else None for c in cols] for r in rows]
             w.writerows(rows)
             try:
                 with open(path, 'a', encoding='utf-8', newline='') as f:
                     f.write(buf.getvalue())
             except OSError as e:
                 print(f'[recorder] {self.prefix}: write failed: {e}')
+
+    def _columns(self, path: str) -> list | None:
+        """The header of an existing day file (None: no file yet, or empty). A file keeps
+        the columns it was started with, so rows always match their header; columns added
+        to `fields` begin with the next day's file."""
+        cols = self._cols.get(path)
+        if cols is None and os.path.exists(path):
+            with open(path, encoding='utf-8', newline='') as f:
+                cols = next(csv.reader([f.readline()]), None) or None
+            if cols:
+                self._cols[path] = cols
+        return cols
 
 
 option_ticks = _DayCsv('option_ticks_SPX', OPTION_TICK_FIELDS)
@@ -159,12 +178,13 @@ _opt_prev  = {}     # symbol -> the bar before it (a new minute's quote can beat
 _opt_minute = None  # minute (epoch s) the flusher closes next
 
 
-def option_quote(symbol: str, bid, ask, last, volume, ts: float | None = None):
-    """One streamed option quote (bid/ask/last/volume already filled from memory)."""
+def option_quote(symbol: str, bid, ask, last, volume, ts: float | None = None,
+                 bid_size=None, ask_size=None, last_size=None):
+    """One streamed option quote (bid/ask/last/volume and sizes already filled from memory)."""
     ts = ts or time.time()
     if not options_open(ts):
         return
-    option_ticks.add(_day(ts), [int(ts * 1000), symbol, bid, ask, last, volume])
+    option_ticks.add(_day(ts), [int(ts * 1000), symbol, bid, ask, last, volume, bid_size, ask_size, last_size])
     mid = (bid + ask) / 2 if bid and ask and bid > 0 and ask > 0 else None
     minute = int(ts // 60) * 60
     with _opt_lock:

@@ -62,7 +62,9 @@ _FUTURES_KEYS       = {'1': ('bid', float), '2': ('ask', float), '3': ('last', f
 # ── Options flow ────────────────────────────────────────────────────────────────
 # LEVELONE_OPTIONS fields we care about:
 #   0 = key (contract symbol)   2 = bid   3 = ask   4 = last   8 = total volume
-OPTIONS_FIELDS   = '0,2,3,4,8'
+#   16 = bid size   17 = ask size   18 = last (trade) size: how much of a volume jump the
+#   last trade was (Schwab sends about one update a second, so a jump can hold several)
+OPTIONS_FIELDS   = '0,2,3,4,8,16,17,18'
 ALERT_THRESHOLD  = 300    # weighted contracts to trigger a flow alert
                           # 0DTE weight=1.0 → 300 raw contracts
                           # MULTI weight=0.15 → ~2000 raw contracts
@@ -194,6 +196,9 @@ def _parse_options(msg: dict) -> list:
             'ask':    float(item['3']) if '3' in item else None,
             'last':   float(item['4']) if '4' in item else None,
             'volume': int(item['8'])   if '8' in item else None,
+            'bid_size':  int(float(item['16'])) if '16' in item else None,
+            'ask_size':  int(float(item['17'])) if '17' in item else None,
+            'last_size': int(float(item['18'])) if '18' in item else None,
         })
     return quotes
 
@@ -544,14 +549,18 @@ class SchwabStreamer:
                 self._last_quote_day = today
                 self._last_quote     = {}
             known = self._last_quote.setdefault(symbol, {})
-            for field in ('bid', 'ask', 'last', 'volume'):
-                if quote[field] is not None:
+            before = (known.get('bid'), known.get('ask'))   # the quote a trade on this tick hit
+            for field in ('bid', 'ask', 'last', 'volume', 'bid_size', 'ask_size', 'last_size'):
+                if quote.get(field) is not None:
                     known[field] = quote[field]
             quote = {'symbol': symbol,
                      'bid':    known.get('bid', 0.0),
                      'ask':    known.get('ask', 0.0),
                      'last':   known.get('last', 0.0),
-                     'volume': known.get('volume')}
+                     'volume': known.get('volume'),
+                     'bid_size':  known.get('bid_size'),
+                     'ask_size':  known.get('ask_size'),
+                     'last_size': known.get('last_size')}
 
             prev_vol = self._volume_cache.get(symbol)
             if traded:
@@ -560,11 +569,7 @@ class SchwabStreamer:
         # ── Live GEX: fire on every tick, with gaps filled from memory ───────
         if self.on_options_quote:
             try:
-                self.on_options_quote({'symbol': symbol,
-                                       'bid':    quote['bid'],
-                                       'ask':    quote['ask'],
-                                       'last':   quote['last'],
-                                       'volume': quote['volume']})
+                self.on_options_quote(dict(quote))
             except Exception as exc:
                 print(f'[STREAMER] on_options_quote error: {exc}')
 
@@ -579,16 +584,22 @@ class SchwabStreamer:
         if weighted < ALERT_THRESHOLD:
             return
 
-        # Direction with confidence tier:
+        # Direction with confidence tier, against the quote standing BEFORE the trade (the
+        # quote on this tick has often moved already: tested on 10 days of ticks, judging
+        # by it lost all link with SPX, -0.05 same-minute corr vs +0.63):
         #   certain  — last at/outside bid-ask
         #   likely   — last within 20% of spread from bid or ask
-        #   unknown  — true mid print, omit
-        bid, ask, last = quote['bid'], quote['ask'], quote['last']
+        #   unknown  — true mid print, or more than a spread outside the quote (usually
+        #              one leg of a multi-leg order, priced as a package), omit
+        bid, ask = before
+        last = quote['last']
         direction          = None
         direction_certain  = False
-        if last > 0 and ask > 0 and bid < ask:
+        if bid is not None and ask is not None and last > 0 and ask > 0 and bid < ask:
             spread = ask - bid
-            if last >= ask:
+            if last > ask + spread or last < bid - spread:
+                pass                                   # a package leg: leave as None
+            elif last >= ask:
                 direction, direction_certain = 'BUY',  True
             elif last <= bid:
                 direction, direction_certain = 'SELL', True
@@ -612,8 +623,8 @@ class SchwabStreamer:
                     'volume_delta':      delta,
                     'weighted_delta':    weighted,
                     'last':              quote['last'],
-                    'bid':               quote['bid'],
-                    'ask':               quote['ask'],
+                    'bid':               bid if bid is not None else quote['bid'],   # the quote it was judged on
+                    'ask':               ask if ask is not None else quote['ask'],
                     'direction':         direction,
                     'direction_certain': direction_certain,
                     'delta':             meta.get('delta', 0.50),

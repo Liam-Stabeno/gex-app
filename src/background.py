@@ -872,7 +872,9 @@ def on_options_quote(quote: dict):
                                              meta['strike'], meta['side'], quote['volume'])
 
     # Every quote is saved (ticks + minute bars) for model training
-    market_recorder.option_quote(sym, bid, ask, quote.get('last'), quote.get('volume'))
+    market_recorder.option_quote(sym, bid, ask, quote.get('last'), quote.get('volume'),
+                                 bid_size=quote.get('bid_size'), ask_size=quote.get('ask_size'),
+                                 last_size=quote.get('last_size'))
     # Δ FLOW: each trade classed against the quote before it, weighted by delta
     delta_flow.record_tick(sym, bid, ask, quote.get('last'), quote.get('volume'), lambda: _flow_contract(sym))
 
