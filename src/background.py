@@ -46,6 +46,8 @@ _last_true_pin: dict = {}   # display symbol -> latest TRUE PIN from the live lo
 _gex_by_exp: dict = {}      # display symbol -> gex_by_expiry() from the latest chain refresh
 _true_pin_pending: dict = {}  # challenger strike waiting out TRUE_PIN_CONFIRM_SEC
 _last_charm_flow: dict = {} # display symbol -> latest charm hedge flow, $/hr
+_live_0dte: dict = {}       # display symbol -> (time.time(), {strike: net GEX}) from the live loop
+LIVE_FRESH_SEC = 15         # older than this (stream down, after the close): not live
 _level_state: dict = {}     # (display symbol, 'multi'|'0dte') -> last published levels (sticky)
 _level_seeded: set = set()
 
@@ -94,7 +96,8 @@ def _append_gex_snapshot(sym: str, tag: str, row: dict):
 
 # ── Strike × expiration GEX history ──────────────────────────────────────────
 # One JSONL file per ET day, one line per snapshot:
-#   {"ts", "spot", "exp": [expiries], "rows": [[strike, exp_idx, call_oi, put_oi, net_gex], ...]}
+#   {"ts", "spot", "exp": [expiries], "rows": [[strike, exp_idx, call_oi, put_oi, net_gex], ...],
+#    "live0": [[strike, net_gex], ...]}   (live0: the live loop's 0DTE, when fresh)
 # Cells with no OI on either side are left out. The first line of each day
 # records the opening OI (it only changes overnight).
 _ET               = ZoneInfo('America/New_York')
@@ -102,6 +105,13 @@ GRID_INTERVAL_SEC = 50       # snapshot every chain refresh (~60 s); was 300 bef
 GRID_KEEP_DAYS    = None     # keep forever (finished days are gzipped by gex_stats.archive_old_files)
 _grid_last_ts: dict = {}     # sym -> time.time() of last snapshot
 _grid_cleaned_day: dict = {} # sym -> ET date of last cleanup
+
+
+def live_0dte(sym: str = 'SPX') -> dict | None:
+    """Today's 0DTE net GEX per strike from the live loop (gamma solved from streamed
+    quotes, every ~2 s), or None when it's older than LIVE_FRESH_SEC."""
+    hit = _live_0dte.get(sym)
+    return dict(hit[1]) if hit and time.time() - hit[0] <= LIVE_FRESH_SEC else None
 
 
 def _record_gex_grid(sym: str, raw_df, spot: float):
@@ -125,12 +135,18 @@ def _record_gex_grid(sym: str, raw_df, spot: float):
     rows = [[float(r.strike), idx[r.expiration], int(r.call_oi), int(r.put_oi), round(float(r.gex))]
             for r in cell.itertuples(index=False)]
 
+    snap = {'ts': et.isoformat(timespec='seconds'), 'spot': float(spot), 'exp': exps, 'rows': rows}
+    # the live 0DTE beside the chain's (from 2026-10-29): the heatmap and levels read it
+    # in place of the chain's 0DTE, so history matches what the page showed live
+    live = live_0dte(sym)
+    if live:
+        snap['live0'] = [[float(k), round(g)] for k, g in sorted(live.items())]
+
     day  = et.date().isoformat()
     path = os.path.join(_DATA_DIR, f'gex_grid_{sym}_{day}.jsonl')
     try:
         with open(path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({'ts': et.isoformat(timespec='seconds'), 'spot': float(spot),
-                                'exp': exps, 'rows': rows}, separators=(',', ':')) + '\n')
+            f.write(json.dumps(snap, separators=(',', ':')) + '\n')
     except OSError as e:
         print(f'[GEX grid] {sym}: write failed: {e}')
 
@@ -1097,6 +1113,7 @@ def live_gex_loop():
 
         if not gex_0dte:
             continue
+        _live_0dte['SPX'] = (time.time(), dict(gex_0dte))
 
         def _to_df(d):
             if not d:

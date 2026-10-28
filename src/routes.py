@@ -130,7 +130,9 @@ def register(app):
             spot = (_cache.get(key) or {}).get('spot')
         if not spot:
             return jsonify(None)
-        return jsonify(gex_stats.current_gamma_levels(float(spot), mode, symbol.upper().replace('$', '')))
+        from background import live_0dte
+        sym = symbol.upper().replace('$', '')
+        return jsonify(gex_stats.current_gamma_levels(float(spot), mode, sym, live=live_0dte(sym)))
 
     @app.route('/api/expected_move/<symbol>')
     def api_expected_move(symbol):

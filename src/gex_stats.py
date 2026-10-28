@@ -140,19 +140,25 @@ def week_end(day_iso: str) -> str:
 def _hm_parse(line: bytes, day_iso: str, exp: str | None = None):
     """One grid snapshot line -> (epoch, spot, {strike: [all, odte, week]}), summed over
     expiries; week = expirations through that week's Friday. With `exp`, that one
-    expiration only: (epoch, spot, {strike: gex})."""
+    expiration only: (epoch, spot, {strike: gex}).
+
+    Where the line has 'live0' (the live loop's 0DTE, recorded from 2026-10-29), today's
+    0DTE is that instead of the chain's, strike by strike (the chain's stays in the file)."""
     import json
     try:
         s = json.loads(line)
     except ValueError:
         return None
     exps = s.get('exp', [])
+    live0 = s.get('live0') or []
     if exp is not None:
         ei = exps.index(exp) if exp in exps else -1
         one = {}
         for k, exp_i, _c, _p, gex in s.get('rows', []):
             if exp_i == ei:
                 one[k] = one.get(k, 0.0) + gex
+        if exp == day_iso:
+            one.update({k: g for k, g in live0})
         return int(datetime.fromisoformat(s['ts']).timestamp()), s.get('spot'), one
     today_i = exps.index(day_iso) if day_iso in exps else -1
     fri = week_end(day_iso)
@@ -165,6 +171,12 @@ def _hm_parse(line: bytes, day_iso: str, exp: str | None = None):
             cell[1] += gex
         if exp_i in week_i:
             cell[2] += gex
+    for k, g in live0:
+        cell = by_k.setdefault(k, [0.0, 0.0, 0.0])
+        d = g - cell[1]                                   # live minus the chain's 0DTE
+        cell[0] += d
+        cell[1] = g
+        cell[2] += d
     return int(datetime.fromisoformat(s['ts']).timestamp()), s.get('spot'), by_k
 
 
@@ -396,10 +408,18 @@ def gamma_levels(strikes: list, gex: list, spot: float, n_walls: int = 3, prev: 
     }
 
 
+_gl_history: dict = {}   # (sym, day, mode, data_dir) -> (columns seen, last time, history, prev)
+
+
 def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX',
-                         data_dir: str = _DATA_DIR, day=None) -> dict | None:
-    """gamma_levels() on the latest 5-min snapshot of a day's heatmap (default today).
-    For a past day, spot defaults to that day's last snapshot."""
+                         data_dir: str = _DATA_DIR, day=None, live: dict | None = None) -> dict | None:
+    """gamma_levels() on the latest snapshot of a day's heatmap (default today), with a
+    history of each snapshot's levels for the chart's trails. For a past day, spot
+    defaults to that day's last snapshot.
+
+    live: today's 0DTE GEX per strike now (background.live_0dte), in place of the latest
+    snapshot's 0DTE part, so the levels move with the stream (every ~2 s) and agree with
+    the chart's medals and BIG lines, which read the same numbers."""
     # 'x:<date>': one red day's expiration (the next two are offered)
     h = load_heatmap(sym, day=day, data_dir=data_dir, red=2 if mode.startswith('x:') else 0)
     if not h['times'] or not (mode in ('all', 'odte', 'week') or (mode.startswith('x:') and mode in h)):
@@ -408,23 +428,44 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
         spot = next((s for s in reversed(h['spots']) if s), None)
         if spot is None:
             return None
-    # the same levels for every 5-min snapshot of the day, in order, each one sticky
-    # to the one before — so the chart can trail them
-    history, prev = [], None
-    for t, col, sp in zip(h['times'], h[mode], h['spots']):
-        if not sp:
-            continue
-        L = gamma_levels(h['strikes'], col, float(sp), prev=prev)
-        prev = {k: (L[k]['strike'] if L.get(k) else None) for k in ('support', 'resistance', 'trapdoor', 'squeeze')}
-        history.append({'time': t, **prev})
-    out = gamma_levels(h['strikes'], h[mode][-1], spot, prev=prev)
+    # the same levels for every snapshot of the day, in order, each one sticky to the one
+    # before — so the chart can trail them. Kept until a new snapshot arrives: the page
+    # asks every 2 s and only the last pick changes between snapshots.
+    key = (sym, day, mode, str(data_dir))
+    hit = _gl_history.get(key)
+    if hit and hit[0] == len(h['times']) and hit[1] == h['times'][-1]:
+        history, prev = hit[2], hit[3]
+    else:
+        history, prev = [], None
+        for t, col, sp in zip(h['times'], h[mode], h['spots']):
+            if not sp:
+                continue
+            L = gamma_levels(h['strikes'], col, float(sp), prev=prev)
+            prev = {k: (L[k]['strike'] if L.get(k) else None) for k in ('support', 'resistance', 'trapdoor', 'squeeze')}
+            history.append({'time': t, **prev})
+        if len(_gl_history) > 32:
+            _gl_history.clear()
+        _gl_history[key] = (len(h['times']), h['times'][-1], history, prev)
+
+    col, all_now = h[mode][-1], h['all'][-1]
+    if live:
+        lv = [live.get(k) for k in h['strikes']]
+        odte = h['odte'][-1]
+        swap = lambda c: [x - o + v if v is not None else x for x, o, v in zip(c, odte, lv)]
+        today = (day or datetime.now(ET).date()).isoformat()
+        if mode in ('all', 'week'):
+            col = swap(col)
+        elif mode in ('odte', f'x:{today}'):
+            col = [v if v is not None else x for x, v in zip(col, lv)]
+        all_now = swap(all_now)
+    out = gamma_levels(h['strikes'], col, spot, prev=prev)
     if out:
         out['history'] = history
         # air pockets are about total gamma: 0DTE alone looks empty away from spot
         # even where other expiries hold plenty
         if mode != 'all':
-            out['air_pockets'] = gamma_levels(h['strikes'], h['all'][-1], spot).get('air_pockets', [])
-        out.update(mode=mode, as_of=h['times'][-1])
+            out['air_pockets'] = gamma_levels(h['strikes'], all_now, spot).get('air_pockets', [])
+        out.update(mode=mode, as_of=h['times'][-1], live=bool(live))
     return out
 
 

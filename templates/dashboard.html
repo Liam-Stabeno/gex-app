@@ -2004,10 +2004,10 @@
             for (const [k] of LEVEL_TRAILS) {
                 const byT = new Map();
                 for (const h of hist) byT.set(Math.floor(h.time / bucket) * bucket, h[k]);   // last in bucket wins
+                // the latest candle: the level now (live 0DTE), which can differ from the last snapshot's
+                if (hist.length && endT != null) byT.set(endT, _lastGammaLevels[k]?.strike ?? null);
                 const pts = [...byT].sort((a, b) => a[0] - b[0])
                     .map(([time, v]) => v == null ? { time } : { time, value: v });
-                const last = pts.at(-1);
-                if (last && endT != null && endT > last.time) pts.push(last.value == null ? { time: endT } : { time: endT, value: last.value });
                 e.levelSeries[k].setData(snapToCandles(pts, 'SPX'));   // no candle-less time slots
             }
         }
@@ -4356,7 +4356,7 @@
         setInterval(fetchLevelHistory, 60000);
         fetchHeatmap();
         setInterval(fetchHeatmap, 60000);
-        setInterval(fetchGammaLevels, 30000);
+        setInterval(() => { if (!_replayDate) fetchGammaLevels(); }, 2000);   // live 0DTE: moves every ~2 s
         setInterval(fetchEsVolume, 15000);
         loadReplayDays();
         setInterval(loadReplayDays, 10 * 60000);
