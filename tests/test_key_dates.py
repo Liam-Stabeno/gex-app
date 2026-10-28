@@ -191,3 +191,24 @@ def test_event_history(cal, monkeypatch, tmp_path):
     assert h == {"n": 1, "move_pct": 1.0, "range": 120}
     info = kd.event_info("2026-10-28", ["FOMC"], "2026-10-26", str(events))
     assert info["text"].startswith("FOMC decision at 14:00 ET") and "±1.00%" in info["text"]
+
+
+def test_save_notes_concurrent(tmp_path):
+    # page requests save at the same time: none fails and every row ends up in the file
+    import threading
+    path = str(tmp_path / "notes.jsonl")
+    errors = []
+
+    def save(i):
+        try:
+            for j in range(20):
+                kd.save_notes([{"exp": "2026-10-30", "day": f"2026-10-{i:02d}", "n": j}], path)
+        except Exception as e:      # PermissionError on Windows before the lock
+            errors.append(e)
+    threads = [threading.Thread(target=save, args=(i,)) for i in range(1, 9)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert {r["day"]: r["n"] for r in kd.save_notes([], path)} == {f"2026-10-{i:02d}": 19 for i in range(1, 9)}

@@ -45,6 +45,7 @@ TAG_CATEGORY = {'FOMC': 'fomc', 'CPI': 'cpi', 'JOBS REPORT': 'jobs', 'MONTHLY OP
                 'YEAR END': 'period_end'}
 
 _lock = threading.Lock()
+_notes_lock = threading.Lock()  # one request at a time reads, merges and replaces the notes file
 _events = {'sig': None, 'red': {}, 'holidays': set()}
 _snaps: dict = {}           # file path -> ((size, mtime), table)
 _sides: dict = {}           # chain file -> ((size, mtime), {(expiry, strike, 'c'|'p'): [bought, sold, between]})
@@ -528,8 +529,13 @@ def build_notes(exp: str, tags: list, pos: dict, now: datetime | None = None, da
 
 def save_notes(rows: list, path: str | None = None) -> list:
     """Merge rows into the notes file (one per expiration and session, newest wins) and
-    return everything in it. Rewritten only when something changed."""
-    path = path or NOTES_FILE
+    return everything in it. Rewritten only when something changed. Serialised: two page
+    requests saving at once collided on Windows (os.replace on a file the other had open)."""
+    with _notes_lock:
+        return _save_notes(rows, path or NOTES_FILE)
+
+
+def _save_notes(rows: list, path: str) -> list:
     have = {}
     if os.path.exists(path):
         with open(path, encoding='utf-8') as f:
