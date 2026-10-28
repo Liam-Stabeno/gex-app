@@ -623,6 +623,7 @@ def refresh_gex(symbol: str):
             'is_0dte':     c.get('is_0dte', False),
             'underlying':  c.get('underlying') or display_sym,
             'gamma':       c.get('gamma', 0.0),
+            'delta':       c.get('delta'),
         } for c in watch}
         _oi_cache.update(new_oi)
         _contract_meta.update(new_meta)
@@ -702,8 +703,6 @@ def refresh_gex(symbol: str):
         # ─────────────────────────────────────────────────────────────────────
 
         if display_sym == 'SPX':
-            new_snap = delta_flow.extract_chain_snapshot(raw_chain)
-            delta_flow.process_chain_snapshot(new_snap)
             # the expirations the stream doesn't cover, for model training
             try:
                 market_recorder.record_chain(chain, spot, {c['symbol'] for c in watch})
@@ -874,6 +873,20 @@ def on_options_quote(quote: dict):
 
     # Every quote is saved (ticks + minute bars) for model training
     market_recorder.option_quote(sym, bid, ask, quote.get('last'), quote.get('volume'))
+    # Δ FLOW: each trade classed against the quote before it, weighted by delta
+    delta_flow.record_tick(sym, bid, ask, quote.get('last'), quote.get('volume'), lambda: _flow_contract(sym))
+
+
+def _flow_contract(sym: str):
+    """(side, is_0dte, delta, spot) for delta_flow: delta from the live loop's solved vol,
+    else the chain's."""
+    m = _contract_meta.get(sym)
+    if not m:
+        return None
+    dl = _contract_greeks(sym)[1]
+    if dl is None:
+        dl = m.get('delta')
+    return m['side'], bool(m.get('is_0dte')), dl, current_spot()
 
 
 def on_futures_quote(q: dict):
@@ -1257,7 +1270,6 @@ def on_flow_alert(alert: dict):
     """Called by SchwabStreamer when a weighted options volume spike is detected."""
     alert['time'] = int(datetime.now().timestamp())
     sse.push({'type': 'flow_alert', **alert})
-    delta_flow.record_alert(alert)
     flow_alerts.append(alert)
     ts = datetime.now().strftime('%H:%M:%S')
     print(f"[{ts}] FLOW  {alert['underlying']} {alert['strike']} "

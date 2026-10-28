@@ -187,8 +187,16 @@
         .kd-grid { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
         .kd-panel { display: flex; flex-direction: column; height: 900px; min-height: 420px; }
         .kd-notes { flex: 0 0 250px; overflow-y: auto; border-top: 1px solid #1e1e2e; margin-top: 6px;
-                    padding-top: 6px; font-size: 0.62rem; color: #b0b0c0; line-height: 1.55; }
-        .kd-note { margin-bottom: 9px; }
+                    padding-top: 6px; font-size: 0.62rem; color: #b0b0c0; line-height: 1.55; position: relative; }
+        .kd-note { margin-bottom: 9px; padding-left: 6px; border-left: 2px solid transparent; }
+        .kd-note.sel { border-left-color: #00d4ff; }
+        .kd-slider { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 6px; font-size: 0.6rem; color: #8a8a9c; }
+        .kd-slider .tf-btn { padding: 0 7px; flex: 0 0 auto; }
+        .kd-track { flex: 1; min-width: 0; }
+        .kd-track input { width: 100%; margin: 2px 0 0; accent-color: #00d4ff; cursor: pointer; }
+        .kd-ticks { position: relative; height: 12px; margin: 0 7px; }
+        .kd-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; cursor: pointer; }
+        .kd-ticks span.on { color: #00d4ff; font-weight: bold; }
         .kd-note b { display: block; color: #d0d0dc; letter-spacing: 1px; }
         .kd-note.latest b { color: #00d4ff; }
         .kd-note .grow { color: #7dffc4; }
@@ -594,42 +602,46 @@
     <div class="section-label">OPTIONS FLOW</div>
     <div id="flow-feed"></div>
 
-    <div class="section-label">CUMULATIVE DEALER DELTA</div>
+    <div class="section-label">CUMULATIVE DEALER DELTA · Δ FLOW<span class="kd-compare">customer delta bought = what dealers must buy to hedge · every streamed trade, bought at the ask / sold at the bid, x delta · moves with price, doesn't lead it</span></div>
     <div class="flow-delta-grid">
         <div class="chart-div" id="delta-flow-div">
             <div class="chart-div-header">
                 <div>
-                    <div class="chart-title">CUMULATIVE DEALER DELTA · TODAY · ALL EXPIRIES</div>
+                    <div class="chart-title" title="Every streamed option trade, classed against the quote before it (at / through the ask = bought, at / through the bid = sold, inside = the nearer side), times its delta x 100 x SPX, added up since 9:30. Call line up = customers bought calls, dealers buy to hedge; put line down = customers bought puts, dealers sell. Net = the two together. Tested on 10 recorded days: it moves with SPX, it doesn't lead it.">CUMULATIVE DEALER DELTA · TODAY · 0DTE + NEXT EXPIRATION</div>
                     <div class="symbol" style="font-size:0.9rem">Δ FLOW</div>
                     <div style="font-size:0.68rem;margin-top:3px">
                         <span id="delta-call-val" style="color:#cc44ff">call: —</span>
                         &nbsp;&nbsp;
                         <span id="delta-put-val"  style="color:#d4a017">put: —</span>
+                        &nbsp;&nbsp;
+                        <span id="delta-net-val"  style="color:#e0e0ea">net: —</span>
                     </div>
                 </div>
                 <div style="font-size:0.65rem;color:#a8a8b8;text-align:right;line-height:1.7">
                     <span style="color:#cc44ff">■</span> CALL<br>
-                    <span style="color:#d4a017">■</span> PUT
+                    <span style="color:#d4a017">■</span> PUT<br>
+                    <span style="color:#e0e0ea">■</span> NET
                 </div>
             </div>
             <div class="chart-container" id="delta-flow-canvas" style="height:300px"></div>
         </div>
-    </div>
-
         <div class="chart-div" id="delta-flow-0dte-div">
             <div class="chart-div-header">
                 <div>
-                    <div class="chart-title">CUMULATIVE DEALER DELTA · TODAY · 0DTE ONLY</div>
+                    <div class="chart-title" title="Every streamed option trade, classed against the quote before it (at / through the ask = bought, at / through the bid = sold, inside = the nearer side), times its delta x 100 x SPX, added up since 9:30. Call line up = customers bought calls, dealers buy to hedge; put line down = customers bought puts, dealers sell. Net = the two together. Tested on 10 recorded days: it moves with SPX, it doesn't lead it.">CUMULATIVE DEALER DELTA · TODAY · 0DTE ONLY</div>
                     <div class="symbol" style="font-size:0.9rem">Δ FLOW 0DTE</div>
                     <div style="font-size:0.68rem;margin-top:3px">
                         <span id="delta-0dte-call-val" style="color:#cc44ff">call: —</span>
                         &nbsp;&nbsp;
                         <span id="delta-0dte-put-val"  style="color:#d4a017">put: —</span>
+                        &nbsp;&nbsp;
+                        <span id="delta-0dte-net-val"  style="color:#e0e0ea">net: —</span>
                     </div>
                 </div>
                 <div style="font-size:0.65rem;color:#a8a8b8;text-align:right;line-height:1.7">
                     <span style="color:#cc44ff">■</span> CALL<br>
-                    <span style="color:#d4a017">■</span> PUT
+                    <span style="color:#d4a017">■</span> PUT<br>
+                    <span style="color:#e0e0ea">■</span> NET
                 </div>
             </div>
             <div class="chart-container" id="delta-flow-0dte-canvas" style="height:300px"></div>
@@ -719,8 +731,7 @@
             // LW charts keep their axis labels: hand them the formatters again so they redraw
             const tick = (t, type) => (type <= 2 ? fmtETDate(t) : fmtET24(t));
             [...Object.values(priceCharts).map(p => p?.chart),
-             typeof deltaChart !== 'undefined' ? deltaChart : null,
-             typeof deltaChart0dte !== 'undefined' ? deltaChart0dte : null, modalLWChart]
+             ...(typeof DFLOW !== 'undefined' ? DFLOW.map(d => d.chart) : []), modalLWChart]
                 .filter(Boolean)
                 .forEach(ch => { try { ch.applyOptions({ localization: { timeFormatter: fmtET24 }, timeScale: { tickMarkFormatter: tick } }); } catch (_) {} });
             document.querySelectorAll('.flow-row').forEach(r => {
@@ -955,8 +966,7 @@
                     <button class="tf-btn" data-lines="history">History</button>
                     <button class="tf-btn" data-lines="now">Now</button>
                     <button class="tf-btn" data-lines="off">Off</button>
-                    <span title="The 3 strongest strikes in each heatmap snapshot. Boxes: outlined for as long as a strike stays top 3. Medals: gold / silver / bronze lines by rank, with each one's current size on the price axis.">WALLS</span>
-                    <button class="tf-btn" data-walls="boxes">Boxes</button>
+                    <span title="The 3 strongest strikes in each heatmap snapshot. Medals: gold / silver / bronze lines by rank, with each one's current size on the price axis.">WALLS</span>
                     <button class="tf-btn" data-walls="medals">Medals</button>
                     <button class="tf-btn" data-walls="off">Off</button>
                     <span id="zone-regime-top" style="display:contents"></span>
@@ -976,7 +986,7 @@
                 <div class="zone-bar">
                     <span title="Brighter = bigger GEX at that strike, scaled to the day's biggest (linear). Faint bands slow price only a little."><span class="zone-swatch" style="width:26px;background:linear-gradient(90deg, rgba(0,110,70,0.2), rgba(90,245,175,0.75))"></span> positive gamma: dealers lean against moves, price <b style="color:#00c878">slows / sticks</b> (brighter = stronger)</span>
                     <span title="Brighter = bigger negative GEX at that strike, scaled to the day's biggest (linear)."><span class="zone-swatch" style="width:26px;background:linear-gradient(90deg, rgba(140,25,40,0.3), rgba(255,105,120,0.75))"></span> negative gamma: dealers chase moves, price <b style="color:#ff3c50">speeds up</b></span>
-                    <span title="The 3 biggest strikes in each snapshot, boxed for as long as they stay in the top 3."><span class="zone-swatch" style="border:1px solid rgba(255,255,255,0.75)"></span> walls: 3 strongest strikes, outlined (Boxes) or gold / silver / bronze (Medals)</span>
+                    <span title="The 3 biggest strikes in each snapshot, by rank, for as long as they stay in the top 3."><span class="zone-swatch" style="background:linear-gradient(90deg, #ffd700 33%, #c9ccd6 33% 66%, #cd7f32 66%)"></span> walls: 3 strongest strikes, gold / silver / bronze (Medals)</span>
                     <span title="Strikes with almost no gamma (under 5% of the day's biggest) in the latest snapshot, drawn from there to the right edge. Nothing slows price there, so it tends to move through quickly. Listed as 'Air' in the levels bar."><span class="zone-swatch" style="background:repeating-linear-gradient(135deg, rgba(200,200,220,0.55) 0 1px, transparent 1px 4px);border:1px solid #333"></span> hatched: air pocket, price moves through fast</span>
                 </div>
                 <div class="zone-bar" title="ES futures volume per bar, aligned to the SPX candles. Buy/sell split by the tick rule from the live stream (uptick = buy, downtick = sell). Faded bars are estimated from where the candle closed in its range (no tick data for them).">
@@ -1342,6 +1352,8 @@
                 const L = this._live, d = this._data;
                 if (!L) return null;
                 if (L[mode]) return L[mode];
+                // a red day's expiration that is today's 0DTE: the same contracts, so the live 0DTE
+                if (mode.startsWith('x:') && L.odte && mode.slice(2) === _lastGexData.SPX?.odte_date) return L.odte;
                 if (mode !== 'week' || !L.odte || !d?.week?.length) return null;
                 const w = d.week[d.week.length - 1], o = d.odte[d.odte.length - 1];
                 return new Map(d.strikes.map((k, i) => [k, (L.odte.has(k) ? L.odte.get(k) : o[i]) + w[i] - o[i]]));
@@ -1366,7 +1378,6 @@
                 // change, not per frame
                 this._rank3 = cols.map(col => col.map((g, i) => [Math.abs(g), i])
                     .filter(([m]) => m > 0).sort((a, b) => b[0] - a[0]).slice(0, 3).map(([, i]) => i));
-                this._top3 = this._rank3.map(r => new Set(r));
                 this._req && this._req();
             }
             _draw(target) {
@@ -1465,81 +1476,59 @@
                         ctx.restore();
                     }
 
-                    // Walls: the 3 strongest strikes per snapshot, outlined as one continuous
-                    // box for as long as a strike stays in the top 3 (not a box per column).
-                    const top3 = this._top3 || [];
+                    // Walls: the 3 strongest strikes per snapshot
+                    if (this._wallStyle !== 'medals') return;
                     const colEnd = c => {
                         for (let n = c + 1; n < xs.length; n++) if (xs[n] != null) return Math.min(edge, Math.round(xs[n] * hr));
                         return edge;
                     };
-                    if (this._wallStyle === 'medals') {
-                        // gold / silver / bronze through each snapshot by rank; one stroke per run
-                        // of the same strike at the same rank. The strip right of "now" uses the
-                        // current ranking.
-                        const rank3 = this._rank3 || [];
-                        ctx.lineWidth = Math.max(2, Math.round(2 * hr));
-                        for (let r = 0; r < 3; r++) {
-                            ctx.strokeStyle = MEDAL_COLORS[r];
-                            let run = null;                    // [strike index, start column]
-                            const flush = c => {
-                                const y = run && cells[run[0]];
-                                if (y) {
-                                    const x0 = Math.round(xs[run[1]] * hr), x1 = colEnd(c), ym = y[0] + y[1] / 2;
-                                    ctx.beginPath(); ctx.moveTo(x0, ym); ctx.lineTo(x1, ym); ctx.stroke();
-                                }
-                                run = null;
-                            };
-                            let lastC = null;
-                            for (let c = 0; c < cols.length; c++) {
-                                if (xs[c] == null) continue;
-                                const i = rank3[c]?.[r];
-                                if (run && run[0] !== i) flush(lastC);
-                                if (i != null && !run) run = [i, c];
-                                lastC = c;
+                    // gold / silver / bronze through each snapshot by rank; one stroke per run
+                    // of the same strike at the same rank. The strip right of "now" uses the
+                    // current ranking.
+                    const rank3 = this._rank3 || [];
+                    ctx.lineWidth = Math.max(2, Math.round(2 * hr));
+                    for (let r = 0; r < 3; r++) {
+                        ctx.strokeStyle = MEDAL_COLORS[r];
+                        let run = null;                    // [strike index, start column]
+                        const flush = c => {
+                            const y = run && cells[run[0]];
+                            if (y) {
+                                const x0 = Math.round(xs[run[1]] * hr), x1 = colEnd(c), ym = y[0] + y[1] / 2;
+                                ctx.beginPath(); ctx.moveTo(x0, ym); ctx.lineTo(x1, ym); ctx.stroke();
                             }
-                            if (run) flush(lastC);
+                            run = null;
+                        };
+                        let lastC = null;
+                        for (let c = 0; c < cols.length; c++) {
+                            if (xs[c] == null) continue;
+                            const i = rank3[c]?.[r];
+                            if (run && run[0] !== i) flush(lastC);
+                            if (i != null && !run) run = [i, c];
+                            lastC = c;
                         }
-                        if (liveXc != null && edge < bitmapSize.width) {
-                            const idx = new Map(ks.map((k, i) => [k, i]));
-                            this.currentTop3().forEach((w, r) => {
-                                const y = cells[idx.get(w.strike)];
-                                if (!y) return;
-                                const ym = y[0] + y[1] / 2;
-                                ctx.strokeStyle = MEDAL_COLORS[r];
-                                ctx.beginPath(); ctx.moveTo(edge, ym); ctx.lineTo(bitmapSize.width, ym); ctx.stroke();
-                            });
-                        }
-                        return;
+                        if (run) flush(lastC);
                     }
-                    if (this._wallStyle === 'off') return;
-                    ctx.lineWidth = Math.max(1, Math.round(hr));
-                    for (let i = 0; i < ks.length; i++) {
-                        const y = cells[i];
-                        if (!y) continue;                      // strike off screen
-                        let start = null;
-                        for (let c = 0; c <= cols.length; c++) {
-                            const inWall = c < cols.length && xs[c] != null && top3[c]?.has(i);
-                            if (inWall && start == null) start = c;
-                            if (!inWall && start != null) {
-                                const x0 = Math.round(xs[start] * hr), x1 = colEnd(c - 1);
-                                // white / pale pink: still visible over the brightest fills
-                                ctx.strokeStyle = cols[c - 1][i] > 0 ? 'rgba(255,255,255,0.75)' : 'rgba(255,205,210,0.85)';
-                                ctx.strokeRect(x0 + 0.5, y[0] + 0.5, Math.max(1, x1 - x0 - 1), Math.max(1, y[1] - 1));
-                                start = null;
-                            }
-                        }
+                    if (liveXc != null && edge < bitmapSize.width) {
+                        const idx = new Map(ks.map((k, i) => [k, i]));
+                        this.currentTop3().forEach((w, r) => {
+                            const y = cells[idx.get(w.strike)];
+                            if (!y) return;
+                            const ym = y[0] + y[1] / 2;
+                            ctx.strokeStyle = MEDAL_COLORS[r];
+                            ctx.beginPath(); ctx.moveTo(edge, ym); ctx.lineTo(bitmapSize.width, ym); ctx.stroke();
+                        });
                     }
                 });
             }
         }
 
-        // ── Walls: Boxes / Medals / Off ────────────────────────────────────────
+        // ── Walls: Medals / Off ────────────────────────────────────────────────
         // Medals: the strongest strike gold, then silver, bronze, with each one's current size
         // on the price axis (live values where there are any).
         const MEDAL_COLORS = ['#ffd700', '#c9ccd6', '#cd7f32'];
         const MEDAL_NAMES  = ['GOLD', 'SILVER', 'BRONZE'];
-        let _wallStyle = 'boxes';
-        try { const w = localStorage.getItem('wallStyle'); if (['boxes', 'medals', 'off'].includes(w)) _wallStyle = w; } catch (_) {}
+        let _wallStyle = 'medals';
+        try { if (localStorage.getItem('wallStyle') === 'off') _wallStyle = 'off'; } catch (_) {}   // an old 'boxes' → medals
         let _medalLines = [];          // the axis labels, on the candle series
         const fmtSize = g => (g >= 0 ? '+' : '−') + (Math.abs(g) >= 1e9 ? (Math.abs(g) / 1e9).toFixed(2) + 'B' : (Math.abs(g) / 1e6).toFixed(1) + 'M');
         function updateMedalLabels() {
@@ -2529,6 +2518,36 @@
         let kdCompare = 'prev';
         try { kdCompare = localStorage.getItem('kdCompare') === 'first' ? 'first' : 'prev'; } catch (_) {}
         const KD_STRIKES = 40;
+        const kdPick = {};             // expiration -> the session day the slider is on (none = the latest)
+        const kdPlay = [];             // per panel: the play timer
+
+        // The session slider: which recorded session the bars show, to watch this
+        // expiration's gamma build up or fade strike by strike.
+        function kdSliderEvents(i) {
+            const range = document.getElementById(`kd-range-${i}`), play = document.getElementById(`kd-play-${i}`);
+            const pick = j => {
+                const kd = _keyDates?.next?.[i], ss = kd?.sessions || [];
+                if (!ss.length) return;
+                j = Math.max(0, Math.min(ss.length - 1, j));
+                kdPick[kd.date] = j === ss.length - 1 ? null : ss[j].day;
+                renderKeyDate(i, kd, true);
+            };
+            const stop = () => { clearInterval(kdPlay[i]); kdPlay[i] = null; play.textContent = '▶'; };
+            range.addEventListener('input', () => { stop(); pick(+range.value); });
+            document.getElementById(`kd-ticks-${i}`).addEventListener('click', e => {
+                if (e.target.dataset.j != null) { stop(); pick(+e.target.dataset.j); }
+            });
+            play.addEventListener('click', () => {
+                if (kdPlay[i]) return stop();
+                // from the first session, or on from where the slider is if it isn't at the end
+                if (+range.value >= +range.max) pick(0);
+                play.textContent = '❚❚';
+                kdPlay[i] = setInterval(() => {
+                    if (+range.value >= +range.max) return stop();
+                    pick(+range.value + 1);
+                }, 900);
+            });
+        }
         const fmtOI = v => { const a = Math.abs(v), sg = v < 0 ? '-' : '';
             return sg + (a >= 1e6 ? (a / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (a / 1e3).toFixed(1) + 'K' : String(a)); };
 
@@ -2549,6 +2568,11 @@
                     </div>
                 </div>
                 <div class="kd-changes" id="kd-changes-${i}" title="Where open interest changed most against the session compared with (strikes on the chart). OI is reported once a day, so this is positions added (+) or closed (-) since then.">—</div>
+                <div class="kd-slider" title="Pick the session the bars show: each one's close, the last one live. Arrow keys step through them; play runs through them in order.">
+                    <button class="tf-btn" id="kd-play-${i}">▶</button>
+                    <div class="kd-track"><input type="range" id="kd-range-${i}" min="0" max="0" step="1" value="0">
+                        <div class="kd-ticks" id="kd-ticks-${i}"></div></div>
+                </div>
                 <div class="gex-canvas-wrap"><canvas id="kd-canvas-${i}"></canvas></div>
                 <div class="kd-notes" id="kd-notes-${i}" title="One note per recorded session, newest first: open interest added (growing) and closed (shrinking) against the session before, and the biggest gamma within 100 pts above and below spot in this expiration, with the session it first took that spot."></div>`;
             return div;
@@ -2559,7 +2583,7 @@
             if (!gexGrid || document.getElementById('kd-grid')) return;
             const label = document.createElement('div');
             label.className = 'section-label';
-            label.innerHTML = `KEY DATES · DEALER POSITIONING<span class="kd-compare">bars: now · outline:
+            label.innerHTML = `KEY DATES · DEALER POSITIONING<span class="kd-compare">bars: the session on the slider (now by default) · outline:
                 <button class="tf-btn" data-kdcmp="prev">previous session</button><button class="tf-btn" data-kdcmp="first">first recorded</button></span>
                 <span class="kd-compare" id="kd-score-all" title="How the levels named in every saved red-day note did the next session: broke = closed or opened beyond it, held = touched and closed back, not reached = never got there."></span>`;
             const grid = document.createElement('div');
@@ -2568,6 +2592,7 @@
             for (let i = 0; i < 2; i++) grid.appendChild(createKeyDateDiv(i));
             gexGrid.parentNode.insertBefore(label, gexGrid.nextSibling);
             gexGrid.parentNode.insertBefore(grid, label.nextSibling);
+            for (let i = 0; i < 2; i++) kdSliderEvents(i);
             label.querySelectorAll('[data-kdcmp]').forEach(b => {
                 b.classList.toggle('active', b.dataset.kdcmp === kdCompare);
                 b.addEventListener('click', () => {
@@ -2643,9 +2668,10 @@
             return out.reverse();
         }
 
-        function renderKeyDate(i, kd) {
+        function renderKeyDate(i, kd, moved = false) {
             const $ = id => document.getElementById(`kd-${id}-${i}`);
             if (!$('title')) return;
+            const live = d => d === todayET() && !marketClosed();
             const clear = msg => {
                 $('gex').textContent = $('oi').textContent = '—';
                 $('changes').textContent = msg || '';
@@ -2657,17 +2683,26 @@
             const away = kd.sessions_away === 0 ? 'today' : `in ${kd.sessions_away} session${kd.sessions_away === 1 ? '' : 's'}`;
             const ss = kd.sessions || [];
             if (!ss.length) { $('sub').textContent = `${away} · not in the recorded chains yet`; clear(); return; }
-            const now = ss[ss.length - 1];
-            const base = ss.length > 1 ? (kdCompare === 'first' ? ss[0] : ss[ss.length - 2]) : null;
+            let at = ss.length - 1;
+            if (kdPick[kd.date]) { const j = ss.findIndex(x => x.day === kdPick[kd.date]); if (j >= 0) at = j; }
+            const latest = at === ss.length - 1, now = ss[at];
+            const base = at > 0 ? (kdCompare === 'first' ? ss[0] : ss[at - 1]) : null;
             $('sub').textContent = `${away} · ${ss.length} session${ss.length === 1 ? '' : 's'} recorded since ${ss[0].day.slice(5)} · `
-                + `now = ${now.ts.slice(5, 10)} ${fmtClock(Date.parse(now.ts))} ${clockTag()}` + (base ? ` · outline = ${base.day.slice(5)} close` : '');
+                + `${latest ? 'now' : 'bars'} = ${now.ts.slice(5, 10)} ${fmtClock(Date.parse(now.ts))} ${clockTag()}` + (base ? ` · outline = ${base.day.slice(5)} close` : '');
+            const range = $('range');
+            range.max = ss.length - 1;
+            range.value = at;
+            const every = Math.ceil(ss.length * 40 / (range.clientWidth || 360));   // ~40 px per date label
+            $('ticks').innerHTML = ss.map((x, j) => (j % every && j !== ss.length - 1 && j !== at) ? '' :
+                `<span data-j="${j}" class="${j === at ? 'on' : ''}" style="left:${ss.length > 1 ? j / (ss.length - 1) * 100 : 0}%">`
+                + `${j === ss.length - 1 && live(x.day) ? 'now' : x.day.slice(5).replace('-', '/')}</span>`).join('');
             $('gex').textContent = fmtGex(now.total_gex) + (base ? ` (was ${fmtGex(base.total_gex)})` : '');
             $('oi').textContent = fmtOI(now.total_oi) + (base ? ` (${now.total_oi >= base.total_oi ? '+' : ''}${fmtOI(now.total_oi - base.total_oi)})` : '');
 
-            // the strikes around spot
-            const ks = kd.strikes;
+            // the strikes around the latest spot (the same ones for every session on the slider)
+            const ks = kd.strikes, mid = ss[ss.length - 1].spot;
             let c = 0;
-            ks.forEach((k, j) => { if (Math.abs(k - now.spot) < Math.abs(ks[c] - now.spot)) c = j; });
+            ks.forEach((k, j) => { if (Math.abs(k - mid) < Math.abs(ks[c] - mid)) c = j; });
             const lo = Math.max(0, Math.min(c - KD_STRIKES / 2, ks.length - KD_STRIKES)), hi = Math.min(ks.length, lo + KD_STRIKES);
             const idx = Array.from({ length: hi - lo }, (_, j) => j + lo);
             if (base) {
@@ -2697,17 +2732,22 @@
             chart.data.datasets[0].backgroundColor = nowG.map(v => v >= 0 ? 'rgba(0,255,136,0.7)' : 'rgba(255,68,68,0.7)');
             chart.data.datasets[1].data = base ? idx.map(j => base.gex[j]) : [];
             chart.data.datasets[1].label = base ? `${base.day.slice(5)} close` : '';
-            chart._spotPrice = _lastGexData.SPX?.spot || now.spot;
+            // one scale for every session, so bars grow and shrink as the slider moves
+            const all = ss.flatMap(x => idx.map(j => x.gex[j]));
+            chart.options.scales.x.min = Math.min(0, ...all) * 1.05;
+            chart.options.scales.x.max = Math.max(0, ...all) * 1.05;
+            chart._spotPrice = latest ? (_lastGexData.SPX?.spot || now.spot) : now.spot;
             chart.update('none');
 
-            const live = d => d === todayET() && !marketClosed();
             // the server's notes (priced move, who traded, magnets, what happened next); the
             // page's own simpler ones if the server is older
             if (kd.event?.text) $('sub').textContent += ` · ${kd.event.text}`;
             const score = kd.scorecard ? `<div class="kd-score"><b>Scorecard, this expiration:</b> ${kd.scorecard}</div>` : '';
             $('notes').innerHTML = score + (kd.notes || kdNotes(kd)).map((n, j) =>
-                `<div class="kd-note${j === 0 ? ' latest' : ''}"><b>${kdDay(n.day)}${live(n.day) ? ' · today so far' : ''}</b>`
+                `<div class="kd-note${j === 0 ? ' latest' : ''}${n.day === now.day ? ' sel' : ''}"><b>${kdDay(n.day)}${live(n.day) ? ' · today so far' : ''}</b>`
                 + n.lines.map(l => `<div class="${l.cls || ''}">${l.text}</div>`).join('') + '</div>').join('');
+            const sel = moved && $('notes').querySelector('.kd-note.sel');   // that session's note in view
+            if (sel) $('notes').scrollTop = sel.offsetTop - 6;
         }
 
         function renderKeyDates() {
@@ -3564,14 +3604,14 @@
         });
         document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
-        // ── Cumulative Delta Flow chart ───────────────────────────────────────
-
-        let deltaChart     = null;
-        let deltaCallSeries = null;
-        let deltaPutSeries  = null;
-        // raw point arrays {time, value} — kept for REST reload merge
-        let deltaCallData  = [];
-        let deltaPutData   = [];
+        // ── Cumulative dealer delta (Δ FLOW, delta_flow.py) ───────────────────
+        // Every streamed option trade, bought or sold against the quote before it, x delta:
+        // the streamed set (0DTE + the next expiration's top strikes) and 0DTE only, each
+        // as call, put and their net. One point a minute; live from SSE about once a second.
+        const DFLOW = [
+            { key: '',      url: '/api/delta_flow',      box: 'delta-flow-canvas',      val: 'delta' },
+            { key: '0dte_', url: '/api/delta_flow/0dte', box: 'delta-flow-0dte-canvas', val: 'delta-0dte' },
+        ];
 
         function fmtDeltaB(v) {
             if (v == null) return '—';
@@ -3579,186 +3619,77 @@
             return (b >= 0 ? '+' : '') + b.toFixed(2) + 'B';
         }
 
-        function initDeltaChart() {
-            const container = document.getElementById('delta-flow-canvas');
-            if (!container || deltaChart) return;
-
-            deltaChart = LWC.createChart(container, {
+        function initDeltaChart(d) {
+            if (d.chart) return d.chart;
+            const box = document.getElementById(d.box);
+            if (!box) return null;
+            d.chart = LWC.createChart(box, {
                 ...DARK_BASE,
                 autoSize: true,
-                rightPriceScale: {
-                    borderColor: '#1e1e2e',
-                    scaleMargins: { top: 0.08, bottom: 0.08 },
-                },
-                localization: {
-                    priceFormatter: v => {
-                        const b = v / 1e9;
-                        return (b >= 0 ? '+' : '') + b.toFixed(2) + 'B';
-                    },
-                    timeFormatter: fmtET24,
-                },
+                rightPriceScale: { borderColor: '#1e1e2e', scaleMargins: { top: 0.08, bottom: 0.08 } },
+                localization: { priceFormatter: fmtDeltaB, timeFormatter: fmtET24 },
                 timeScale: {
-                    borderColor:    '#1e1e2e',
-                    timeVisible:    true,
-                    secondsVisible: false,
-                    tickMarkFormatter: (utcSecs, tickMarkType) =>
-                        tickMarkType <= 2 ? fmtETDate(utcSecs) : fmtET24(utcSecs),
+                    borderColor: '#1e1e2e', timeVisible: true, secondsVisible: false,
+                    tickMarkFormatter: (t, type) => type <= 2 ? fmtETDate(t) : fmtET24(t),
                 },
             });
-
-            deltaCallSeries = deltaChart.addSeries(LWC.LineSeries, {
-                color:             '#cc44ff',
-                lineWidth:         2,
-                priceLineVisible:  false,
-                lastValueVisible:  true,
-                crosshairMarkerVisible: true,
-                title: 'CALL Δ',
-            });
-
-            deltaPutSeries = deltaChart.addSeries(LWC.LineSeries, {
-                color:             '#d4a017',
-                lineWidth:         2,
-                priceLineVisible:  false,
-                lastValueVisible:  true,
-                crosshairMarkerVisible: true,
-                title: 'PUT Δ',
-            });
+            const line = (color, title) => d.chart.addSeries(LWC.LineSeries, {
+                color, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true, title });
+            d.series = { call: line('#cc44ff', 'CALL'), put: line('#d4a017', 'PUT'), net: line('#e0e0ea', 'NET') };
+            d.data = { call: new Map(), put: new Map() };
+            d.shown = 0;
+            // the whole day across the width, also after the panel changes size
+            new ResizeObserver(() => d.chart?.timeScale().fitContent()).observe(box);
+            return d.chart;
         }
 
-        function _applyDeltaData() {
-            if (!deltaChart) initDeltaChart();
-            if (!deltaChart) return;
-            if (deltaCallData.length) deltaCallSeries.setData(deltaCallData);
-            if (deltaPutData.length)  deltaPutSeries.setData(deltaPutData);
-            deltaChart.timeScale().fitContent();
-
-            // Update summary labels
-            const lastCall = deltaCallData[deltaCallData.length - 1];
-            const lastPut  = deltaPutData[deltaPutData.length - 1];
-            document.getElementById('delta-call-val').textContent = 'call: ' + fmtDeltaB(lastCall?.value);
-            document.getElementById('delta-put-val').textContent  = 'put: '  + fmtDeltaB(lastPut?.value);
+        function renderDeltaChart(d) {
+            if (!initDeltaChart(d)) return;
+            const pts = side => [...d.data[side].entries()].sort((a, b) => a[0] - b[0]).map(([time, value]) => ({ time, value }));
+            const call = pts('call'), put = pts('put');
+            // the net at every minute either side has a point, each side carried forward
+            const times = [...new Set([...call, ...put].map(x => x.time))].sort((a, b) => a - b);
+            const net = [];
+            let ci = 0, pi = 0, c = 0, pv = 0;
+            for (const t of times) {
+                while (ci < call.length && call[ci].time <= t) c = call[ci++].value;
+                while (pi < put.length && put[pi].time <= t) pv = put[pi++].value;
+                net.push({ time: t, value: c + pv });
+            }
+            d.series.call.setData(call);
+            d.series.put.setData(put);
+            d.series.net.setData(net);
+            if (times.length !== d.shown) { d.chart.timeScale().fitContent(); d.shown = times.length; }
+            const last = a => a.length ? a[a.length - 1].value : null;
+            document.getElementById(`${d.val}-call-val`).textContent = 'call: ' + fmtDeltaB(last(call));
+            document.getElementById(`${d.val}-put-val`).textContent  = 'put: '  + fmtDeltaB(last(put));
+            document.getElementById(`${d.val}-net-val`).textContent  = 'net: '  + fmtDeltaB(last(net));
         }
 
+        // the server's series replaces the page's (so a new day starts empty)
         async function fetchDeltaFlow() {
-            try {
-                const res = await fetch('/api/delta_flow');
-                if (!res.ok) return;
-                const data = await res.json();
-                // Merge REST data with any SSE points already buffered
-                const callSet = new Map(deltaCallData.map(p => [p.time, p.value]));
-                const putSet  = new Map(deltaPutData.map(p => [p.time, p.value]));
-                for (const p of (data.call || [])) callSet.set(p.time, p.value);
-                for (const p of (data.put  || [])) putSet.set(p.time, p.value);
-                deltaCallData = [...callSet.entries()].sort((a,b)=>a[0]-b[0]).map(([time,value])=>({time,value}));
-                deltaPutData  = [...putSet.entries()].sort((a,b)=>a[0]-b[0]).map(([time,value])=>({time,value}));
-                _applyDeltaData();
-            } catch(e) { console.error('Delta flow fetch:', e); }
-        }
-
-        function handleDeltaFlowSSE(msg) {
-            // msg: { type:'delta_flow', side, time, cumulative, delta, is_0dte }
-            if (!deltaChart) initDeltaChart();
-            if (!deltaChart) return;
-
-            const point = { time: msg.time, value: msg.cumulative };
-            if (msg.side === 'call') {
-                if (deltaCallData.length && deltaCallData[deltaCallData.length-1].time === msg.time) {
-                    deltaCallData[deltaCallData.length-1] = point;
-                } else {
-                    deltaCallData.push(point);
-                }
-                deltaCallSeries.update(point);
-                document.getElementById('delta-call-val').textContent = 'call: ' + fmtDeltaB(msg.cumulative);
-            } else {
-                if (deltaPutData.length && deltaPutData[deltaPutData.length-1].time === msg.time) {
-                    deltaPutData[deltaPutData.length-1] = point;
-                } else {
-                    deltaPutData.push(point);
-                }
-                deltaPutSeries.update(point);
-                document.getElementById('delta-put-val').textContent = 'put: ' + fmtDeltaB(msg.cumulative);
+            for (const d of DFLOW) {
+                try {
+                    const res = await fetch(d.url);
+                    if (!res.ok || !initDeltaChart(d)) continue;
+                    const data = await res.json();
+                    d.data.call = new Map((data.call || []).map(x => [x.time, x.value]));
+                    d.data.put  = new Map((data.put  || []).map(x => [x.time, x.value]));
+                    renderDeltaChart(d);
+                } catch (e) { console.error('Delta flow fetch:', e); }
             }
         }
 
-        // ── 0DTE Cumulative Delta Flow chart ─────────────────────────────────
-
-        let deltaChart0dte      = null;
-        let deltaCallSeries0dte = null;
-        let deltaPutSeries0dte  = null;
-        let deltaCallData0dte   = [];
-        let deltaPutData0dte    = [];
-
-        function initDeltaChart0dte() {
-            const container = document.getElementById('delta-flow-0dte-canvas');
-            if (!container || deltaChart0dte) return;
-
-            deltaChart0dte = LWC.createChart(container, {
-                ...DARK_BASE,
-                autoSize: true,
-                rightPriceScale: {
-                    borderColor: '#1e1e2e',
-                    scaleMargins: { top: 0.08, bottom: 0.08 },
-                },
-                localization: {
-                    priceFormatter: v => {
-                        const b = v / 1e9;
-                        return (b >= 0 ? '+' : '') + b.toFixed(2) + 'B';
-                    },
-                    timeFormatter: fmtET24,
-                },
-                timeScale: {
-                    borderColor:    '#1e1e2e',
-                    timeVisible:    true,
-                    secondsVisible: false,
-                    tickMarkFormatter: (utcSecs, tickMarkType) =>
-                        tickMarkType <= 2 ? fmtETDate(utcSecs) : fmtET24(utcSecs),
-                },
-            });
-
-            deltaCallSeries0dte = deltaChart0dte.addSeries(LWC.LineSeries, {
-                color:             '#cc44ff',
-                lineWidth:         2,
-                priceLineVisible:  false,
-                lastValueVisible:  true,
-                crosshairMarkerVisible: true,
-                title: 'CALL 0DTE',
-            });
-
-            deltaPutSeries0dte = deltaChart0dte.addSeries(LWC.LineSeries, {
-                color:             '#d4a017',
-                lineWidth:         2,
-                priceLineVisible:  false,
-                lastValueVisible:  true,
-                crosshairMarkerVisible: true,
-                title: 'PUT 0DTE',
-            });
-        }
-
-        function _applyDeltaData0dte() {
-            if (!deltaChart0dte) initDeltaChart0dte();
-            if (!deltaChart0dte) return;
-            if (deltaCallData0dte.length) deltaCallSeries0dte.setData(deltaCallData0dte);
-            if (deltaPutData0dte.length)  deltaPutSeries0dte.setData(deltaPutData0dte);
-            deltaChart0dte.timeScale().fitContent();
-            const lastCall = deltaCallData0dte[deltaCallData0dte.length - 1];
-            const lastPut  = deltaPutData0dte[deltaPutData0dte.length - 1];
-            document.getElementById('delta-0dte-call-val').textContent = 'call: ' + fmtDeltaB(lastCall?.value);
-            document.getElementById('delta-0dte-put-val').textContent  = 'put: '  + fmtDeltaB(lastPut?.value);
-        }
-
-        async function fetchDeltaFlow0dte() {
-            try {
-                const res = await fetch('/api/delta_flow/0dte');
-                if (!res.ok) return;
-                const data = await res.json();
-                const callSet = new Map(deltaCallData0dte.map(p => [p.time, p.value]));
-                const putSet  = new Map(deltaPutData0dte.map(p => [p.time, p.value]));
-                for (const p of (data.call || [])) callSet.set(p.time, p.value);
-                for (const p of (data.put  || [])) putSet.set(p.time, p.value);
-                deltaCallData0dte = [...callSet.entries()].sort((a,b)=>a[0]-b[0]).map(([time,value])=>({time,value}));
-                deltaPutData0dte  = [...putSet.entries()].sort((a,b)=>a[0]-b[0]).map(([time,value])=>({time,value}));
-                _applyDeltaData0dte();
-            } catch(e) { console.error('Delta flow 0dte fetch:', e); }
+        function handleDeltaFlowSSE(msg) {
+            // msg: { type: 'delta_flow', time (the minute), call, put, 0dte_call, 0dte_put } (cumulative $)
+            for (const d of DFLOW) {
+                if (!initDeltaChart(d)) continue;
+                for (const side of ['call', 'put']) {
+                    const v = msg[d.key + side];
+                    if (v != null) d.data[side].set(msg.time, v);
+                }
+                renderDeltaChart(d);
+            }
         }
 
         // ── Session time markers ─────────────────────────────────────────────
@@ -3845,27 +3776,58 @@
             entry.markersPrimitive.setMarkers(flowM);
         }
 
-        function _buildFlowMarkerData(candles) {
-            const out = [];
-            for (const a of _flowMarkers) {
-                if (!candles.length) continue;
-                const isBullish = (a.side === 'call' && a.direction === 'BUY') ||
-                                  (a.side === 'put'  && a.direction === 'SELL');
-                const alertTime = a.time || Math.floor(Date.now() / 1000);
-                let nearest = candles[0].time;
-                for (const c of candles) {
-                    if (Math.abs(c.time - alertTime) < Math.abs(nearest - alertTime))
-                        nearest = c.time;
+        // One arrow per flow alert, the way the trade leans: calls bought / puts sold = up,
+        // puts bought / calls sold = down. A mid print (no side) gets none, and a "likely"
+        // side (near the bid or ask, not at it) is faded, as in the flow feed. Two legs of one
+        // vertical spread (same type and expiry, same size within 10%, within a minute, opposite
+        // or unknown sides) are one arrow, read from the leg nearer the money. The text says
+        // 0DTE or NEXT (the next expiration) and the strike.
+        function _flowSignals(alerts) {
+            const lean = a => (a.side === 'call') === (a.direction === 'BUY') ? 1 : -1;
+            const exp  = a => a.is_0dte ? '0DTE' : 'NEXT';
+            const cp   = a => a.side === 'call' ? 'C' : 'P';
+            const list = [...alerts].sort((a, b) => (a.time || 0) - (b.time || 0));
+            const used = new Set(), out = [];
+            for (let i = 0; i < list.length; i++) {
+                if (used.has(i)) continue;
+                const a = list[i];
+                let j = i + 1;
+                for (; j < list.length && (list[j].time || 0) - (a.time || 0) <= 60; j++) {
+                    const b = list[j];
+                    if (!used.has(j) && b.side === a.side && !!b.is_0dte === !!a.is_0dte && b.strike !== a.strike
+                        && Math.abs(b.volume_delta - a.volume_delta) <= 0.1 * Math.max(a.volume_delta, b.volume_delta)
+                        && !(a.direction && a.direction === b.direction)) break;
                 }
-                out.push({
-                    time:     nearest,
-                    color:    isBullish ? '#00ff88' : '#ff4444',
-                    shape:    isBullish ? 'arrowUp' : 'arrowDown',
-                    position: isBullish ? 'belowBar' : 'aboveBar',
-                    text:     'FLOW',
-                });
+                if (j >= list.length || (list[j].time || 0) - (a.time || 0) > 60) {
+                    if (a.direction) out.push({ time: a.time, dir: lean(a), sure: !!a.direction_certain,
+                                                text: `${exp(a)} ${a.strike}${cp(a)}` });
+                    continue;
+                }
+                used.add(j);
+                const b = list[j];
+                const [near, far] = Math.abs(a.delta || 0) >= Math.abs(b.delta || 0) ? [a, b] : [b, a];
+                const dir = near.direction ? lean(near) : far.direction ? -lean(far) : 0;
+                if (dir) out.push({ time: a.time, dir, sure: !!(near.direction ? near : far).direction_certain,
+                                    text: `${exp(a)} ${near.strike}/${far.strike}${cp(a)} spread` });
             }
             return out;
+        }
+
+        function _buildFlowMarkerData(candles) {
+            if (!candles.length) return [];
+            return _flowSignals(_flowMarkers).map(f => {
+                const t = f.time || Math.floor(Date.now() / 1000);
+                let nearest = candles[0].time;
+                for (const c of candles) if (Math.abs(c.time - t) < Math.abs(nearest - t)) nearest = c.time;
+                const up = f.dir > 0;
+                return {
+                    time:     nearest,
+                    color:    up ? (f.sure ? '#00ff88' : '#2f8a5e') : (f.sure ? '#ff4444' : '#8f3a3a'),
+                    shape:    up ? 'arrowUp' : 'arrowDown',
+                    position: up ? 'belowBar' : 'aboveBar',
+                    text:     f.text,
+                };
+            });
         }
 
         // ── 0DTE countdown & session phase clock ─────────────────────────────
@@ -3996,9 +3958,8 @@
         // Initial full load
         fetchGexAll();
         fetchPriceAll();
-        initDeltaChart();
         fetchDeltaFlow();
-        fetchDeltaFlow0dte();
+        setInterval(fetchDeltaFlow, 60000);   // a backstop for the SSE pushes
 
         // Update "X ago" counters on all flow rows every second
         function fmtAgo(secs) {
