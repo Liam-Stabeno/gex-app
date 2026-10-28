@@ -287,7 +287,9 @@
   // Calls / puts per strike in the given mode, plus totals over the strikes in view.
   function seriesFor(d, mode) {
     if (!d || !d.strikes || !d.strikes.length || d.spot == null) return null;
-    const gexMult = mode === 'gex' ? 100 * d.spot : 0;
+    // Flow GEX per point, or per 1% move when the page's GEX unit says so (gexUnitMult)
+    const unit = typeof gexUnitMult === 'function' ? gexUnitMult(d.spot) : 1;
+    const gexMult = mode === 'gex' ? 100 * d.spot * unit : 0;
     const [lo, hi] = currentView();
     const calls = [], puts = [];
     let cTot = 0, pTot = 0;
@@ -353,6 +355,10 @@
                      : d.partial ? `only ${fmtDur(d.covered_sec)} of history`
                      : `actual ${fmtDur(d.covered_sec)}`;
   }
+
+  // the page's GEX unit toggle: redraw Flow GEX in the new unit
+  if (typeof window !== 'undefined' && window.addEventListener)
+    window.addEventListener('gexunit', () => { if (rpLast) renderRollingProfile(rpLast); });
 
   function renderRollingProfile(resp) {
     rpLast = resp;

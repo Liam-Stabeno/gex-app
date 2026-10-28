@@ -165,6 +165,19 @@
             resize: both; overflow: hidden;
         }
         .price-panel .chart-container { height: auto; flex: 1; min-height: 200px; }
+        /* TradingView-style controls over the SPX chart (addChartNav) */
+        .chart-nav { position: absolute; z-index: 5; display: flex; gap: 2px; align-items: center; }
+        .chart-nav button { background: rgba(24,24,36,0.9); color: #b4b4c4; border: 1px solid #2a2a3e; border-radius: 3px;
+                            font: 11px 'Courier New', monospace; padding: 2px 7px; cursor: pointer; }
+        .chart-nav button:hover { color: #fff; border-color: #00e5ff; }
+        .chart-nav button.active { color: #00e5ff; border-color: #00e5ff; }
+        .chart-nav-mid { opacity: 0; pointer-events: none; transition: opacity .15s; }
+        .chart-container:hover .chart-nav-mid { opacity: 1; pointer-events: auto; }
+        .chart-nav-sep { width: 1px; height: 14px; background: #2a2a3e; margin: 0 3px; }
+        .chart-nav-auto button { width: 100%; height: 100%; padding: 0; }
+        .chart-measure { position: absolute; z-index: 4; pointer-events: none; border: 1px solid; }
+        .chart-measure span { position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap;
+                              font: 11px 'Courier New', monospace; color: #fff; padding: 2px 6px; border-radius: 3px; }
         .price-panel.fullscreen {
             position: fixed; inset: 12px; z-index: 900;
             width: auto !important; height: auto !important; resize: none;
@@ -236,6 +249,10 @@
         .pred-item .st.pending { color: #9fe8ff; background: #0d2230; }
         .pred-item .st.undecided, .pred-item .st.comparison { color: #8a8a9c; background: #1a1a26; }
         .kd-sub { font-size: 0.62rem; color: #8a8a9c; margin-top: 2px; }
+        .unit-bar { display: flex; justify-content: flex-end; align-items: center; gap: 6px; flex-wrap: wrap;
+                    font-size: 0.62rem; color: #8a8a9c; letter-spacing: 1px; margin-bottom: 4px; }
+        .unit-bar .tf-btn { padding: 1px 8px; }
+        #gexunit-note { letter-spacing: 0; color: #6f6f82; }
         .kd-changes { font-size: 0.65rem; color: #b0b0c0; margin: 4px 0 6px; line-height: 1.5; }
         .kd-compare { margin-left: 12px; letter-spacing: 0; color: #8a8a9c; }
         .kd-compare .tf-btn { margin-left: 4px; padding: 0 6px; font-size: 0.6rem; }
@@ -569,6 +586,12 @@
     </style>
 </head>
 <body>
+    <div class="unit-bar" title="GEX = the $ of SPX dealers must buy or sell to stay hedged when SPX moves. Per 1 point: for a 1-point move. Per 1% move: for a 1% move (x SPX / 100, about 77x at 7700), the unit most GEX sites use (InsiderFinance's grid matched ours to within a few % in it). Every GEX number on the page follows this; the charm flow ($ per hour) doesn't.">
+        <span>GEX IN $ PER</span>
+        <button class="tf-btn" data-gexunit="point">1 POINT</button>
+        <button class="tf-btn" data-gexunit="pct">1% MOVE</button>
+        <span id="gexunit-note"></span>
+    </div>
     <h1>⬡ GEX DASHBOARD</h1>
     <div id="last-update">Initializing... <span id="stream-dot" title="Streaming status" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#333;margin-left:6px;vertical-align:middle;"></span></div>
     <div id="rtd-bar">
@@ -756,6 +779,50 @@
             return sign + (abs / 1e6).toFixed(0) + 'M';
         };
 
+        // ── GEX unit: per 1 point or per 1% move ────────────────────────────
+        // The app computes GEX per 1-point SPX move (gamma x OI x 100 x spot: the $ of SPX
+        // dealers trade per point). Per 1% move, the common convention, is that x spot / 100
+        // (~77x at 7700). Values stay per point everywhere; each display converts with the
+        // SPX of its own moment (a past session's spot for its numbers).
+        let gexUnit = 'point';
+        try { if (localStorage.getItem('gexUnit') === 'pct') gexUnit = 'pct'; } catch (_) {}
+        function gexUnitMult(spot) {
+            if (gexUnit !== 'pct') return 1;
+            const s = spot || _lastGexData.SPX?.spot;
+            return s ? s * 0.01 : 1;
+        }
+        const gexU = (v, spot) => v == null ? v : v * gexUnitMult(spot);
+
+        function renderGexUnitNote() {
+            const el = document.getElementById('gexunit-note');
+            const spot = _lastGexData.SPX?.spot;
+            if (!el) return;
+            const x = spot ? `${Math.round(spot / 100)}×` : '';
+            el.textContent = !spot ? '' : gexUnit === 'pct'
+                ? `· 1% = ${Math.round(spot / 100)} pts at SPX ${Math.round(spot)}: ${x} the per-point figures`
+                : `· per 1% move = ${x} these (SPX ${Math.round(spot)})`;
+        }
+
+        function setGexUnit(u) {
+            gexUnit = u === 'pct' ? 'pct' : 'point';
+            try { localStorage.setItem('gexUnit', gexUnit); } catch (_) {}
+            document.querySelectorAll('[data-gexunit]').forEach(b => b.classList.toggle('active', b.dataset.gexunit === gexUnit));
+            renderGexUnitNote();
+            if (_lastGexData.SPX) renderGexLeft('SPX', _lastGexData.SPX);
+            if (typeof renderHorizon === 'function') renderHorizon('SPX');
+            updateMedalLabels();
+            if (typeof fetchGammaLevels === 'function') fetchGammaLevels();
+            if (typeof renderKeyDates === 'function') renderKeyDates();
+            if (typeof renderPredictions === 'function') renderPredictions();
+            window.dispatchEvent(new Event('gexunit'));     // the rolling profile's Flow GEX
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('[data-gexunit]').forEach(b => {
+                b.classList.toggle('active', b.dataset.gexunit === gexUnit);
+                b.addEventListener('click', () => setGexUnit(b.dataset.gexunit));
+            });
+        });
+
         // ── Candle aggregation (client-side timeframe resampling) ────────────
 
         /**
@@ -830,6 +897,7 @@
                     fixLeftEdge: false,
                     fixRightEdge: false,
                     rightOffset: 8,                    // room right of the live candle
+                    minBarSpacing: 0.05,               // zoom out far enough for every loaded day
                     shiftVisibleRangeOnNewBar: true,   // at the live edge, step one bar per new candle
                     tickMarkFormatter: (utcSecs, tickMarkType) =>
                         tickMarkType <= 2 ? fmtETDate(utcSecs) : fmtET24(utcSecs),
@@ -969,8 +1037,11 @@
                     <span title="The 3 strongest strikes in each heatmap snapshot. Medals: gold / silver / bronze lines by rank, with each one's current size on the price axis.">WALLS</span>
                     <button class="tf-btn" data-walls="medals">Medals</button>
                     <button class="tf-btn" data-walls="off">Off</button>
+                    <span title="The heavy strikes on each side of price for a big move: up to 4 a side within 250 pts, each at least half the biggest. Green: price stalls there. Red: price speeds up. Size on the price axis.">BIG</span>
+                    <button class="tf-btn" data-big="on">On</button>
+                    <button class="tf-btn" data-big="off">Off</button>
                     <span id="zone-regime-top" style="display:contents"></span>
-                    <span style="margin-left:auto;color:#8a8a9c">double-click: full screen · drag corner: resize</span>
+                    <span style="margin-left:auto;color:#8a8a9c">double-click: full screen · shift+drag: measure · drag corner: resize</span>
                 </div>
                 <div class="label-guide" id="label-guide-${symbol}">
                     <span class="lg-head">LEVEL LABELS · <span class="lg-follow">blue = follows the gamma-zone button</span> · the rest are fixed · every level moves only when a new strike beats it by 15%</span>
@@ -981,6 +1052,7 @@
                     <span><span class="lg-line" style="border-top:2px solid #00e5ff"></span><b>TRUE PIN</b> where today is most likely to settle: 90% gamma, 10% charm, live <span class="lg-src">· today's 0DTE + next expiration</span></span>
                     <span><span class="lg-line" style="border-top:1px solid #00c878"></span><b>SUPPORT</b> / <b>RESIST</b> biggest positive GEX below / above spot (within 150 pts, at least 25% of the biggest, 7.5+ pts away): price slows there <span class="lg-follow">· gamma-zone view</span></span>
                     <span><span class="lg-line" style="border-top:2px dashed #ff3c50"></span><b>TRAPDOOR</b> / <b>SQUEEZE</b> nearest strike below / above spot where GEX turns clearly negative (−10% of the biggest): past it, moves can speed up <span class="lg-follow">· gamma-zone view</span></span>
+                    <span><span class="lg-line" style="border-top:2px dashed rgba(255,60,80,0.6)"></span><b>BIG</b> the heavy strikes for a big move: up to 4 a side within 250 pts, each at least half the biggest (thicker: within 20% of it); green = price stalls, red = speeds up. InsiderFinance's CALL WALL / TRAP DOOR are picked from these by eye; our TRAPDOOR is where gamma first turns negative <span class="lg-follow">· gamma-zone view</span></span>
                 </div>
                 <div id="zone-info-${symbol}">
                 <div class="zone-bar">
@@ -1011,6 +1083,10 @@
             });
             div.addEventListener('dblclick', e => {
                 if (e.target.closest('button')) return;
+                // on an axis Lightweight Charts resets that scale instead
+                const ch = priceCharts[symbol]?.chart, box = div.querySelector('.chart-container')?.getBoundingClientRect();
+                if (ch && box && e.clientY >= box.top
+                    && (e.clientX > box.right - ch.priceScale('right').width() || e.clientY > box.bottom - ch.timeScale().height())) return;
                 if (symbol === 'SPX') togglePriceFullscreen(div);   // same chart, everything kept
                 else expandPrice(symbol);
             });
@@ -1027,6 +1103,10 @@
             div.querySelectorAll('[data-walls]').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.walls === _wallStyle);
                 btn.addEventListener('click', e => { e.stopPropagation(); setWallStyle(btn.dataset.walls); });
+            });
+            div.querySelectorAll('[data-big]').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.big === _bigStyle);
+                btn.addEventListener('click', e => { e.stopPropagation(); setBigStyle(btn.dataset.big); });
             });
             // Labels: show / hide the level-label guide (remembered)
             const guideBtn = div.querySelector('#label-guide-btn'), guide = div.querySelector(`#label-guide-${symbol}`);
@@ -1336,15 +1416,17 @@
             // current strip, from the latest candle to the right edge. null = none (replay).
             setLive(live) { this._live = live; this._req && this._req(); }
             setWallStyle(style) { this._wallStyle = style; this._req && this._req(); }
-            // the 3 strongest strikes now (live values where there are any, else the latest
-            // snapshot): [{strike, gex}], strongest first
-            currentTop3() {
+            // every strike's GEX now (live values where there are any, else the latest
+            // snapshot): [{strike, gex}]
+            currentValues() {
                 const d = this._data, cols = d && d[this._mode];
                 if (!cols || !cols.length) return [];
                 const live = this._liveFor(this._mode), last = cols[cols.length - 1];
-                const vals = d.strikes.map((k, i) => (live && live.has(k) ? live.get(k) : last[i]));
-                return vals.map((g, i) => [Math.abs(g), i]).filter(([a]) => a > 0)
-                    .sort((a, b) => b[0] - a[0]).slice(0, 3).map(([, i]) => ({ strike: d.strikes[i], gex: vals[i] }));
+                return d.strikes.map((k, i) => ({ strike: k, gex: live && live.has(k) ? live.get(k) : last[i] }));
+            }
+            // the 3 strongest strikes now: [{strike, gex}], strongest first
+            currentTop3() {
+                return this.currentValues().filter(p => p.gex).sort((a, b) => Math.abs(b.gex) - Math.abs(a.gex)).slice(0, 3);
             }
             // Week has no live feed of its own: live 0DTE plus the latest snapshot's later
             // expirations through Friday (those only change with the 60 s chain refresh)
@@ -1538,10 +1620,11 @@
             while (_medalLines.length > top.length) { try { e.candleSeries.removePriceLine(_medalLines.pop()); } catch (_) {} }
             top.forEach((w, r) => {
                 const o = { price: w.strike, color: MEDAL_COLORS[r], lineVisible: false, axisLabelVisible: true,
-                            axisLabelColor: MEDAL_COLORS[r], axisLabelTextColor: '#000', title: `${MEDAL_NAMES[r]} ${fmtSize(w.gex)}` };
+                            axisLabelColor: MEDAL_COLORS[r], axisLabelTextColor: '#000', title: `${MEDAL_NAMES[r]} ${fmtSize(gexU(w.gex))}` };
                 if (_medalLines[r]) _medalLines[r].applyOptions(o);
                 else _medalLines[r] = e.candleSeries.createPriceLine(o);
             });
+            updateBigStrikes();
         }
         function setWallStyle(w) {
             _wallStyle = w;
@@ -1549,6 +1632,60 @@
             document.querySelectorAll('[data-walls]').forEach(b => b.classList.toggle('active', b.dataset.walls === w));
             priceCharts.SPX?.zones?.setWallStyle(w);
             updateMedalLabels();
+        }
+
+        // ── Big strikes: the heavy strikes on each side of price ──────────────
+        // Every strike within BIG_BAND pts of price at least BIG_MIN as big as the biggest
+        // |GEX| there, the BIG_SIDE biggest a side: where a big move (FOMC, CPI) stalls
+        // (green) or speeds up (red). Near-equal strikes are common (10/28: 7800 / 7900 /
+        // 7770 all ~+3.6B), so they're all shown rather than one picked. InsiderFinance's
+        // CALL WALL / TRAP DOOR are picked from these by eye (10/28: 7800 / 7650).
+        const BIG_BAND = 250, BIG_MIN = 0.5, BIG_SIDE = 4;
+        let _bigStyle = 'on';
+        try { if (localStorage.getItem('bigStrikes') === 'off') _bigStyle = 'off'; } catch (_) {}
+        let _bigLines = [];            // on the candle series
+        function bigStrikes() {
+            const z = priceCharts.SPX?.zones;
+            const spot = (!_replayDate && _lastGexData.SPX?.spot) || _heatmapDay?.spots?.at(-1);
+            if (!z || !spot || _zoneMode === 'off') return null;
+            const pts = z.currentValues().filter(p => p.gex && Math.abs(p.strike - spot) <= BIG_BAND);
+            let max = 0;
+            for (const p of pts) max = Math.max(max, Math.abs(p.gex));
+            const side = above => pts
+                .filter(p => (above ? p.strike > spot : p.strike < spot) && Math.abs(p.gex) >= BIG_MIN * max)
+                .sort((a, b) => Math.abs(b.gex) - Math.abs(a.gex)).slice(0, BIG_SIDE)
+                .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));   // nearest first
+            return { up: side(true), down: side(false), max };
+        }
+        function updateBigStrikes() {
+            const e = priceCharts.SPX;
+            if (!e) return;
+            const B = _bigStyle === 'on' ? bigStrikes() : null;
+            const all = B ? [...B.up, ...B.down] : [];
+            // a medal already puts its strike's size on the axis
+            const medals = new Set(_wallStyle === 'medals' && e.zones ? e.zones.currentTop3().map(w => w.strike) : []);
+            while (_bigLines.length > all.length) { try { e.candleSeries.removePriceLine(_bigLines.pop()); } catch (_) {} }
+            all.forEach((p, i) => {
+                const pos = p.gex >= 0;
+                const o = { price: p.strike, color: pos ? 'rgba(0,200,120,0.6)' : 'rgba(255,60,80,0.6)',
+                            lineWidth: Math.abs(p.gex) >= 0.8 * B.max ? 2 : 1, lineStyle: LWC.LineStyle.LargeDashed,
+                            axisLabelVisible: !medals.has(p.strike), axisLabelColor: pos ? '#00c878' : '#ff3c50',
+                            axisLabelTextColor: '#000', title: `BIG ${fmtM(gexU(p.gex))}` };
+                if (_bigLines[i]) _bigLines[i].applyOptions(o);
+                else _bigLines[i] = e.candleSeries.createPriceLine(o);
+            });
+            const el = document.getElementById('big-strikes-SPX');
+            if (!el) return;
+            const list = ps => ps.map(p => `<b style="color:${p.gex >= 0 ? '#00c878' : '#ff3c50'}">${p.strike}</b> ${fmtM(gexU(p.gex))}`).join(' · ') || '—';
+            el.innerHTML = all.length
+                ? `<span style="color:#333">│</span><span title="The heavy strikes for a big move, nearest first (BIG lines)">Big ↑ ${list(B.up)} &nbsp;↓ ${list(B.down)}</span>`
+                : '';
+        }
+        function setBigStyle(s) {
+            _bigStyle = s;
+            try { localStorage.setItem('bigStrikes', s); } catch (_) {}
+            document.querySelectorAll('[data-big]').forEach(b => b.classList.toggle('active', b.dataset.big === s));
+            updateBigStrikes();
         }
 
         let _heatmap  = null;          // what the chart draws: past days + today, or the replayed day
@@ -1643,10 +1780,64 @@
                     .then(r => (r.ok ? r.json() : null)).catch(() => null);
                 if (_heatmapPastFor !== today) return;           // the day rolled over: a newer load runs
                 if (h && h.times.length) {
-                    _heatmapPast.unshift(h);
+                    addPastHeatmap(h);
                     if (!_replayDate) showHeatmap();
                 }
             }
+        }
+
+        // _heatmapPast stays oldest first, one per day, whichever loader gets a day first
+        function addPastHeatmap(h) {
+            const day = x => etDate(new Date(x.times[0] * 1000));
+            if (_heatmapPast.some(x => day(x) === day(h))) return;
+            _heatmapPast.push(h);
+            _heatmapPast.sort((a, b) => a.times[0] - b.times[0]);
+        }
+
+        // ── Older sessions: scrolling left past the first candle loads the session before
+        // it (candles, heatmap, ES volume), one at a time, up to OLDER_MAX. Live chart only
+        // (the server sends the last two sessions; a replay is one day).
+        const OLDER_MAX = 8, OLDER_EDGE = -3;     // logical bars left of the first candle
+        let _olderDays = [], _olderBusy = false, _olderNone = false;
+        let _esOlderCandles = [], _esOlderSplit = {};
+        function resetOlderDays() {
+            _olderDays = []; _olderNone = false; _esOlderCandles = []; _esOlderSplit = {};
+        }
+        async function loadOlderDay() {
+            if (_olderBusy || _olderNone || _replayDate || _olderDays.length >= OLDER_MAX || !rawCandles.SPX?.length) return;
+            _olderBusy = true;
+            let loaded = false;
+            try {
+                const first = etDate(new Date(rawCandles.SPX[0].time * 1000));
+                const days = await fetch('/api/history_days').then(r => (r.ok ? r.json() : [])).catch(() => []);
+                for (const date of days.map(d => d.date).filter(d => d < first).slice(0, 5)) {   // newest first
+                    const [c, h, es, sp] = await Promise.all(
+                        [`/api/price/SPX?date=${date}`, `/api/gex_heatmap/SPX?date=${date}`,
+                         `/api/price/ES?date=${date}`, `/api/volume_split/ES?date=${date}`]
+                            .map(u => fetch(u).then(r => (r.ok ? r.json() : null)).catch(() => null)));
+                    if (_replayDate) return;
+                    if (!c?.length) continue;                       // no candles saved that day
+                    // the same bars stay where they are; the new day fills in to their left
+                    const e = priceCharts.SPX, ts = e.chart.timeScale();
+                    const range = ts.getVisibleLogicalRange(), before = e.candleSeries.data().length;
+                    renderPriceChart('SPX', [...c.filter(x => x.time < rawCandles.SPX[0].time), ...rawCandles.SPX]);
+                    const added = e.candleSeries.data().length - before;
+                    if (range && added > 0) ts.setVisibleLogicalRange({ from: range.from + added, to: range.to + added });
+                    if (es?.length) _esOlderCandles = [...es, ..._esOlderCandles];
+                    Object.assign(_esOlderSplit, sp || {});
+                    drawEsVolume();
+                    if (h?.times?.length) { addPastHeatmap(h); showHeatmap(); }
+                    _olderDays.push(date);
+                    loaded = true;
+                    break;
+                }
+                if (!loaded) _olderNone = true;
+            } finally {
+                _olderBusy = false;
+            }
+            // zoomed out further than one day fills: the next one
+            const r = loaded && priceCharts.SPX?.chart.timeScale().getVisibleLogicalRange();
+            if (r && r.from < OLDER_EDGE) loadOlderDay();
         }
 
         async function fetchHeatmap() {
@@ -1686,6 +1877,7 @@
             panel?.classList.toggle('replaying', !!_replayDate);
             document.querySelector('#price-div-SPX .chart-title').textContent = _replayDate ? `PRICE · REPLAY ${_replayDate}` : 'PRICE';
             rawCandles.SPX = [];                      // don't merge one day's candles into another
+            resetOlderDays();
             const flows = await fetch('/api/flow_alerts' + replayQ('?')).then(r => r.ok ? r.json() : []).catch(() => []);
             _flowMarkers.length = 0;
             flows.forEach(a => _flowMarkers.push(a));
@@ -1716,11 +1908,12 @@
             const bucket  = (selectedTF.SPX || 1) * 60;
             const spxTimes = new Set(aggregateCandles(rawCandles.SPX || [], selectedTF.SPX || 1).map(c => c.time));
             const agg = new Map();    // t -> {vol, buy, sell, measured}
-            for (const c of _esCandles) {
+            const esFirst = _esCandles[0].time;
+            for (const c of [..._esOlderCandles.filter(c => c.time < esFirst), ..._esCandles]) {
                 const t = Math.floor(c.time / bucket) * bucket;
                 if (!spxTimes.has(t)) continue;
                 const a = agg.get(t) || { vol: 0, buy: 0, sell: 0, measured: true };
-                const split = _esSplit[c.time];
+                const split = _esSplit[c.time] || _esOlderSplit[c.time];
                 let buy, sell;
                 if (split && split[0] + split[1] > 0) {
                     const k = c.volume / (split[0] + split[1]);       // scale to the candle's volume
@@ -1777,7 +1970,7 @@
 
         // ── Trading levels from the gamma profile ─────────────────────────────
         let _gammaLines = [];
-        const fmtM = g => `${g >= 0 ? '+' : '−'}${Math.abs(g / 1e6).toFixed(0)}M`;
+        const fmtM = g => `${g >= 0 ? '+' : '−'}${Math.abs(g) >= 1e9 ? (Math.abs(g) / 1e9).toFixed(2) + 'B' : Math.abs(g / 1e6).toFixed(0) + 'M'}`;
         const fmtD = d => `${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(0)}`;
 
         let _lastGammaLevels = null;
@@ -1849,9 +2042,10 @@
                 item('Resist', L.resistance, '#7dffc4'),
                 item('Trapdoor', L.trapdoor, '#ff3c50'),
                 item('Squeeze', L.squeeze, '#ff9f1c'),
-                `<span>Walls ${(L.walls || []).map(w => `<b style="color:${w.gex >= 0 ? '#00c878' : '#ff3c50'}">${w.strike}</b> ${fmtM(w.gex)}`).join(' · ')}</span>`,
+                `<span>Walls ${(L.walls || []).map(w => `<b style="color:${w.gex >= 0 ? '#00c878' : '#ff3c50'}">${w.strike}</b> ${fmtM(gexU(w.gex))}`).join(' · ')}</span>`,
                 (L.air_pockets || []).length ? `<span title="Near-zero gamma: price travels easily">Air ${L.air_pockets.map(([a, z]) => `${a}–${z}`).join(', ')}</span>` : '',
-            ].join(sep);
+            ].join(sep) + '<span id="big-strikes-SPX" style="display:contents"></span>';
+            updateBigStrikes();
         }
 
         // ── Gamma regime note ─────────────────────────────────────────────────
@@ -1944,6 +2138,140 @@
             const fs = document.querySelector('.price-panel.fullscreen');
             if (fs) togglePriceFullscreen(fs, false);
         });
+
+        // ── TradingView-style navigation on the SPX chart ─────────────────────
+        // Lightweight Charts is TradingView's own engine, so wheel zoom, drag scroll and
+        // axis stretch already work; this adds the rest of their controls:
+        //   hover bar (bottom middle): 1D 2D 5D 10D (older sessions load as needed),
+        //       zoom out / in, scroll left / right, reset
+        //   >> (bottom right): back to the live candle, shown when scrolled away
+        //   A (the corner under the price axis): auto-scale. Dragging the chart up / down or
+        //       stretching the price axis turns it off; A or a double-click on the axis
+        //       turns it back on
+        //   Shift + drag: measure the price change, %, bars and time (Esc or a click clears)
+        function addChartNav(entry, container) {
+            const { chart, candleSeries } = entry, ts = chart.timeScale(), ps = chart.priceScale('right');
+            const add = (cls, html) => {
+                const d = document.createElement('div');
+                d.className = cls; d.innerHTML = html;
+                container.appendChild(d);
+                return d;
+            };
+            const mid = add('chart-nav chart-nav-mid',
+                [1, 2, 5, 10].map(n => `<button data-days="${n}" title="Show the last ${n} session${n > 1 ? 's' : ''}">${n}D</button>`).join('')
+                + '<span class="chart-nav-sep"></span>'
+                + '<button data-nav="out" title="Zoom out">−</button><button data-nav="in" title="Zoom in">+</button>'
+                + '<button data-nav="left" title="Scroll left">‹</button><button data-nav="right" title="Scroll right">›</button>'
+                + '<button data-nav="reset" title="Reset: live edge, auto-scale">⟲</button>');
+            const live = add('chart-nav', '<button title="Back to the live candle">&gt;&gt;</button>');
+            const auto = add('chart-nav chart-nav-auto', '<button title="Auto-scale the price axis to the candles in view">A</button>');
+            const box  = add('chart-measure', '<span></span>'), label = box.firstChild;
+            box.style.display = 'none';
+
+            function layout() {
+                const pw = ps.width(), th = ts.height(), ph = chart.panes()[0].getHeight();
+                Object.assign(mid.style,  { left: (container.clientWidth - pw) / 2 + 'px', top: ph - 30 + 'px', transform: 'translateX(-50%)' });
+                Object.assign(live.style, { right: pw + 6 + 'px', top: ph - 30 + 'px' });
+                Object.assign(auto.style, { right: '0', bottom: '0', width: pw + 'px', height: th + 'px' });
+            }
+            function sync() {
+                live.style.display = ts.scrollPosition() < -2 ? '' : 'none';
+                auto.firstChild.classList.toggle('active', !!ps.options().autoScale);
+                layout();
+            }
+            new ResizeObserver(layout).observe(container);
+            ts.subscribeVisibleLogicalRangeChange(sync);
+
+            const span = r => r.to - r.from;
+            function zoom(f) {
+                const r = ts.getVisibleLogicalRange();
+                if (!r) return;
+                const w = span(r) * f, c = (r.from + r.to) / 2;
+                ts.setVisibleLogicalRange(ts.scrollPosition() >= -1 ? { from: r.to - w, to: r.to }   // at the live edge: keep it
+                                                                    : { from: c - w / 2, to: c + w / 2 });
+            }
+            function showDays(n) {
+                const bars = candleSeries.data();
+                if (!bars.length) return;
+                const day = b => etDate(new Date(b.time * 1000));
+                const starts = bars.flatMap((b, i) => (!i || day(b) !== day(bars[i - 1]) ? [i] : []));   // each session's first bar
+                const perDay = starts.length > 1 ? starts.at(-1) - starts.at(-2) : Math.round(390 / (selectedTF.SPX || 1));
+                // not loaded yet: blank space to the left, which loadOlderDay fills
+                const from = starts.length >= n ? starts[starts.length - n] : -(n - starts.length) * perDay;
+                ps.applyOptions({ autoScale: true });
+                ts.setVisibleLogicalRange({ from: from - 0.5, to: bars.length - 1 + ts.options().rightOffset });
+            }
+            mid.addEventListener('click', e => {
+                const b = e.target.closest('button');
+                if (!b) return;
+                if (b.dataset.days) showDays(+b.dataset.days);
+                const r = ts.getVisibleLogicalRange();
+                switch (b.dataset.nav) {
+                    case 'out': zoom(1.5); break;
+                    case 'in': zoom(1 / 1.5); break;
+                    case 'left': if (r) ts.scrollToPosition(ts.scrollPosition() - span(r) * 0.25, true); break;
+                    case 'right': if (r) ts.scrollToPosition(ts.scrollPosition() + span(r) * 0.25, true); break;
+                    case 'reset': ps.applyOptions({ autoScale: true }); ts.applyOptions({ barSpacing: 6 }); ts.scrollToRealTime(); break;
+                }
+                sync();
+            });
+            live.addEventListener('click', () => { ts.scrollToRealTime(); sync(); });
+            auto.addEventListener('click', () => { ps.applyOptions({ autoScale: !ps.options().autoScale }); sync(); });
+
+            // pointer position in the candle pane (not the axes or the ES volume pane), else null
+            const inPane = e => {
+                const r = container.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+                return x >= 0 && x < r.width - ps.width() && y >= 0 && y < chart.panes()[0].getHeight() ? { x, y } : null;
+            };
+            let drag = null, meas = null;      // meas: where a measure started {x, y, l, p}, done once released
+            function drawMeasure({ x, y }) {
+                const p = candleSeries.coordinateToPrice(y), l = ts.coordinateToLogical(x);
+                if (p == null || l == null) return;
+                const dp = p - meas.p, nb = Math.round(l) - Math.round(meas.l), up = dp >= 0;
+                const bars = candleSeries.data(), t0 = bars[Math.round(meas.l)]?.time, t1 = bars[Math.round(l)]?.time;
+                const mins = t0 != null && t1 != null ? Math.abs(t1 - t0) / 60 : Math.abs(nb) * (selectedTF.SPX || 1);
+                const dur = mins >= 1440 ? `${(mins / 1440).toFixed(1)}d` : mins >= 60 ? `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m` : `${Math.round(mins)}m`;
+                const col = up ? '#2962ff' : '#f23645', sgn = up ? '+' : '−';
+                Object.assign(box.style, {
+                    display: '', left: Math.min(x, meas.x) + 'px', top: Math.min(y, meas.y) + 'px',
+                    width: Math.abs(x - meas.x) + 'px', height: Math.abs(y - meas.y) + 'px',
+                    borderColor: col, background: up ? 'rgba(41,98,255,0.15)' : 'rgba(242,54,69,0.15)',
+                });
+                Object.assign(label.style, { background: col, top: up ? '-22px' : '', bottom: up ? '' : '-22px' });
+                label.textContent = `${sgn}${Math.abs(dp).toFixed(2)} (${sgn}${Math.abs(dp / meas.p * 100).toFixed(2)}%) · ${Math.abs(nb)} bars · ${dur}`;
+            }
+            const clearMeasure = () => { meas = null; box.style.display = 'none'; };
+            container.addEventListener('pointerdown', e => {
+                if (e.target.closest('.chart-nav')) return;
+                if (meas?.done) clearMeasure();
+                const at = e.button === 0 ? inPane(e) : null;
+                if (at && e.shiftKey) {
+                    meas = { ...at, l: ts.coordinateToLogical(at.x), p: candleSeries.coordinateToPrice(at.y) };
+                    if (meas.l == null || meas.p == null) { meas = null; return; }
+                    chart.applyOptions({ handleScroll: false, handleScale: false });   // the drag measures, not scrolls
+                    e.preventDefault();
+                    return;
+                }
+                drag = at && { x: e.clientX, y: e.clientY };
+            }, true);
+            container.addEventListener('pointermove', e => {
+                if (meas && !meas.done) { const at = inPane(e); if (at) drawMeasure(at); return; }
+                // a mostly vertical drag pans the price, like TradingView: auto-scale off
+                if (drag && (e.buttons & 1) && ps.options().autoScale) {
+                    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+                    if (Math.abs(dy) > 12 && Math.abs(dy) > 2 * Math.abs(dx)) { ps.applyOptions({ autoScale: false }); sync(); }
+                }
+            });
+            window.addEventListener('pointerup', () => {
+                drag = null;
+                if (meas && !meas.done) { meas.done = true; chart.applyOptions({ handleScroll: true, handleScale: true }); }
+                sync();                      // stretching the price axis turns auto-scale off
+            });
+            container.addEventListener('wheel', () => { if (meas?.done) clearMeasure(); }, { passive: true });
+            container.addEventListener('dblclick', () => setTimeout(sync, 0));   // an axis double-click resets it
+            document.addEventListener('keydown', e => { if (e.key === 'Escape') clearMeasure(); });
+            sync();
+        }
 
         // ── GEX chart (Chart.js — horizontal bars, strikes on Y axis) ────────────
 
@@ -2047,7 +2375,8 @@
         };
 
         function makeGexChartConfig(chartData, spot, forModal = false) {
-            const { strikes, net_gex } = chartData;
+            const { strikes } = chartData;
+            const net_gex = chartData.net_gex.map(v => gexU(v, spot));    // the axis gets round numbers in either unit
             const colors = net_gex.map(v => v >= 0 ? 'rgba(0,255,136,0.7)' : 'rgba(255,68,68,0.7)');
             return {
                 type: 'bar',
@@ -2254,8 +2583,9 @@
         }
 
         // New GEX data into an existing chart, without rebuilding it (keeps zoom, no blank frame)
-        function swapGexData(chart, { strikes, net_gex }, spot) {
+        function swapGexData(chart, { strikes, net_gex: raw }, spot) {
             const ds = chart.data.datasets[0];
+            const net_gex = raw.map(v => gexU(v, spot));
             chart.data.labels = strikes;
             ds.data = net_gex;
             ds.backgroundColor = net_gex.map(v => v >= 0 ? 'rgba(0,255,136,0.7)' : 'rgba(255,68,68,0.7)');
@@ -2396,7 +2726,7 @@
         function updateGexSlot(symbol, slot, chartData, levels, spot, totalGex, regime) {
             const id = `${symbol}-${slot}`;
             document.getElementById(`spot-${id}`).textContent  = fmt(spot);
-            document.getElementById(`gex-${id}`).textContent   = fmtGex(totalGex);
+            document.getElementById(`gex-${id}`).textContent   = fmtGex(gexU(totalGex, spot));
             document.getElementById(`flip-${id}`).textContent  = fmt(levels.flip_level);
             document.getElementById(`put-${id}`).textContent   = fmt(levels.put_wall);
             document.getElementById(`call-${id}`).textContent  = fmt(levels.call_wall);
@@ -2640,7 +2970,7 @@
                 const p = i ? ss[i - 1] : null, spot = s.spot;
                 const idx = ks.map((_, j) => j).filter(j => Math.abs(ks[j] - spot) <= near);
                 const lines = [{ text: `OI ${fmtOI(s.total_oi)}${p ? ` (${signed(s.total_oi - p.total_oi)})` : ''}`
-                    + ` · GEX ${kdM(s.total_gex)}${p ? ` (was ${kdM(p.total_gex)})` : ''}`
+                    + ` · GEX ${kdM(gexU(s.total_gex, s.spot))}${p ? ` (was ${kdM(gexU(p.total_gex, p.spot))})` : ''}`
                     + ` · spot ${Math.round(spot)}${p ? ` (${spot >= p.spot ? '+' : ''}${Math.round(spot - p.spot)})` : ''}` }];
                 if (p) {
                     const ch = idx.flatMap(j => [[s.call_oi[j] - p.call_oi[j], ks[j], 'C', s.call_oi[j]],
@@ -2659,13 +2989,29 @@
                     const j = js.reduce((a, b) => (Math.abs(s.gex[b]) > Math.abs(s.gex[a]) ? b : a));
                     if (!lead[side] || lead[side].k !== ks[j]) lead[side] = { k: ks[j], since: s.day };
                     const age = !i ? 'first recorded' : lead[side].since === s.day ? 'new today' : `there since ${kdDay(lead[side].since)}`;
-                    lines.push({ cls: 'level', text: `${name}: ${ks[j]} ${kdM(s.gex[j])} (${age})` });
+                    lines.push({ cls: 'level', text: `${name}: ${ks[j]} ${kdM(gexU(s.gex[j], s.spot))} (${age})` });
                 }
                 lines.push({ text: s.total_gex < 0 ? 'Dealers short gamma in this expiration: their hedging adds to moves'
                                                    : 'Dealers long gamma in this expiration: their hedging damps moves' });
                 out.push({ day: s.day, lines });
             });
             return out.reverse();
+        }
+
+        // key_dates.py writes GEX into its notes as text ("GEX +12.7M (was -54.6M)", "Biggest
+        // gamma below spot: 7650 -4.0M"); per 1% move those figures are redone from the
+        // session's own numbers (not by scaling the rounded text)
+        function kdNoteUnits(kd, n, text) {
+            if (gexUnit !== 'pct') return text;
+            const ss = kd.sessions || [], i = ss.findIndex(x => x.day === n.day);
+            if (i < 0) return text;
+            const s = ss[i], p = i ? ss[i - 1] : null;
+            text = text.replace(/GEX [+-][\d.]+[MB]( \(was [+-][\d.]+[MB]\))?/,
+                (m, was) => `GEX ${kdM(gexU(s.total_gex, s.spot))}` + (was && p ? ` (was ${kdM(gexU(p.total_gex, p.spot))})` : ''));
+            return text.replace(/(Biggest gamma (?:below|above) spot: )([\d.]+) [+-][\d.]+[MB]/, (m, head, k) => {
+                const j = kd.strikes.indexOf(Number(k));
+                return j < 0 ? m : `${head}${k} ${kdM(gexU(s.gex[j], s.spot))}`;
+            });
         }
 
         function renderKeyDate(i, kd, moved = false) {
@@ -2696,7 +3042,7 @@
             $('ticks').innerHTML = ss.map((x, j) => (j % every && j !== ss.length - 1 && j !== at) ? '' :
                 `<span data-j="${j}" class="${j === at ? 'on' : ''}" style="left:${ss.length > 1 ? j / (ss.length - 1) * 100 : 0}%">`
                 + `${j === ss.length - 1 && live(x.day) ? 'now' : x.day.slice(5).replace('-', '/')}</span>`).join('');
-            $('gex').textContent = fmtGex(now.total_gex) + (base ? ` (was ${fmtGex(base.total_gex)})` : '');
+            $('gex').textContent = fmtGex(gexU(now.total_gex, now.spot)) + (base ? ` (was ${fmtGex(gexU(base.total_gex, base.spot))})` : '');
             $('oi').textContent = fmtOI(now.total_oi) + (base ? ` (${now.total_oi >= base.total_oi ? '+' : ''}${fmtOI(now.total_oi - base.total_oi)})` : '');
 
             // the strikes around the latest spot (the same ones for every session on the slider)
@@ -2726,14 +3072,14 @@
                 if (chart) chart.destroy();
                 chart = kdCharts[i] = new Chart(canvas.getContext('2d'), kdChartConfig());
             }
-            const nowG = idx.map(j => now.gex[j]);
+            const nowG = idx.map(j => gexU(now.gex[j], now.spot));
             chart.data.labels = idx.map(j => ks[j]);
             chart.data.datasets[0].data = nowG;
             chart.data.datasets[0].backgroundColor = nowG.map(v => v >= 0 ? 'rgba(0,255,136,0.7)' : 'rgba(255,68,68,0.7)');
-            chart.data.datasets[1].data = base ? idx.map(j => base.gex[j]) : [];
+            chart.data.datasets[1].data = base ? idx.map(j => gexU(base.gex[j], base.spot)) : [];
             chart.data.datasets[1].label = base ? `${base.day.slice(5)} close` : '';
             // one scale for every session, so bars grow and shrink as the slider moves
-            const all = ss.flatMap(x => idx.map(j => x.gex[j]));
+            const all = ss.flatMap(x => idx.map(j => gexU(x.gex[j], x.spot)));
             chart.options.scales.x.min = Math.min(0, ...all) * 1.05;
             chart.options.scales.x.max = Math.max(0, ...all) * 1.05;
             chart._spotPrice = latest ? (_lastGexData.SPX?.spot || now.spot) : now.spot;
@@ -2743,7 +3089,9 @@
             // page's own simpler ones if the server is older
             if (kd.event?.text) $('sub').textContent += ` · ${kd.event.text}`;
             const score = kd.scorecard ? `<div class="kd-score"><b>Scorecard, this expiration:</b> ${kd.scorecard}</div>` : '';
-            $('notes').innerHTML = score + (kd.notes || kdNotes(kd)).map((n, j) =>
+            const notes = kd.notes ? kd.notes.map(n => ({ ...n, lines: n.lines.map(l => ({ ...l, text: kdNoteUnits(kd, n, l.text) })) }))
+                                   : kdNotes(kd);
+            $('notes').innerHTML = score + notes.map((n, j) =>
                 `<div class="kd-note${j === 0 ? ' latest' : ''}${n.day === now.day ? ' sel' : ''}"><b>${kdDay(n.day)}${live(n.day) ? ' · today so far' : ''}</b>`
                 + n.lines.map(l => `<div class="${l.cls || ''}">${l.text}</div>`).join('') + '</div>').join('');
             const sel = moved && $('notes').querySelector('.kd-note.sel');   // that session's note in view
@@ -2830,18 +3178,18 @@
             switch (r.kind) {
                 case 'size_regime': case 'size_price': {
                     const hz = '30' in r.h ? '30' : '15', v = r.h[hz];
-                    return `${r.kind === 'size_regime' ? 'net GEX' : 'GEX at price'} ${predMoney(r.gex)} → next ${hz} min ${r.predict} than usual`
+                    return `${r.kind === 'size_regime' ? 'net GEX' : 'GEX at price'} ${predMoney(gexU(r.gex, r.spot))} → next ${hz} min ${r.predict} than usual`
                         + (v ? ` · moved ${v[0].toFixed(1)} vs usual ${v[1].toFixed(1)}` : '');
                 }
                 case 'level':
-                    return `${r.strike} ${r.names.join(' / ')} (GEX ${predMoney(r.gex)}) reached from ${r.from} → ${r.predict}`
+                    return `${r.strike} ${r.names.join(' / ')} (GEX ${predMoney(gexU(r.gex, r.strike))}) reached from ${r.from} → ${r.predict}`
                         + (r.first ? ` · ${r.first === 'hold' ? 'held' : 'broke'} in ${r.min} min` : '');
                 case 'run':
-                    return `broke ${r.dir} through ${r.strike} (GEX ${predMoney(r.gex)})`
+                    return `broke ${r.dir} through ${r.strike} (GEX ${predMoney(gexU(r.gex, r.strike))})`
                         + (r.predict ? ` → runs ${set.run} more pts` : ' · for comparison (positive GEX)')
                         + (r.first ? ` · ${r.first === 'run' ? 'ran' : 'reclaimed'} in ${r.min} min` : '');
                 default:
-                    return `pin ${r.pin} with price ${r.spot.toFixed(1)}, 0DTE GEX ${predMoney(r.gex0)}`
+                    return `pin ${r.pin} with price ${r.spot.toFixed(1)}, 0DTE GEX ${predMoney(gexU(r.gex0, r.spot))}`
                         + (r.predict ? ' → the close lands nearer the pin' : ' · for comparison (0DTE gamma negative)')
                         + (r.close != null ? ` · closed ${r.close.toFixed(1)}` : '');
             }
@@ -2943,6 +3291,7 @@
             if (symbol === 'SPX' && data.odte_date) setOdteDate(data.odte_date);
 
             renderGexLeft(symbol, data);
+            if (symbol === 'SPX') renderGexUnitNote();
 
             if (symbol === 'SPX' && data.total_gex != null) {
                 _liveTotalGex = data.total_gex;
@@ -3086,7 +3435,8 @@
             const prevRaw    = rawCandles[symbol] || [];
             const lastRestTs = candles[candles.length - 1].time;
             const liveExtra  = prevRaw.filter(c => c.time > lastRestTs);
-            rawCandles[symbol] = [...candles, ...liveExtra];
+            const olderExtra = prevRaw.filter(c => c.time < candles[0].time);   // days loaded by scrolling left
+            rawCandles[symbol] = [...olderExtra, ...candles, ...liveExtra];
 
             if (!selectedTF[symbol]) selectedTF[symbol] = 1;
 
@@ -3119,6 +3469,8 @@
                     // ES volume pane under the candles: dominant side on top, smaller side at the bottom
                     const volOpts = { priceFormat: { type: 'volume' }, lastValueVisible: false,
                                       priceLineVisible: false, base: 0 };
+                    chart.timeScale().subscribeVisibleLogicalRangeChange(r => { if (r && r.from < OLDER_EDGE) loadOlderDay(); });
+                    addChartNav(priceCharts.SPX, container);
                     priceCharts.SPX.esVolTotal = chart.addSeries(LWC.HistogramSeries, volOpts, 1);
                     priceCharts.SPX.esVolSell  = chart.addSeries(LWC.HistogramSeries, volOpts, 1);   // smaller side, drawn over the bottom
                     // Bars from the pane's bottom edge: the chart-wide 18% bottom margin is for
@@ -3135,6 +3487,7 @@
                     candleSeries.attachPrimitive(priceCharts.SPX.zones);
                     if (_heatmap) priceCharts.SPX.zones.setData(_heatmap, _zoneMode);
                     _medalLines = [];                  // a new candle series: the old labels went with the old one
+                    _bigLines = [];
                     updateMedalLabels();
                     fetchGammaLevels();
                 }
@@ -4325,7 +4678,9 @@
   // Calls / puts per strike in the given mode, plus totals over the strikes in view.
   function seriesFor(d, mode) {
     if (!d || !d.strikes || !d.strikes.length || d.spot == null) return null;
-    const gexMult = mode === 'gex' ? 100 * d.spot : 0;
+    // Flow GEX per point, or per 1% move when the page's GEX unit says so (gexUnitMult)
+    const unit = typeof gexUnitMult === 'function' ? gexUnitMult(d.spot) : 1;
+    const gexMult = mode === 'gex' ? 100 * d.spot * unit : 0;
     const [lo, hi] = currentView();
     const calls = [], puts = [];
     let cTot = 0, pTot = 0;
@@ -4391,6 +4746,10 @@
                      : d.partial ? `only ${fmtDur(d.covered_sec)} of history`
                      : `actual ${fmtDur(d.covered_sec)}`;
   }
+
+  // the page's GEX unit toggle: redraw Flow GEX in the new unit
+  if (typeof window !== 'undefined' && window.addEventListener)
+    window.addEventListener('gexunit', () => { if (rpLast) renderRollingProfile(rpLast); });
 
   function renderRollingProfile(resp) {
     rpLast = resp;

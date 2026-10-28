@@ -111,6 +111,14 @@ const tick = () => new Promise(r => setTimeout(r, 20));
   assert.strictEqual(el('rp-net-2').textContent, `Net +${((callGex - putGex) / 1e9).toFixed(1)}B`);
   assert.strictEqual(el('rp-net-2').className, 'rp-c');
   assert.strictEqual(el('rp-ctot-0').textContent, '123K');
+  // the page's GEX unit per 1% move: Flow GEX x spot / 100; volume untouched
+  global.gexUnitMult = s => s * 0.01;
+  el('rp-mode-2-gex').listeners.click();
+  assert(Math.abs(at(row[2], 0, 7780) - gexOf(120000) * SPOT * 0.01) < 1e-1, 'Flow GEX per 1% move');
+  assert.strictEqual(at(row[0], 0, 7780), 120000, 'volume chart unchanged');
+  delete global.gexUnitMult;
+  el('rp-mode-2-gex').listeners.click();
+  assert(Math.abs(at(row[2], 0, 7780) - gexOf(120000)) < 1e-3, 'back per point');
   const tip = row[2].options.plugins.tooltip.callbacks.label;
   assert.strictEqual(tip({ chart: row[2], dataset: { label: 'Calls' }, parsed: { x: 1.5e9 } }), 'Calls: 1.5B');
   assert.strictEqual(tip({ chart: row[0], dataset: { label: 'Calls' }, parsed: { x: 12345 } }), 'Calls: 12,345');
