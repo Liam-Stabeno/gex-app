@@ -188,3 +188,16 @@ def test_touch_trade_levels_open_and_previous_session():
     assert L["prev open"] == [90.0, 90.0] and L["prev close"] == [99.0, 99.0]
     no_prev = P.trade_levels(DAY, today, {DAY: today}, {}, [], [], [])
     assert no_prev["prev close"] == [None, None]
+
+
+def test_size_predictions_every_7_5_minutes():
+    ms = P._check_times(15)
+    assert ms[:6] == [15, 23, 30, 38, 45, 53], "9:45, 9:53, 10:00, 10:08, ..."
+    assert ms[-1] == 375 and (ms[-1] - ms[0]) / (len(ms) - 1) == 7.5
+    bars = bars_from([100 + (i % 3) for i in range(80)], wick=0)
+    base = {(m, h): 5.0 for h in P.HORIZONS for m in range(0, 391)}
+    snaps = [(T0 + 60 * i, {"total_gex": "1e8"}) for i in range(80)]      # one a minute: none goes stale
+    rows = P.predict_size(DAY, bars, base, snaps, [], now=T0 + 86400)
+    times = sorted({(r["t"] - T0) // 60 for r in rows if r["kind"] == "size_regime"})
+    assert times[:4] == [15, 23, 30, 38]
+    assert all(r["prev"] for r in rows if r["kind"] == "size_regime"), "the no-GEX guess at every one (the 15 min before)"

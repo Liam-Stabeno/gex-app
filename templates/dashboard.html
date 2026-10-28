@@ -1025,7 +1025,8 @@
                     <span id="zone-mode-btns" style="display:contents"><!-- soonest first; red days slot in by date -->
                     <button class="tf-btn" data-zone="odte" title="Net GEX at each strike, 0DTE only">0DTE</button>
                     <button class="tf-btn" data-zone="week" title="Net GEX at each strike, expirations through this Friday (on a Friday: today's only)">Week</button>
-                    <button class="tf-btn active" data-zone="all" title="Net GEX at each strike, all expirations">All</button>
+                    <button class="tf-btn active" data-zone="all" title="Net GEX at each strike, today's 0DTE and every expiration in the next 30 days">All</button>
+                    <button class="tf-btn" data-zone="full" title="Net GEX at each strike, every listed expiration: All plus the ones past 30 days (from the full chain, saved every 15 min; from 2026-10-15)">Full</button>
                     </span>
                     <button class="tf-btn" data-zone="off">Off</button>
                     <button class="tf-btn" id="zone-info-btn" title="Show / hide the key, the ES volume key and the gamma levels bar">Info</button>
@@ -1436,6 +1437,11 @@
                 if (L[mode]) return L[mode];
                 // a red day's expiration that is today's 0DTE: the same contracts, so the live 0DTE
                 if (mode.startsWith('x:') && L.odte && mode.slice(2) === _lastGexData.SPX?.odte_date) return L.odte;
+                // Full: live All plus the latest snapshot's later expirations (full chain, every 15 min)
+                if (mode === 'full' && L.all && d?.full?.length && d?.all?.length) {
+                    const a = d.all[d.all.length - 1], f = d.full[d.full.length - 1];
+                    return new Map(d.strikes.map((k, i) => [k, (L.all.has(k) ? L.all.get(k) : a[i]) + f[i] - a[i]]));
+                }
                 if (mode !== 'week' || !L.odte || !d?.week?.length) return null;
                 const w = d.week[d.week.length - 1], o = d.odte[d.odte.length - 1];
                 return new Map(d.strikes.map((k, i) => [k, (L.odte.has(k) ? L.odte.get(k) : o[i]) + w[i] - o[i]]));
@@ -1701,8 +1707,8 @@
         function joinHeatmaps(days) {
             const strikes = [...new Set(days.flatMap(h => h.strikes))].sort((a, b) => a - b);
             const at = new Map(strikes.map((k, i) => [k, i]));
-            // every view the days carry: all / odte / week and the red days' 'x:<date>' columns
-            const modes = ['all', 'odte', 'week', ...new Set(days.flatMap(h => Object.keys(h).filter(k => k.startsWith('x:'))))];
+            // every view the days carry: all / odte / week / full and the red days' 'x:<date>' columns
+            const modes = ['all', 'odte', 'week', 'full', ...new Set(days.flatMap(h => Object.keys(h).filter(k => k.startsWith('x:'))))];
             const out = { times: [], spots: [], strikes, day: [], rebuilt: [], red: days[days.length - 1].red };
             modes.forEach(m => { out[m] = []; });
             days.forEach((h, di) => {
@@ -1743,10 +1749,10 @@
                     box.appendChild(b);
                 });
                 // soonest first, by the last expiration each view reaches: 0DTE (today), red days
-                // (their date), Week (Friday), All (30 days); on a tie the single expiration first
+                // (their date), Week (Friday), All (30 days), Full (everything); on a tie the single expiration first
                 const today = todayET(), fri = weekFriday(today);
                 const rank = b => { const z = b.dataset.zone;
-                    return z === 'odte' ? [today, 0] : z === 'week' ? [fri, 1] : z === 'all' ? ['9999', 1] : [z.slice(2), 0]; };
+                    return z === 'odte' ? [today, 0] : z === 'week' ? [fri, 1] : z === 'all' ? ['9999', 1] : z === 'full' ? ['99999', 1] : [z.slice(2), 0]; };
                 [...box.querySelectorAll('[data-zone]')]
                     .sort((a, b) => { const [da, ca] = rank(a), [db, cb] = rank(b); return da < db ? -1 : da > db ? 1 : ca - cb; })
                     .forEach(b => box.appendChild(b));
@@ -3150,7 +3156,7 @@
             panel.className = 'chart-div pred-panel';
             panel.id = 'pred-panel';
             panel.innerHTML = `
-                <div class="pred-intro">Every 15 minutes the app writes down what GEX predicts, then grades it against SPX once the time is up,
+                <div class="pred-intro">Every 7.5 minutes the app writes down what GEX predicts, then grades it against SPX once the time is up,
                     over every recorded session and today live. Each hit rate is next to what a guess <b>without</b> GEX scored on the same moments:
                     <span style="color:#00ff88">green</span> = GEX beat it by more than the ±, white = no better, <span style="color:#ff5c6c">red</span> = worse,
                     grey = too few yet. Predictions in one session overlap, so read the ± as a minimum.</div>

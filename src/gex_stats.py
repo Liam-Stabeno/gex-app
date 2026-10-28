@@ -17,6 +17,7 @@ import glob
 import os
 import threading
 import time
+from bisect import bisect_right
 from datetime import date, datetime, time as dtime, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo
@@ -229,13 +230,63 @@ def _hm_rebuilt(path: str, day_iso: str, exp: str | None = None) -> list:
     return snaps
 
 
+FULL_NEAR_DAYS = 30       # the live chain's window (gex.fetch_option_chain): Full adds what's past it
+_full_today: dict = {'path': None, 'offset': 0, 'tail': b'', 'snaps': []}
+
+
+def _full_far(line: bytes, day_iso: str):
+    """(epoch, {strike: net GEX}) of one full-chain snapshot's expirations past the live
+    chain's FULL_NEAR_DAYS: what the heatmap's All leaves out."""
+    import json
+    import key_dates
+    try:
+        snap = json.loads(line)
+    except ValueError:
+        return None                                       # a line still being written
+    cutoff = (date.fromisoformat(day_iso) + timedelta(days=FULL_NEAR_DAYS)).isoformat()
+    far = {}
+    for exp, cells in key_dates.strike_gex(snap).items():
+        if exp > cutoff:
+            for k, g in cells.items():
+                far[k] = far.get(k, 0.0) + g
+    return int(datetime.fromisoformat(snap['ts']).timestamp()), far
+
+
+def _full_snapshots(sym: str, day_iso: str, data_dir: str = _DATA_DIR) -> list:
+    """[(epoch, {strike: GEX past FULL_NEAR_DAYS})] for each full-chain snapshot of the day
+    (gex_full_<sym>_<date>.jsonl, every 15 min, from 2026-10-15). Today's file is read
+    incrementally: each snapshot line is ~600 KB."""
+    path = day_file(f'gex_full_{sym}_{day_iso}.jsonl', data_dir)
+    if not path:
+        return []
+    if path.endswith('.gz'):                              # a finished day: load_heatmap keeps its result
+        with open_text(path) as f:
+            return [x for x in (_full_far(l, day_iso) for l in f if l.strip()) if x]
+    with _hm_lock:
+        c = _full_today
+        size = os.path.getsize(path)
+        if c['path'] != path or size < c['offset']:
+            c.update(path=path, offset=0, tail=b'', snaps=[])
+        if size > c['offset']:
+            with open(path, 'rb') as f:
+                f.seek(c['offset'])
+                chunk = c['tail'] + f.read()
+                c['offset'] = f.tell()
+            lines = chunk.split(b'\n')
+            c['tail'] = lines.pop()
+            c['snaps'].extend(x for x in (_full_far(l, day_iso) for l in lines if l.strip()) if x)
+        return list(c['snaps'])
+
+
 def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
                  data_dir: str = _DATA_DIR, rebuilt: bool = False, red: int = 0) -> dict:
     """Net GEX per strike over time, from gex_grid_<sym>_<date>.jsonl (one snapshot per
     chain refresh, about every minute; every 5 min before 2026-10-07).
 
     Returns {'times': [epoch s], 'spots', 'strikes': [...], 'all': [[gex per strike] per
-    time], 'odte': [...], 'week': [...] (expirations through Friday), 'rebuilt_until'} for
+    time], 'odte': [...], 'week': [...] (expirations through Friday), 'full': [...] (All plus
+    every expiration past FULL_NEAR_DAYS, from the latest full-chain snapshot; empty on days
+    without one), 'rebuilt_until'} for
     strikes within `band` pts of the day's spot
     range. Positive = dealers long gamma (hedging dampens moves); negative = amplifies.
 
@@ -255,7 +306,7 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     exps = tuple(r['date'] for r in red_list)
     path = day_file(f'gex_grid_{sym}_{day.isoformat()}.jsonl', data_dir)
     # no columns yet (pre-market), but still the red days: the page builds their buttons from it
-    empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': [], 'week': [], 'rebuilt_until': None,
+    empty = {'times': [], 'spots': [], 'strikes': [], 'all': [], 'odte': [], 'week': [], 'full': [], 'rebuilt_until': None,
              **({'red': red_list} if red else {}), **{f'x:{e}': [] for e in exps}}
     if not path:
         return empty
@@ -280,15 +331,21 @@ def load_heatmap(sym: str = 'SPX', day=None, band: float = 250.0,
     snaps = early + snaps
     spots = [sp for _, sp, _ in snaps if sp]
     lo, hi = min(spots) - band, max(spots) + band
-    strikes = sorted({k for _, _, by_k in snaps for k in by_k if lo <= k <= hi})
-    out = {'times': [], 'spots': [], 'strikes': strikes, 'all': [], 'odte': [], 'week': [],
+    full = _full_snapshots(sym, day.isoformat(), data_dir)
+    strikes = sorted({k for _, _, by_k in snaps for k in by_k if lo <= k <= hi}
+                     | {k for _, far in full for k in far if lo <= k <= hi})
+    out = {'times': [], 'spots': [], 'strikes': strikes, 'all': [], 'odte': [], 'week': [], 'full': [],
            'rebuilt_until': early[-1][0] if early else None}
+    full_t = [t for t, _ in full]
     for t, sp, by_k in snaps:
         out['times'].append(t)
         out['spots'].append(sp)
         out['all'].append([round(by_k[k][0]) if k in by_k else 0 for k in strikes])
         out['odte'].append([round(by_k[k][1]) if k in by_k else 0 for k in strikes])
         out['week'].append([round(by_k[k][2]) if k in by_k else 0 for k in strikes])
+        if full:                                          # All + the latest full chain's later expirations
+            far = full[max(bisect_right(full_t, t) - 1, 0)][1]        # (before the first: the first)
+            out['full'].append([round((by_k[k][0] if k in by_k else 0) + far.get(k, 0)) for k in strikes])
     for e in exps:                                        # one expiration per red day
         one = {t: g for t, _, g in _hm_snapshots(path, day.isoformat(), e)}
         if early:
@@ -422,7 +479,9 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
     the chart's medals and key strikes, which read the same numbers."""
     # 'x:<date>': one red day's expiration (the next two are offered)
     h = load_heatmap(sym, day=day, data_dir=data_dir, red=2 if mode.startswith('x:') else 0)
-    if not h['times'] or not (mode in ('all', 'odte', 'week') or (mode.startswith('x:') and mode in h)):
+    if not h['times'] or not (mode in ('all', 'odte', 'week', 'full') or (mode.startswith('x:') and mode in h)):
+        return None
+    if not h[mode]:                                       # Full on a day without a full-chain snapshot
         return None
     if spot is None:
         spot = next((s for s in reversed(h['spots']) if s), None)
@@ -453,7 +512,7 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
         odte = h['odte'][-1]
         swap = lambda c: [x - o + v if v is not None else x for x, o, v in zip(c, odte, lv)]
         today = (day or datetime.now(ET).date()).isoformat()
-        if mode in ('all', 'week'):
+        if mode in ('all', 'week', 'full'):
             col = swap(col)
         elif mode in ('odte', f'x:{today}'):
             col = [v if v is not None else x for x, v in zip(col, lv)]
@@ -463,7 +522,7 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
         out['history'] = history
         # air pockets are about total gamma: 0DTE alone looks empty away from spot
         # even where other expiries hold plenty
-        if mode != 'all':
+        if mode not in ('all', 'full'):
             out['air_pockets'] = gamma_levels(h['strikes'], all_now, spot).get('air_pockets', [])
         out.update(mode=mode, as_of=h['times'][-1], live=bool(live))
     return out

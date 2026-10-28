@@ -109,6 +109,11 @@ def next_red_days(n: int = 2, now: datetime | None = None, path: str = EVENTS_CS
 
 # ── positioning ────────────────────────────────────────────────────────────────
 
+def strike_gex(snap: dict) -> dict:
+    """{expiry: {strike: net GEX}} of one full-chain snapshot, counted as the panels count it."""
+    return {exp: {k: c[2] for k, c in cells.items()} for exp, cells in _table(snap)['exp'].items()}
+
+
 def _last_snapshot(path: str) -> dict | None:
     """The file's last complete snapshot (a line still being written doesn't parse)."""
     with open_text(path) as f:

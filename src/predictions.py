@@ -1,7 +1,7 @@
 """
 Prediction scoreboard: does GEX call SPX's next move?
 
-Every 15 minutes of the session the app writes down a few specific predictions from the
+Every 7.5 minutes of the session the app writes down a few specific predictions from the
 GEX in force at that moment, then grades each one once its time is up, against SPX
 1-minute bars. It runs back over every recorded day and on today live, so the page shows
 a hit rate for each prediction next to what a guess without GEX would score.
@@ -54,11 +54,13 @@ from price_history import load_candles
 
 DATA_DIR = gex_stats._DATA_DIR
 SAVE_FILE = os.path.join(DATA_DIR, 'predictions_SPX.jsonl')
-RULES_VERSION = 2                # 2: touch trades
+RULES_VERSION = 2                # 2: touch trades, SIZE every 7.5 min
 
 HORIZONS = (15, 30, 60)          # minutes
 FIRST_CHECK_MIN = 15             # 9:45: the first 15 min trade the open's orders, not gamma
-CHECK_EVERY_MIN = 15
+CHECK_EVERY_MIN = 7.5            # on the minute bars: 8 / 7 min apart (9:45, 9:53, 10:00, ...)
+GUESS_MIN = 15                   # the no-GEX guess looks at the 15 min before
+TRADE_BASE_EVERY_MIN = 15        # the touch trades' no-level baseline (as tools/odte_level_test.py)
 SESSION_MIN = 390                # 9:30-16:00
 BASE_SESSIONS = 20
 STALE_SEC = 900                  # a snapshot older than this isn't "in force"
@@ -135,8 +137,14 @@ def _range(bars: list) -> float:
     return max(b[2] for b in bars) - min(b[3] for b in bars)
 
 
-def _check_times(horizon: int):
-    return range(FIRST_CHECK_MIN, SESSION_MIN - horizon + 1, CHECK_EVERY_MIN)
+def _check_times(horizon: int) -> list:
+    """Minutes after 9:30 to predict at: every CHECK_EVERY_MIN from FIRST_CHECK_MIN, rounded
+    to the minute, leaving room for `horizon`."""
+    out, n = [], 0
+    while (m := FIRST_CHECK_MIN + int(CHECK_EVERY_MIN * n + 0.5)) <= SESSION_MIN - horizon:
+        out.append(m)
+        n += 1
+    return out
 
 
 def _by_minute(day: str, bars: list) -> list:
@@ -149,14 +157,21 @@ def _by_minute(day: str, bars: list) -> list:
     return out
 
 
+_base_cache: dict = {}   # (day, the prior sessions used) -> baselines()
+
+
 def baselines(day: str, by_day: dict) -> dict:
     """{(minute after 9:30, horizon): median range of that window} over the previous
     BASE_SESSIONS sessions with the window complete."""
-    prior = [_by_minute(d, by_day[d]) for d in sorted(d for d in by_day if d < day)[-BASE_SESSIONS:]]
+    days = tuple(sorted(d for d in by_day if d < day)[-BASE_SESSIONS:])
+    hit = _base_cache.get((day, days))                    # finished sessions: the same all day
+    if hit is not None:
+        return hit
+    prior = [_by_minute(d, by_day[d]) for d in days]
     out = {}
     for h in HORIZONS:
-        for m in range(0, SESSION_MIN - h + 1, CHECK_EVERY_MIN):   # from 9:30: the no-GEX guess
-                                                                    # looks at the 15 min before
+        for m in range(0, SESSION_MIN - h + 1):    # every minute: predictions land on any of them,
+                                                   # and the no-GEX guess looks at the 15 before
             vals = []
             for mins in prior:
                 w = [x for x in mins[m:m + h] if x]
@@ -164,6 +179,9 @@ def baselines(day: str, by_day: dict) -> dict:
                     vals.append(max(x[0] for x in w) - min(x[1] for x in w))
             if len(vals) >= 5:
                 out[(m, h)] = statistics.median(vals)
+    if len(_base_cache) > 64:
+        _base_cache.clear()
+    _base_cache[(day, days)] = out
     return out
 
 
@@ -240,9 +258,9 @@ def predict_size(day: str, bars: list, base: dict, snaps: list, timeline: list, 
             continue
         first = _window(bars, t0, 1)
         spot = first[0][1] if first else None
-        w = _window(bars, t0 - 60 * CHECK_EVERY_MIN, CHECK_EVERY_MIN)    # the no-GEX guess's input
-        b = base.get((m - CHECK_EVERY_MIN, CHECK_EVERY_MIN))
-        prev = [round(_range(w), 2), round(b, 2)] if b and len(w) >= 0.9 * CHECK_EVERY_MIN else None
+        w = _window(bars, t0 - 60 * GUESS_MIN, GUESS_MIN)                # the no-GEX guess's input
+        b = base.get((m - GUESS_MIN, GUESS_MIN))
+        prev = [round(_range(w), 2), round(b, 2)] if b and len(w) >= 0.9 * GUESS_MIN else None
         g = _at(snaps, t0, 'total_gex')
         if g is not None:
             rows.append({'kind': 'size_regime', 't': t0, 'spot': spot, 'gex': round(g),
@@ -483,7 +501,7 @@ def predict_trades(day: str, bars: list, levels: dict, q: dict, now: float) -> l
             if not TRADE_FIRST_MIN <= m <= TRADE_LAST_MIN or i < TRADE_LOOKBACK_MIN or t > now:
                 continue
             if name is None:                              # baseline: 'from above' = fell over the lookback
-                if m % CHECK_EVERY_MIN or closes[i - TRADE_LOOKBACK_MIN] == c:
+                if m % TRADE_BASE_EVERY_MIN or closes[i - TRADE_LOOKBACK_MIN] == c:
                     continue
                 at, from_above = None, closes[i - TRADE_LOOKBACK_MIN] > c
             else:

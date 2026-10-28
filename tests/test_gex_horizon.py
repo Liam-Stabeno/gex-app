@@ -137,3 +137,38 @@ def test_record_gex_grid_saves_the_live_0dte(tmp_path, monkeypatch):
     assert lines[0]["rows"] == [[7700.0, 0, 10, 5, 30]], "the chain's cells as before"
     assert lines[0]["live0"] == [[7695.0, -1], [7700.0, 33]]
     assert "live0" not in lines[1], "a stale live 0DTE isn't saved"
+
+
+# ── Full: every listed expiration ──────────────────────────────────────────────
+
+def _full_snap(ts, rows):
+    return {"ts": ts, "spot": 7700.0, "exp": ["2026-10-28", "2026-11-20", "2026-12-31"],
+            "fields": ["strike", "exp_idx", "side", "oi", "volume", "gamma", "iv", "delta", "bid", "ask", "mark"],
+            "rows": rows}
+
+
+def test_full_view_adds_the_expirations_past_30_days(tmp_path):
+    import key_dates
+    snaps = [_live_snap(0), _live_snap(1)]
+    (tmp_path / "gex_grid_SPX_2026-10-28.jsonl").write_text("\n".join(json.dumps(s) for s in snaps) + "\n", encoding="utf-8")
+    early = _full_snap("2026-10-28T10:00:30-04:00", [
+        [7700.0, 1, 0, 500, 0, 0, 15.0, 0.5, 0, 0, 10.0],      # 11-20: inside 30 days, All has it already
+        [7700.0, 2, 0, 900, 0, 0, 14.0, 0.5, 0, 0, 90.0],      # 12-31: past 30 days, Full adds it
+        [7800.0, 2, 1, 400, 0, 0, 13.0, -0.5, 0, 0, 80.0]])    # a strike only the far expiry has
+    late = _full_snap("2026-10-28T10:15:00-04:00", early["rows"][:2])
+    (tmp_path / "gex_full_SPX_2026-10-28.jsonl").write_text(json.dumps(early) + "\n" + json.dumps(late) + "\n"
+                                                           + '{"ts": "2026-10-28T10:30', encoding="utf-8")   # half written
+    h = gs.load_heatmap("SPX", day=date(2026, 10, 28), data_dir=tmp_path)
+    far = key_dates.strike_gex(early)["2026-12-31"]
+    assert 7800.0 in h["strikes"], "far-dated strikes join the grid"
+    k0, k1 = h["strikes"].index(7700.0), h["strikes"].index(7800.0)
+    assert h["full"][0][k0] == round(h["all"][0][k0] + far[7700.0])
+    assert h["full"][1][k1] == round(far[7800.0]) and far[7800.0] < 0, "both columns: the 10:00 snapshot (10:15 comes later)"
+    assert gs.current_gamma_levels(7705.0, "full", data_dir=tmp_path, day=date(2026, 10, 28)) is not None
+
+
+def test_full_view_empty_without_a_full_chain(tmp_path):
+    (tmp_path / "gex_grid_SPX_2026-10-28.jsonl").write_text(json.dumps(_live_snap(0)) + "\n", encoding="utf-8")
+    h = gs.load_heatmap("SPX", day=date(2026, 10, 28), data_dir=tmp_path)
+    assert h["full"] == [] and h["all"]
+    assert gs.current_gamma_levels(7705.0, "full", data_dir=tmp_path, day=date(2026, 10, 28)) is None
