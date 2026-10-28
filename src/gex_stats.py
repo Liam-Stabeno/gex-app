@@ -419,7 +419,7 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
 
     live: today's 0DTE GEX per strike now (background.live_0dte), in place of the latest
     snapshot's 0DTE part, so the levels move with the stream (every ~2 s) and agree with
-    the chart's medals and BIG lines, which read the same numbers."""
+    the chart's medals and key strikes, which read the same numbers."""
     # 'x:<date>': one red day's expiration (the next two are offered)
     h = load_heatmap(sym, day=day, data_dir=data_dir, red=2 if mode.startswith('x:') else 0)
     if not h['times'] or not (mode in ('all', 'odte', 'week') or (mode.startswith('x:') and mode in h)):

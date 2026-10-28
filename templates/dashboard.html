@@ -1037,9 +1037,9 @@
                     <span title="The 3 strongest strikes in each heatmap snapshot. Medals: gold / silver / bronze lines by rank, with each one's current size on the price axis.">WALLS</span>
                     <button class="tf-btn" data-walls="medals">Medals</button>
                     <button class="tf-btn" data-walls="off">Off</button>
-                    <span title="The heavy strikes on each side of price for a big move: up to 4 a side within 250 pts, each at least half the biggest. Green: price stalls there. Red: price speeds up. Size on the price axis.">BIG</span>
-                    <button class="tf-btn" data-big="on">On</button>
-                    <button class="tf-btn" data-big="off">Off</button>
+                    <span title="The heavy strikes on each side of price for a big move: up to 4 a side within 250 pts, each at least half the biggest. Green: price stalls there. Red: price speeds up. Size on the price axis.">KEY STRIKES</span>
+                    <button class="tf-btn" data-keystrikes="on">On</button>
+                    <button class="tf-btn" data-keystrikes="off">Off</button>
                     <span id="zone-regime-top" style="display:contents"></span>
                     <span style="margin-left:auto;color:#8a8a9c">double-click: full screen · shift+drag: measure · drag corner: resize</span>
                 </div>
@@ -1052,7 +1052,7 @@
                     <span><span class="lg-line" style="border-top:2px solid #00e5ff"></span><b>TRUE PIN</b> where today is most likely to settle: 90% gamma, 10% charm, live <span class="lg-src">· today's 0DTE + next expiration</span></span>
                     <span><span class="lg-line" style="border-top:1px solid #00c878"></span><b>SUPPORT</b> / <b>RESIST</b> biggest positive GEX below / above spot (within 150 pts, at least 25% of the biggest, 7.5+ pts away): price slows there <span class="lg-follow">· gamma-zone view</span></span>
                     <span><span class="lg-line" style="border-top:2px dashed #ff3c50"></span><b>TRAPDOOR</b> / <b>SQUEEZE</b> nearest strike below / above spot where GEX turns clearly negative (−10% of the biggest): past it, moves can speed up <span class="lg-follow">· gamma-zone view</span></span>
-                    <span><span class="lg-line" style="border-top:2px dashed rgba(255,60,80,0.6)"></span><b>BIG</b> the heavy strikes for a big move: up to 4 a side within 250 pts, each at least half the biggest (thicker: within 20% of it); green = price stalls, red = speeds up. InsiderFinance's CALL WALL / TRAP DOOR are picked from these by eye; our TRAPDOOR is where gamma first turns negative <span class="lg-follow">· gamma-zone view</span></span>
+                    <span><span class="lg-line" style="border-top:2px dashed rgba(255,60,80,0.6)"></span><b>KEY STRIKES</b> the heavy strikes for a big move: up to 4 a side within 250 pts, each at least half the biggest (thicker: within 20% of it); green = price stalls, red = speeds up. InsiderFinance's CALL WALL / TRAP DOOR are picked from these by eye; our TRAPDOOR is where gamma first turns negative <span class="lg-follow">· gamma-zone view</span></span>
                 </div>
                 <div id="zone-info-${symbol}">
                 <div class="zone-bar">
@@ -1104,9 +1104,9 @@
                 btn.classList.toggle('active', btn.dataset.walls === _wallStyle);
                 btn.addEventListener('click', e => { e.stopPropagation(); setWallStyle(btn.dataset.walls); });
             });
-            div.querySelectorAll('[data-big]').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.big === _bigStyle);
-                btn.addEventListener('click', e => { e.stopPropagation(); setBigStyle(btn.dataset.big); });
+            div.querySelectorAll('[data-keystrikes]').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.keystrikes === _keyStyle);
+                btn.addEventListener('click', e => { e.stopPropagation(); setKeyStyle(btn.dataset.keystrikes); });
             });
             // Labels: show / hide the level-label guide (remembered)
             const guideBtn = div.querySelector('#label-guide-btn'), guide = div.querySelector(`#label-guide-${symbol}`);
@@ -1624,7 +1624,7 @@
                 if (_medalLines[r]) _medalLines[r].applyOptions(o);
                 else _medalLines[r] = e.candleSeries.createPriceLine(o);
             });
-            updateBigStrikes();
+            updateKeyStrikes();
         }
         function setWallStyle(w) {
             _wallStyle = w;
@@ -1634,58 +1634,58 @@
             updateMedalLabels();
         }
 
-        // ── Big strikes: the heavy strikes on each side of price ──────────────
-        // Every strike within BIG_BAND pts of price at least BIG_MIN as big as the biggest
-        // |GEX| there, the BIG_SIDE biggest a side: where a big move (FOMC, CPI) stalls
+        // ── Key strikes: the heavy strikes on each side of price ──────────────
+        // Every strike within KEY_BAND pts of price at least KEY_MIN as big as the biggest
+        // |GEX| there, the KEY_SIDE biggest a side: where a big move (FOMC, CPI) stalls
         // (green) or speeds up (red). Near-equal strikes are common (10/28: 7800 / 7900 /
         // 7770 all ~+3.6B), so they're all shown rather than one picked. InsiderFinance's
         // CALL WALL / TRAP DOOR are picked from these by eye (10/28: 7800 / 7650).
-        const BIG_BAND = 250, BIG_MIN = 0.5, BIG_SIDE = 4;
-        let _bigStyle = 'on';
-        try { if (localStorage.getItem('bigStrikes') === 'off') _bigStyle = 'off'; } catch (_) {}
-        let _bigLines = [];            // on the candle series
-        function bigStrikes() {
+        const KEY_BAND = 250, KEY_MIN = 0.5, KEY_SIDE = 4;
+        let _keyStyle = 'on';
+        try { if (localStorage.getItem('bigStrikes') === 'off') _keyStyle = 'off'; } catch (_) {}   // saved under its first name, BIG
+        let _keyLines = [];            // on the candle series
+        function keyStrikes() {
             const z = priceCharts.SPX?.zones;
             const spot = (!_replayDate && _lastGexData.SPX?.spot) || _heatmapDay?.spots?.at(-1);
             if (!z || !spot || _zoneMode === 'off') return null;
-            const pts = z.currentValues().filter(p => p.gex && Math.abs(p.strike - spot) <= BIG_BAND);
+            const pts = z.currentValues().filter(p => p.gex && Math.abs(p.strike - spot) <= KEY_BAND);
             let max = 0;
             for (const p of pts) max = Math.max(max, Math.abs(p.gex));
             const side = above => pts
-                .filter(p => (above ? p.strike > spot : p.strike < spot) && Math.abs(p.gex) >= BIG_MIN * max)
-                .sort((a, b) => Math.abs(b.gex) - Math.abs(a.gex)).slice(0, BIG_SIDE)
+                .filter(p => (above ? p.strike > spot : p.strike < spot) && Math.abs(p.gex) >= KEY_MIN * max)
+                .sort((a, b) => Math.abs(b.gex) - Math.abs(a.gex)).slice(0, KEY_SIDE)
                 .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));   // nearest first
             return { up: side(true), down: side(false), max };
         }
-        function updateBigStrikes() {
+        function updateKeyStrikes() {
             const e = priceCharts.SPX;
             if (!e) return;
-            const B = _bigStyle === 'on' ? bigStrikes() : null;
+            const B = _keyStyle === 'on' ? keyStrikes() : null;
             const all = B ? [...B.up, ...B.down] : [];
             // a medal already puts its strike's size on the axis
             const medals = new Set(_wallStyle === 'medals' && e.zones ? e.zones.currentTop3().map(w => w.strike) : []);
-            while (_bigLines.length > all.length) { try { e.candleSeries.removePriceLine(_bigLines.pop()); } catch (_) {} }
+            while (_keyLines.length > all.length) { try { e.candleSeries.removePriceLine(_keyLines.pop()); } catch (_) {} }
             all.forEach((p, i) => {
                 const pos = p.gex >= 0;
                 const o = { price: p.strike, color: pos ? 'rgba(0,200,120,0.6)' : 'rgba(255,60,80,0.6)',
                             lineWidth: Math.abs(p.gex) >= 0.8 * B.max ? 2 : 1, lineStyle: LWC.LineStyle.LargeDashed,
                             axisLabelVisible: !medals.has(p.strike), axisLabelColor: pos ? '#00c878' : '#ff3c50',
-                            axisLabelTextColor: '#000', title: `BIG ${fmtM(gexU(p.gex))}` };
-                if (_bigLines[i]) _bigLines[i].applyOptions(o);
-                else _bigLines[i] = e.candleSeries.createPriceLine(o);
+                            axisLabelTextColor: '#000', title: `KEY ${fmtM(gexU(p.gex))}` };
+                if (_keyLines[i]) _keyLines[i].applyOptions(o);
+                else _keyLines[i] = e.candleSeries.createPriceLine(o);
             });
-            const el = document.getElementById('big-strikes-SPX');
+            const el = document.getElementById('key-strikes-SPX');
             if (!el) return;
             const list = ps => ps.map(p => `<b style="color:${p.gex >= 0 ? '#00c878' : '#ff3c50'}">${p.strike}</b> ${fmtM(gexU(p.gex))}`).join(' · ') || '—';
             el.innerHTML = all.length
-                ? `<span style="color:#333">│</span><span title="The heavy strikes for a big move, nearest first (BIG lines)">Big ↑ ${list(B.up)} &nbsp;↓ ${list(B.down)}</span>`
+                ? `<span style="color:#333">│</span><span title="The heavy strikes for a big move, nearest first (KEY STRIKES lines)">Key strikes ↑ ${list(B.up)} &nbsp;↓ ${list(B.down)}</span>`
                 : '';
         }
-        function setBigStyle(s) {
-            _bigStyle = s;
+        function setKeyStyle(s) {
+            _keyStyle = s;
             try { localStorage.setItem('bigStrikes', s); } catch (_) {}
-            document.querySelectorAll('[data-big]').forEach(b => b.classList.toggle('active', b.dataset.big === s));
-            updateBigStrikes();
+            document.querySelectorAll('[data-keystrikes]').forEach(b => b.classList.toggle('active', b.dataset.keystrikes === s));
+            updateKeyStrikes();
         }
 
         let _heatmap  = null;          // what the chart draws: past days + today, or the replayed day
@@ -2044,8 +2044,8 @@
                 item('Squeeze', L.squeeze, '#ff9f1c'),
                 `<span>Walls ${(L.walls || []).map(w => `<b style="color:${w.gex >= 0 ? '#00c878' : '#ff3c50'}">${w.strike}</b> ${fmtM(gexU(w.gex))}`).join(' · ')}</span>`,
                 (L.air_pockets || []).length ? `<span title="Near-zero gamma: price travels easily">Air ${L.air_pockets.map(([a, z]) => `${a}–${z}`).join(', ')}</span>` : '',
-            ].join(sep) + '<span id="big-strikes-SPX" style="display:contents"></span>';
-            updateBigStrikes();
+            ].join(sep) + '<span id="key-strikes-SPX" style="display:contents"></span>';
+            updateKeyStrikes();
         }
 
         // ── Gamma regime note ─────────────────────────────────────────────────
@@ -3188,6 +3188,7 @@
                 case 'trade': {
                     const tr = r[r.predict], p30 = tr?.['30'];
                     return `${r.level} ${r.at} reached from ${r.from} → ${r.predict}: ${tr ? `${r.k} ${tr.side} at ${tr.ask.toFixed(2)}` : 'no quote'}`
+                        + (r.move ? ` · SPX went 5 pts ${r.move === r.predict ? 'its' : 'the other'} way first` : '')
                         + (p30 != null ? ` · ${p30 > 0 ? '+' : ''}${p30}% at 30 min` : '')
                         + (tr?.hit ? ' · hit +25%' : '');
                 }
@@ -3494,7 +3495,7 @@
                     candleSeries.attachPrimitive(priceCharts.SPX.zones);
                     if (_heatmap) priceCharts.SPX.zones.setData(_heatmap, _zoneMode);
                     _medalLines = [];                  // a new candle series: the old labels went with the old one
-                    _bigLines = [];
+                    _keyLines = [];
                     updateMedalLabels();
                     fetchGammaLevels();
                 }

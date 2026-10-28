@@ -23,12 +23,14 @@ RUN              after a negative-GEX level breaks, price runs RUN_PTS further (
 PIN              14:00, 14:30, 15:00, 15:30 with 0DTE gamma positive: the close lands nearer
                  the pin (True Pin, 0DTE pin) than price is then. Compared with the same
                  when 0DTE gamma is negative.
-TOUCH TRADE      price reaches a level (gold strike, 0DTE put wall, put wall, pin, trapdoor,
-                 the previous close): the 0DTE option nearest the money, bought at the
-                 stream's ask, sold at its bid 15 / 30 / 60 min later. bounce = a call if
-                 price came down to the level, a put if it came up; break = the other. Each
-                 level is graded on the trade tools/odte_level_test.py found promising
-                 (2026-10-28, 12 days), against the same trade every 15 min at no level.
+TOUCH TRADE      price comes within 5 pts of a level (gold strike, 0DTE put wall, put wall,
+                 pin, trapdoor, the open, the previous open and close): the 0DTE option
+                 nearest the money, bought at the stream's ask, sold at its bid 15 / 30 / 60
+                 min later, or at +25% if that comes first within 60 (take profit). bounce =
+                 a call if price came down to the level, a put if it came up; break = the
+                 other. Also whether SPX went 5 pts the trade's way before 5 the other way
+                 within 30 min. Each level is graded on the trade tools/odte_level_test.py
+                 found promising (2026-10-28), against the same trade every 15 min at no level.
 
 No prediction looks ahead: each uses the latest snapshot at or before its time, and the
 bars from its time on. Graded predictions of finished days are appended to
@@ -73,16 +75,18 @@ PIN_MIN_DIST = 3.0               # price already this close to the pin: nothing 
 
 NAMED = ('support', 'resistance', 'trapdoor', 'squeeze')
 
-# touch trades (the rules tools/odte_level_test.py used)
-TRADE_TOUCH_PTS = 2.0            # within this of the level...
-TRADE_APPROACH_PTS = 5.0         # ...after a close at least this far away in the last
+# touch trades (the rules tools/odte_level_test.py used, 5-pt zone)
+TRADE_TOUCH_PTS = 5.0            # near the level, not only on it: within this many pts...
+TRADE_APPROACH_PTS = 5.0         # ...after a close at least this much further out in the last
 TRADE_LOOKBACK_MIN = 10          # this many minutes
 TRADE_COOLDOWN_MIN = 15          # one touch per level per this long
 TRADE_FIRST_MIN, TRADE_LAST_MIN = 5, 360    # entries 9:35-15:30
-TRADE_HIT = 1.25                 # 'hit +25%': the bid reached this x the ask paid within 60 min
+TRADE_HIT = 1.25                 # 'hit +25%': the bid reached this x the ask paid within 60 min,
+                                 # and the take-profit sells there (else at the 60-min bid)
+TRADE_MOVE_PTS, TRADE_MOVE_MIN = 5.0, 30    # SPX: 5 pts the trade's way before 5 pts the other, in 30 min
 TRADE_LEVELS = {                 # level -> the trade it's graded on
     'gold': 'bounce', '0DTE put wall': 'bounce', 'put wall': 'bounce', 'pin': 'bounce',
-    'trapdoor': 'break', 'prev close': 'bounce'}
+    'trapdoor': 'break', 'open': 'bounce', 'prev open': 'bounce', 'prev close': 'bounce'}
 MIDDAY = (150, 270)              # 12:00-14:00: bounces at any of them, graded together
 
 
@@ -417,16 +421,19 @@ def trade_levels(day: str, bars: list, by_day: dict, heat: dict, timeline: list,
     asof([x[0] for x in timeline], [next((k for k, ns in x[1].items() if 'trapdoor' in ns), None) for x in timeline], 'trapdoor')
     for key, rows, field in (('0DTE put wall', snaps0, 'put_wall'), ('put wall', snaps, 'put_wall'), ('pin', snaps, 'pin')):
         out[key] = [_at(rows, t, field) for t in times]
+    out['open'] = [bars[0][1]] * len(bars)
     prior = [d for d in by_day if d < day]
     if prior:
-        pc = by_day[max(prior)][-1][4]
-        out['prev close'] = [pc] * len(bars)
+        prev = by_day[max(prior)]
+        out['prev open'] = [prev[0][1]] * len(bars)
+        out['prev close'] = [prev[-1][4]] * len(bars)
     return out
 
 
 def _trade(q: dict, side: str, k: float, t: int, now: float) -> dict | None:
     """The option bought at the ask at minute t: P&L % at the bid 15 / 30 / 60 min later
-    (None while still to come), and whether the bid reached TRADE_HIT x paid within 60."""
+    (None while still to come), whether the bid reached TRADE_HIT x paid within 60, and
+    'tp': sold the first minute it did, else at the 60-min bid."""
     quotes = q.get((side, k))
     if not quotes:
         return None
@@ -441,9 +448,26 @@ def _trade(q: dict, side: str, k: float, t: int, now: float) -> dict | None:
             continue
         x = quotes.get(t + 60 * h) or quotes.get(t + 60 * (h - 1))
         out[str(h)] = round(100 * (x[0] - ask) / ask, 1) if x else None
-    later = [b for tt, (b, _) in quotes.items() if t < tt <= min(t + 3600, now)]
-    out['hit'] = (max(later) >= TRADE_HIT * ask) if later and (t + 3600 <= now or max(later) >= TRADE_HIT * ask) else None
+    later = sorted((tt, b) for tt, (b, _) in quotes.items() if t < tt <= min(t + 3600, now))
+    first = next((b for _, b in later if b >= TRADE_HIT * ask), None)
+    done = t + 3600 <= now
+    out['hit'] = True if first is not None else (False if done and later else None)
+    out['tp'] = (round(100 * (first - ask) / ask, 1) if first is not None
+                 else out['60'] if done else None)
     return out
+
+
+def _first_move(closes: list, i: int, up: bool):
+    """'bounce' / 'break': which SPX reached first within TRADE_MOVE_MIN, TRADE_MOVE_PTS
+    the bounce way (up if `up`) or the same through. None: neither (or not yet known)."""
+    c0, sign = closes[i], 1 if up else -1
+    for j in range(i + 1, min(i + TRADE_MOVE_MIN + 1, len(closes))):
+        d = sign * (closes[j] - c0)
+        if d >= TRADE_MOVE_PTS:
+            return 'bounce'
+        if d <= -TRADE_MOVE_PTS:
+            return 'break'
+    return None
 
 
 def predict_trades(day: str, bars: list, levels: dict, q: dict, now: float) -> list:
@@ -466,13 +490,15 @@ def predict_trades(day: str, bars: list, levels: dict, q: dict, now: float) -> l
                 at = L[i]
                 if at is None or abs(c - at) > TRADE_TOUCH_PTS or i - last < TRADE_COOLDOWN_MIN:
                     continue
-                far = [x - at for x in closes[i - TRADE_LOOKBACK_MIN:i] if abs(x - at) >= TRADE_APPROACH_PTS]
+                far = [x - at for x in closes[i - TRADE_LOOKBACK_MIN:i]
+                       if abs(x - at) >= TRADE_TOUCH_PTS + TRADE_APPROACH_PTS]
                 if not far:
                     continue
                 last, from_above = i, far[-1] > 0
             k = 5 * round(c / 5)
             r = {'kind': 'trade', 't': t, 'level': name or 'none', 'at': at, 'spot': c, 'k': k,
                  'from': 'above' if from_above else 'below', 'predict': TRADE_LEVELS.get(name),
+                 'move': _first_move(closes, i, from_above),
                  'bounce': _trade(q, 'call' if from_above else 'put', k, t, now),
                  'break': _trade(q, 'put' if from_above else 'call', k, t, now)}
             if r['bounce'] or r['break']:
@@ -658,6 +684,20 @@ def summarize(rows: list) -> list:
         h = [r[trade]['hit'] for r in sub if r.get(trade) and r[trade].get('hit') is not None]
         return f'{round(100 * sum(h) / len(h))}%' if h else '—'
 
+    def moved(sub, trade):
+        """% of decided touches where SPX went TRADE_MOVE_PTS the trade's way first."""
+        m = [r['move'] == trade for r in sub if r.get('move')]
+        return f'{round(100 * sum(m) / len(m))}% (n {len(m)})' if m else '—'
+
+    def tp(sub, trade):
+        v = [r[trade]['tp'] for r in sub if r.get(trade) and r[trade].get('tp') is not None]
+        return f'{sum(v) / len(v):+.0f}% (n {len(v)})' if v else '—'
+
+    def detail(sub, base_sub, trade):
+        return (f'SPX {TRADE_MOVE_PTS:g} pts its way first {moved(sub, trade)} vs {moved(base_sub, trade)} at no level'
+                f' · take profit at +{100 * (TRADE_HIT - 1):.0f}% (else out at 60 min) {tp(sub, trade)} vs {tp(base_sub, trade)}'
+                f' · hit +{100 * (TRADE_HIT - 1):.0f}% within an hour {hit(sub, trade)} vs {hit(base_sub, trade)}')
+
     buys = {'bounce': 'a call if price came down to it, a put if it came up',
             'break': 'a put if price came down to it, a call if it came up'}
     for name, trade in TRADE_LEVELS.items():
@@ -665,11 +705,11 @@ def summarize(rows: list) -> list:
         other = 'break' if trade == 'bounce' else 'bounce'
         o30 = pnl(sub, other, 30)
         cards.append({'key': f'trade_{name}', 'title': f'Touch trade · {name}',
-                      'says': f'Price reaches the {name} → buy the 0DTE {trade} ({buys[trade]}) at the ask, '
-                              f'sell at the bid: average P&L % of what was paid',
+                      'says': f'Price comes within {TRADE_TOUCH_PTS:g} pts of the {name} → buy the 0DTE {trade} '
+                              f'({buys[trade]}) at the ask, sell at the bid: average P&L % of what was paid',
                       'vs': f'the same {trade} trade every 15 min at no level',
                       'cols': pnl_cols(sub, base, trade),
-                      'detail': f'hit +25% within an hour {hit(sub, trade)} vs {hit(base, trade)} at no level'
+                      'detail': detail(sub, base, trade)
                                 + (f' · the {other} instead: {sum(o30) / len(o30):+.0f}% at 30 min (n {len(o30)})' if o30 else ''),
                       'days': days(sub)})
     minute = lambda r: (r['t'] - _open_ts(r['day'])) // 60
@@ -678,8 +718,7 @@ def summarize(rows: list) -> list:
     cards.append({'key': 'trade_midday', 'title': 'Touch trade · midday',
                   'says': f'Any of those levels reached 12:00-14:00 → buy the 0DTE bounce ({buys["bounce"]}): average P&L %',
                   'vs': 'bounce trades every 15 min at no level, 12:00-14:00', 'cols': pnl_cols(mid, mid_base, 'bounce'),
-                  'detail': f'hit +25% within an hour {hit(mid, "bounce")} vs {hit(mid_base, "bounce")} at no level',
-                  'days': days(mid)})
+                  'detail': detail(mid, mid_base, 'bounce'), 'days': days(mid)})
     return cards
 
 

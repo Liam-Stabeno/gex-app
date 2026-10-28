@@ -154,23 +154,37 @@ def test_option_quotes_reads_todays_file_as_it_grows(tmp_path):
 
 
 def test_touch_trade_bought_at_the_ask_sold_at_the_bid():
-    closes = [110] * 12 + [108, 105, 103, 100.5, 101, 103, 106] + [107] * 60
+    # gold at 100: down from 116, within 5 pts at 104.5 (minute 15), then up 6.5 pts
+    closes = [116] * 12 + [113, 111, 109, 104.5, 106, 108, 111] + [112] * 60
     bars = bars_from(closes)
-    t = T0 + 60 * 15                                       # the touch: 100.5, from above
-    q = {("call", 100.0): {t: (2.0, 2.1), t + 900: (2.5, 2.6), t + 1800: (3.0, 3.1), t + 3600: (1.0, 1.1)}}
+    t = T0 + 60 * 15
+    q = {("call", 105.0): {t: (2.0, 2.1), t + 900: (2.5, 2.6), t + 1800: (3.0, 3.1), t + 3600: (1.0, 1.1)}}
     rows = P.predict_trades(DAY, bars, {"gold": [100.0] * len(bars)}, q, now=T0 + 36000)
     touch = [r for r in rows if r["level"] == "gold"]
     assert len(touch) == 1 and touch[0]["from"] == "above" and touch[0]["predict"] == "bounce"
+    assert touch[0]["k"] == 105 and touch[0]["move"] == "bounce", "the option nearest the money; up 5 first"
     b = touch[0]["bounce"]
     assert b["side"] == "call" and b["ask"] == 2.1
     assert (b["15"], b["30"], b["60"]) == (19.0, 42.9, -52.4) and b["hit"] is True
+    assert b["tp"] == 42.9, "sold the first minute the bid was 25% up"
     assert touch[0]["break"] is None, "no put quotes"
     base = [r for r in rows if r["level"] == "none"]
     assert [((r["t"] - T0) // 60) for r in base] == [15], "every 15 min, where there's a quote"
     assert P.status(dict(touch[0]), now=T0 + 36000) == "hit"
     pending = P.predict_trades(DAY, bars, {"gold": [100.0] * len(bars)}, q, now=t + 1200)
     g = [r for r in pending if r["level"] == "gold"][0]
-    assert g["bounce"]["15"] == 19.0 and g["bounce"]["30"] is None and g["bounce"]["hit"] is None
+    assert g["bounce"]["15"] == 19.0 and g["bounce"]["30"] is None and g["bounce"]["hit"] is None and g["bounce"]["tp"] is None
     assert P.status(dict(g), now=t + 1200) == "pending"
     card = next(c for c in P.summarize([dict(r, day=DAY) for r in rows]) if c["key"] == "trade_gold")
     assert card["cols"][1]["rate"] == 43 and card["cols"][1]["base"] == 43 and card["cols"][1]["pnl"]
+    assert "5 pts its way first 100% (n 1)" in card["detail"] and "take profit at +25% (else out at 60 min) +43% (n 1)" in card["detail"]
+
+
+def test_touch_trade_levels_open_and_previous_session():
+    prev = bars_from([90, 95, 99])
+    today = bars_from([101, 102])
+    L = P.trade_levels(DAY, today, {"2026-10-20": prev, DAY: today}, {}, [], [], [])
+    assert L["open"] == [101.0, 101.0], "today's first price"
+    assert L["prev open"] == [90.0, 90.0] and L["prev close"] == [99.0, 99.0]
+    no_prev = P.trade_levels(DAY, today, {DAY: today}, {}, [], [], [])
+    assert no_prev["prev close"] == [None, None]
