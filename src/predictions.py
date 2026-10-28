@@ -23,6 +23,12 @@ RUN              after a negative-GEX level breaks, price runs RUN_PTS further (
 PIN              14:00, 14:30, 15:00, 15:30 with 0DTE gamma positive: the close lands nearer
                  the pin (True Pin, 0DTE pin) than price is then. Compared with the same
                  when 0DTE gamma is negative.
+TOUCH TRADE      price reaches a level (gold strike, 0DTE put wall, put wall, pin, trapdoor,
+                 the previous close): the 0DTE option nearest the money, bought at the
+                 stream's ask, sold at its bid 15 / 30 / 60 min later. bounce = a call if
+                 price came down to the level, a put if it came up; break = the other. Each
+                 level is graded on the trade tools/odte_level_test.py found promising
+                 (2026-10-28, 12 days), against the same trade every 15 min at no level.
 
 No prediction looks ahead: each uses the latest snapshot at or before its time, and the
 bars from its time on. Graded predictions of finished days are appended to
@@ -46,7 +52,7 @@ from price_history import load_candles
 
 DATA_DIR = gex_stats._DATA_DIR
 SAVE_FILE = os.path.join(DATA_DIR, 'predictions_SPX.jsonl')
-RULES_VERSION = 1
+RULES_VERSION = 2                # 2: touch trades
 
 HORIZONS = (15, 30, 60)          # minutes
 FIRST_CHECK_MIN = 15             # 9:45: the first 15 min trade the open's orders, not gamma
@@ -66,6 +72,18 @@ PIN_TIMES = (270, 300, 330, 360)  # minutes after 9:30: 14:00, 14:30, 15:00, 15:
 PIN_MIN_DIST = 3.0               # price already this close to the pin: nothing to predict
 
 NAMED = ('support', 'resistance', 'trapdoor', 'squeeze')
+
+# touch trades (the rules tools/odte_level_test.py used)
+TRADE_TOUCH_PTS = 2.0            # within this of the level...
+TRADE_APPROACH_PTS = 5.0         # ...after a close at least this far away in the last
+TRADE_LOOKBACK_MIN = 10          # this many minutes
+TRADE_COOLDOWN_MIN = 15          # one touch per level per this long
+TRADE_FIRST_MIN, TRADE_LAST_MIN = 5, 360    # entries 9:35-15:30
+TRADE_HIT = 1.25                 # 'hit +25%': the bid reached this x the ask paid within 60 min
+TRADE_LEVELS = {                 # level -> the trade it's graded on
+    'gold': 'bounce', '0DTE put wall': 'bounce', 'put wall': 'bounce', 'pin': 'bounce',
+    'trapdoor': 'break', 'prev close': 'bounce'}
+MIDDAY = (150, 270)              # 12:00-14:00: bounces at any of them, graded together
 
 
 # ── inputs ─────────────────────────────────────────────────────────────────────
@@ -330,6 +348,138 @@ def predict_pin(day: str, bars: list, snaps: list, snaps0: list, now: float) -> 
     return rows
 
 
+_oq_today = {'path': None, 'offset': 0, 'tail': '', 'cols': None, 'q': {}}
+_oq_lock = threading.Lock()
+
+
+def _oq_parse(c: dict, text: str, day: str, final: bool = False):
+    lines = text.split('\n')
+    c['tail'] = '' if final else lines.pop()          # possibly still being written
+    for line in lines:
+        parts = line.strip().split(',')
+        if len(parts) < 2:
+            continue
+        if c['cols'] is None:
+            c['cols'] = {n: i for i, n in enumerate(parts)}
+            continue
+        ix = c['cols']
+        try:
+            if parts[ix['expiry']] != day:
+                continue
+            bid, ask = float(parts[ix['bid']] or 0), float(parts[ix['ask']] or 0)
+            if bid > 0 and ask > bid:
+                c['q'].setdefault((parts[ix['side']], float(parts[ix['strike']])), {})[int(float(parts[ix['time']]))] = (bid, ask)
+        except (KeyError, IndexError, ValueError):
+            continue
+
+
+def option_quotes(day: str, data_dir: str = DATA_DIR, today: str | None = None) -> dict:
+    """{(side, strike): {minute epoch: (bid, ask)}} for that day's 0DTE, from the stream's
+    minute bars (option_bars_SPX_<day>, from 2026-10-14). Today's file is read
+    incrementally (it grows all session); a finished day is read once, by save."""
+    path = day_file(f'option_bars_SPX_{day}.csv', data_dir)
+    if not path:
+        return {}
+    if day != (today or datetime.now(ET).date().isoformat()) or path.endswith('.gz'):
+        c = {'tail': '', 'cols': None, 'q': {}}
+        with open_text(path) as f:
+            _oq_parse(c, f.read(), day, final=True)
+        return c['q']
+    with _oq_lock:
+        c = _oq_today
+        size = os.path.getsize(path)
+        if c['path'] != path or size < c['offset']:
+            c.update(path=path, offset=0, tail='', cols=None, q={})
+        if size > c['offset']:
+            with open(path, 'rb') as f:
+                f.seek(c['offset'])
+                chunk = f.read()
+                c['offset'] = f.tell()
+            _oq_parse(c, c['tail'] + chunk.decode('utf-8', 'replace'), day)
+        return c['q']
+
+
+def trade_levels(day: str, bars: list, by_day: dict, heat: dict, timeline: list, snaps: list, snaps0: list) -> dict:
+    """{level: [strike or None per bar]}: each TRADE_LEVELS level as it stood at each bar."""
+    times = [b[0] for b in bars]
+    out = {k: [None] * len(bars) for k in TRADE_LEVELS}
+
+    def asof(series_t, series_v, key):
+        for i, t in enumerate(times):
+            j = bisect_right(series_t, t) - 1
+            if j >= 0 and t - series_t[j] <= STALE_SEC:
+                out[key][i] = series_v[j]
+
+    # gold: the biggest |GEX| strike of each heatmap snapshot (All)
+    ht = [int(t) for t in heat.get('times', [])]
+    gold = [heat['strikes'][max(range(len(col)), key=lambda n: abs(col[n]))] if col else None for col in heat.get('all', [])]
+    asof(ht, gold, 'gold')
+    asof([x[0] for x in timeline], [next((k for k, ns in x[1].items() if 'trapdoor' in ns), None) for x in timeline], 'trapdoor')
+    for key, rows, field in (('0DTE put wall', snaps0, 'put_wall'), ('put wall', snaps, 'put_wall'), ('pin', snaps, 'pin')):
+        out[key] = [_at(rows, t, field) for t in times]
+    prior = [d for d in by_day if d < day]
+    if prior:
+        pc = by_day[max(prior)][-1][4]
+        out['prev close'] = [pc] * len(bars)
+    return out
+
+
+def _trade(q: dict, side: str, k: float, t: int, now: float) -> dict | None:
+    """The option bought at the ask at minute t: P&L % at the bid 15 / 30 / 60 min later
+    (None while still to come), and whether the bid reached TRADE_HIT x paid within 60."""
+    quotes = q.get((side, k))
+    if not quotes:
+        return None
+    entry = quotes.get(t) or quotes.get(t - 60)
+    if not entry:
+        return None
+    ask = entry[1]
+    out = {'side': side, 'ask': ask}
+    for h in HORIZONS:
+        if t + 60 * h > now:
+            out[str(h)] = None
+            continue
+        x = quotes.get(t + 60 * h) or quotes.get(t + 60 * (h - 1))
+        out[str(h)] = round(100 * (x[0] - ask) / ask, 1) if x else None
+    later = [b for tt, (b, _) in quotes.items() if t < tt <= min(t + 3600, now)]
+    out['hit'] = (max(later) >= TRADE_HIT * ask) if later and (t + 3600 <= now or max(later) >= TRADE_HIT * ask) else None
+    return out
+
+
+def predict_trades(day: str, bars: list, levels: dict, q: dict, now: float) -> list:
+    """TOUCH TRADE rows at each level touch, and the no-level baseline every 15 min."""
+    rows, t_open = [], _open_ts(day)
+    if not q or not bars:
+        return rows
+    closes = [b[4] for b in bars]
+    for name, L in list(levels.items()) + [(None, None)]:
+        last = -10**9
+        for i, (t, *_ohl, c) in enumerate(bars):
+            m = (t - t_open) // 60
+            if not TRADE_FIRST_MIN <= m <= TRADE_LAST_MIN or i < TRADE_LOOKBACK_MIN or t > now:
+                continue
+            if name is None:                              # baseline: 'from above' = fell over the lookback
+                if m % CHECK_EVERY_MIN or closes[i - TRADE_LOOKBACK_MIN] == c:
+                    continue
+                at, from_above = None, closes[i - TRADE_LOOKBACK_MIN] > c
+            else:
+                at = L[i]
+                if at is None or abs(c - at) > TRADE_TOUCH_PTS or i - last < TRADE_COOLDOWN_MIN:
+                    continue
+                far = [x - at for x in closes[i - TRADE_LOOKBACK_MIN:i] if abs(x - at) >= TRADE_APPROACH_PTS]
+                if not far:
+                    continue
+                last, from_above = i, far[-1] > 0
+            k = 5 * round(c / 5)
+            r = {'kind': 'trade', 't': t, 'level': name or 'none', 'at': at, 'spot': c, 'k': k,
+                 'from': 'above' if from_above else 'below', 'predict': TRADE_LEVELS.get(name),
+                 'bounce': _trade(q, 'call' if from_above else 'put', k, t, now),
+                 'break': _trade(q, 'put' if from_above else 'call', k, t, now)}
+            if r['bounce'] or r['break']:
+                rows.append(r)
+    return rows
+
+
 def day_rows(day: str, by_day: dict | None = None, now: float | None = None,
              data_dir: str = DATA_DIR) -> list:
     """Every prediction for one session, graded as far as the bars allow."""
@@ -344,7 +494,9 @@ def day_rows(day: str, by_day: dict | None = None, now: float | None = None,
     timeline = level_timeline(heat)
     rows = (predict_size(day, bars, baselines(day, by_day), snaps, timeline, now)
             + predict_levels(day, bars, snaps, timeline)
-            + predict_pin(day, bars, snaps, snaps0, now))
+            + predict_pin(day, bars, snaps, snaps0, now)
+            + predict_trades(day, bars, trade_levels(day, bars, by_day, heat, timeline, snaps, snaps0),
+                             option_quotes(day, data_dir), now))
     for r in rows:
         r['day'] = day
     return rows
@@ -376,6 +528,11 @@ def status(r: dict, now: float) -> str:
     if not r.get('predict'):
         return 'comparison'
     k = r['kind']
+    if k == 'trade':                                      # its graded trade made money at 30 min
+        v = (r.get(r['predict']) or {}).get('30')
+        if v is None:
+            return 'pending' if now - r['t'] < 60 * 32 else 'undecided'
+        return 'hit' if v > 0 else 'miss'
     if k.startswith('size'):
         v = (r.get('h') or {}).get('30', (r.get('h') or {}).get('15'))
         if v is None:
@@ -481,6 +638,48 @@ def summarize(rows: list) -> list:
                       'detail': f'positive 0DTE gamma: the gap to the pin closed by a median '
                                 f'{statistics.median(move):+.1f} pts (n {len(move)})' if move else '',
                       'days': days(rs)})
+
+    # touch trades: average P&L % (ask in, bid out) vs the same trade at no level
+    rs = by('trade')
+    base = [r for r in rs if r['level'] == 'none']
+    pnl = lambda sub, trade, h: [x for r in sub for x in [(r.get(trade) or {}).get(str(h))] if x is not None]
+
+    def pnl_cols(sub, base_sub, trade):
+        cols = []
+        for h in HORIZONS:
+            v, b = pnl(sub, trade, h), pnl(base_sub, trade, h)
+            cols.append({'label': f'{h} min', 'pnl': True, 'n': len(v),
+                         'rate': round(sum(v) / len(v)) if v else None,
+                         'ci': round(1.96 * statistics.stdev(v) / len(v) ** 0.5) if len(v) > 1 else 0,
+                         'base': round(sum(b) / len(b)) if b else None})
+        return cols
+
+    def hit(sub, trade):
+        h = [r[trade]['hit'] for r in sub if r.get(trade) and r[trade].get('hit') is not None]
+        return f'{round(100 * sum(h) / len(h))}%' if h else '—'
+
+    buys = {'bounce': 'a call if price came down to it, a put if it came up',
+            'break': 'a put if price came down to it, a call if it came up'}
+    for name, trade in TRADE_LEVELS.items():
+        sub = [r for r in rs if r['level'] == name]
+        other = 'break' if trade == 'bounce' else 'bounce'
+        o30 = pnl(sub, other, 30)
+        cards.append({'key': f'trade_{name}', 'title': f'Touch trade · {name}',
+                      'says': f'Price reaches the {name} → buy the 0DTE {trade} ({buys[trade]}) at the ask, '
+                              f'sell at the bid: average P&L % of what was paid',
+                      'vs': f'the same {trade} trade every 15 min at no level',
+                      'cols': pnl_cols(sub, base, trade),
+                      'detail': f'hit +25% within an hour {hit(sub, trade)} vs {hit(base, trade)} at no level'
+                                + (f' · the {other} instead: {sum(o30) / len(o30):+.0f}% at 30 min (n {len(o30)})' if o30 else ''),
+                      'days': days(sub)})
+    minute = lambda r: (r['t'] - _open_ts(r['day'])) // 60
+    mid = [r for r in rs if r['level'] != 'none' and MIDDAY[0] <= minute(r) < MIDDAY[1]]
+    mid_base = [r for r in base if MIDDAY[0] <= minute(r) < MIDDAY[1]]
+    cards.append({'key': 'trade_midday', 'title': 'Touch trade · midday',
+                  'says': f'Any of those levels reached 12:00-14:00 → buy the 0DTE bounce ({buys["bounce"]}): average P&L %',
+                  'vs': 'bounce trades every 15 min at no level, 12:00-14:00', 'cols': pnl_cols(mid, mid_base, 'bounce'),
+                  'detail': f'hit +25% within an hour {hit(mid, "bounce")} vs {hit(mid_base, "bounce")} at no level',
+                  'days': days(mid)})
     return cards
 
 
@@ -582,7 +781,8 @@ def summary(now: float | None = None) -> dict:
             rows = []
         _today.update(at=now, day=today, rows=rows)
     live = _today['rows']
-    listed = sorted((dict(r, status=status(r, now)) for r in live), key=lambda r: -r['t'])
+    listed = sorted((dict(r, status=status(r, now)) for r in live
+                     if not (r['kind'] == 'trade' and r['level'] == 'none')), key=lambda r: -r['t'])
     return {'rules': RULES_VERSION, 'cards': summarize(saved + live),
             'days': len({r['day'] for r in saved + live}), 'building': _building.is_set(),
             'today': listed[:80],

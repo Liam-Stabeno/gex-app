@@ -128,3 +128,49 @@ def test_save_is_append_only(tmp_path, monkeypatch):
     monkeypatch.setattr(P, "RULES_VERSION", P.RULES_VERSION + 1)
     P.save_finished_days(str(tmp_path), str(out), today="2026-10-27")
     assert len(out.read_text(encoding="utf-8").splitlines()) == 4
+
+
+# ── touch trades ──────────────────────────────────────────────────────────────
+
+def _bars_csv(path, rows):
+    head = "time,symbol,expiry,strike,side,mid_open,mid_high,mid_low,mid_close,bid,ask,last,volume,quotes,iv,delta,gamma,oi,spot\n"
+    with open(path, "a", encoding="utf-8") as f:
+        if f.tell() == 0:
+            f.write(head)
+        for t, exp, k, side, bid, ask in rows:
+            f.write(f"{t},SPXW  X,{exp},{k},{side},0,0,0,0,{bid},{ask},0,0,1,0.2,0.5,0.01,10,100\n")
+
+
+def test_option_quotes_reads_todays_file_as_it_grows(tmp_path):
+    p = tmp_path / f"option_bars_SPX_{DAY}.csv"
+    _bars_csv(p, [(T0, DAY, 100.0, "call", 2.0, 2.1), (T0, "2026-10-22", 100.0, "call", 5.0, 5.2),   # not 0DTE
+                  (T0 + 60, DAY, 100.0, "put", 0.0, 0.05)])                                          # no bid
+    q = P.option_quotes(DAY, data_dir=tmp_path, today=DAY)
+    assert q == {("call", 100.0): {T0: (2.0, 2.1)}}
+    _bars_csv(p, [(T0 + 60, DAY, 100.0, "call", 2.2, 2.3)])
+    assert P.option_quotes(DAY, data_dir=tmp_path, today=DAY)[("call", 100.0)] == {T0: (2.0, 2.1), T0 + 60: (2.2, 2.3)}
+    assert P.option_quotes(DAY, data_dir=tmp_path, today="2026-10-30") == q | {("call", 100.0): {T0: (2.0, 2.1), T0 + 60: (2.2, 2.3)}}, \
+        "a finished day: read whole"
+
+
+def test_touch_trade_bought_at_the_ask_sold_at_the_bid():
+    closes = [110] * 12 + [108, 105, 103, 100.5, 101, 103, 106] + [107] * 60
+    bars = bars_from(closes)
+    t = T0 + 60 * 15                                       # the touch: 100.5, from above
+    q = {("call", 100.0): {t: (2.0, 2.1), t + 900: (2.5, 2.6), t + 1800: (3.0, 3.1), t + 3600: (1.0, 1.1)}}
+    rows = P.predict_trades(DAY, bars, {"gold": [100.0] * len(bars)}, q, now=T0 + 36000)
+    touch = [r for r in rows if r["level"] == "gold"]
+    assert len(touch) == 1 and touch[0]["from"] == "above" and touch[0]["predict"] == "bounce"
+    b = touch[0]["bounce"]
+    assert b["side"] == "call" and b["ask"] == 2.1
+    assert (b["15"], b["30"], b["60"]) == (19.0, 42.9, -52.4) and b["hit"] is True
+    assert touch[0]["break"] is None, "no put quotes"
+    base = [r for r in rows if r["level"] == "none"]
+    assert [((r["t"] - T0) // 60) for r in base] == [15], "every 15 min, where there's a quote"
+    assert P.status(dict(touch[0]), now=T0 + 36000) == "hit"
+    pending = P.predict_trades(DAY, bars, {"gold": [100.0] * len(bars)}, q, now=t + 1200)
+    g = [r for r in pending if r["level"] == "gold"][0]
+    assert g["bounce"]["15"] == 19.0 and g["bounce"]["30"] is None and g["bounce"]["hit"] is None
+    assert P.status(dict(g), now=t + 1200) == "pending"
+    card = next(c for c in P.summarize([dict(r, day=DAY) for r in rows]) if c["key"] == "trade_gold")
+    assert card["cols"][1]["rate"] == 43 and card["cols"][1]["base"] == 43 and card["cols"][1]["pnl"]

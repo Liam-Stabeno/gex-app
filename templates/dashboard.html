@@ -3135,7 +3135,7 @@
         // that doesn't use GEX, so the colour says whether GEX added anything.
         let _pred = null;
         const PRED_NAME = { size_regime: 'SIZE · regime', size_price: 'SIZE · GEX at price', level: 'LEVEL',
-                            run: 'BREAK', pin_true: 'PIN · True Pin', pin_0dte: 'PIN · 0DTE pin' };
+                            run: 'BREAK', pin_true: 'PIN · True Pin', pin_0dte: 'PIN · 0DTE pin', trade: 'TOUCH TRADE' };
         const PRED_STATUS = { hit: 'right', miss: 'wrong', pending: 'pending', undecided: 'undecided', comparison: 'comparison' };
         const predMoney = v => { const a = Math.abs(v);
             return (v < 0 ? '-' : '+') + (a >= 1e9 ? (a / 1e9).toFixed(1) + 'B' : a >= 1e6 ? (a / 1e6).toFixed(0) + 'M' : (a / 1e3).toFixed(0) + 'K'); };
@@ -3169,8 +3169,9 @@
             const edge = c.base == null ? null : c.rate - c.base;
             const margin = Math.max(c.ci || 0, 2);
             const cls = c.n < 30 ? 'few' : edge == null ? '' : edge > margin ? 'good' : edge < -margin ? 'bad' : '';
-            return `<td${span ? ' colspan="3"' : ''}><div class="pred-rate ${cls}">${c.rate}%</div>
-                <div class="pred-sub">${span ? c.label + ' · ' : ''}${c.base != null ? `vs ${c.base}% · ` : ''}n ${c.n} ±${c.ci}${c.n < 30 ? ' · too few yet' : ''}</div></td>`;
+            const v = x => c.pnl && x > 0 ? `+${x}` : `${x}`;     // touch trades: average P&L %, signed
+            return `<td${span ? ' colspan="3"' : ''}><div class="pred-rate ${cls}">${v(c.rate)}%</div>
+                <div class="pred-sub">${span ? c.label + ' · ' : ''}${c.pnl ? 'avg P&L · ' : ''}${c.base != null ? `vs ${v(c.base)}% · ` : ''}n ${c.n} ±${c.ci}${c.n < 30 ? ' · too few yet' : ''}</div></td>`;
         }
 
         function predText(r) {
@@ -3184,6 +3185,12 @@
                 case 'level':
                     return `${r.strike} ${r.names.join(' / ')} (GEX ${predMoney(gexU(r.gex, r.strike))}) reached from ${r.from} → ${r.predict}`
                         + (r.first ? ` · ${r.first === 'hold' ? 'held' : 'broke'} in ${r.min} min` : '');
+                case 'trade': {
+                    const tr = r[r.predict], p30 = tr?.['30'];
+                    return `${r.level} ${r.at} reached from ${r.from} → ${r.predict}: ${tr ? `${r.k} ${tr.side} at ${tr.ask.toFixed(2)}` : 'no quote'}`
+                        + (p30 != null ? ` · ${p30 > 0 ? '+' : ''}${p30}% at 30 min` : '')
+                        + (tr?.hit ? ' · hit +25%' : '');
+                }
                 case 'run':
                     return `broke ${r.dir} through ${r.strike} (GEX ${predMoney(gexU(r.gex, r.strike))})`
                         + (r.predict ? ` → runs ${set.run} more pts` : ' · for comparison (positive GEX)')
