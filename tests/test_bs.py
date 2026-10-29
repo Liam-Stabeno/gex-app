@@ -116,3 +116,18 @@ def test_single_instance_lock():
     name = r'Local\GEXDashboardTest_' + str(__import__('os').getpid())
     assert si.acquire(name) is True              # first copy runs
     assert si.acquire(name) is False             # a second one sees it and stops
+
+
+def test_charm_is_delta_change_per_time_passing():
+    # an OTM put an hour from expiry: its delta (about -0.21) rises toward 0 as time passes
+    S, K, r, v, hr = 7700.0, 7690.0, 0.04, 0.15, 1 / (365 * 24)
+    measured = (bs.delta(S, K, hr - 0.1 * hr, r, v, 'p') - bs.delta(S, K, hr, r, v, 'p')) / (0.1 * hr)
+    assert measured > 0 and bs._bs_charm(S, K, hr, r, v) == pytest.approx(measured, rel=0.15)
+
+
+def test_dealer_charm_flow_signs():
+    S, r, v, hr = 7700.0, 0.04, 0.15, 1 / (365 * 24)
+    flow = lambda K, side: bs.dealer_charm_flow(bs._bs_charm(S, K, hr, r, v), 1000, S, side)
+    assert flow(7690, 'put') > 0     # short OTM puts decaying: dealers buy back their short futures
+    assert flow(7710, 'call') > 0    # long OTM calls decaying: the same
+    assert flow(7710, 'put') < 0     # short ITM puts going to delta -1: dealers sell more

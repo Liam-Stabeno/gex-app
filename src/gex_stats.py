@@ -741,7 +741,7 @@ SCORECARD_FIELDS = [
     'em_1400_move', 'em_1400_median', 'em_1400_p80', 'em_1400_in_median', 'em_1400_in_p80',
     'speed_dim', 'speed_bright', 'speed_ratio', 'speed_hours_slower', 'speed_hours',
     'neg_share', 'speed_ratio_pos', 'speed_ratio_neg',
-    'charm_hits', 'charm_calls',
+    'charm_hits', 'charm_calls', 'charm_sign',
 ]
 
 
@@ -896,17 +896,49 @@ def build_scorecard(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | 
                        speed_hours_slower=slower, speed_hours=hours)
 
     # charm flow: did its sign at 13:00 / 14:00 / 15:00 match the move into the close?
+    # (recorded before CHARM_FIXED_FROM with the opposite sign: turned back here)
     if 'charm_flow' in s:
         hits = calls = 0
+        flip = -1 if day < CHARM_FIXED_FROM else 1
         for hh in (13, 14, 15):
             cf, sp = _level_at(s, 'charm_flow', at(hh, 0)), _level_at(s, 'spot', at(hh, 0))
             if cf is None or sp is None or cf == 0 or abs(close - sp) < 2:
                 continue
             calls += 1
-            hits += int((cf > 0) == (close > sp))
+            hits += int((flip * cf > 0) == (close > sp))
         if calls:
-            row.update(charm_hits=hits, charm_calls=calls)
+            row.update(charm_hits=hits, charm_calls=calls, charm_sign=CHARM_SIGN)
     return row
+
+
+# The dealer charm flow had its sign backwards until the 2026-10-29 evening restart (bs.py
+# charm is d(delta)/d(time passing); the flow treated it as per time remaining). Saved
+# snapshots keep what was recorded; scorecard rows built since carry charm_sign=CHARM_SIGN.
+CHARM_FIXED_FROM = date(2026, 10, 30)
+CHARM_SIGN = 'dealer'
+
+
+def fix_charm_scores(sym: str = 'SPX', data_dir: str = _DATA_DIR) -> int:
+    """Scorecard rows scored on the backwards charm sign (no charm_sign): each counted call
+    was a plain hit or miss, so the dealer sign's hits are calls - hits. Once per row (the
+    mark), so it's safe to run every day. Returns the rows fixed."""
+    path = os.path.join(data_dir, f'scorecard_{sym}.csv')
+    if not os.path.exists(path):
+        return 0
+    df = pd.read_csv(path, dtype=str)
+    if 'charm_sign' not in df:
+        df['charm_sign'] = ''
+    calls = pd.to_numeric(df['charm_calls'], errors='coerce')
+    todo = calls.notna() & (calls > 0) & (df['charm_sign'].fillna('') != CHARM_SIGN)
+    if not todo.any():
+        return 0
+    hits = pd.to_numeric(df['charm_hits'], errors='coerce').fillna(0)
+    df.loc[todo, 'charm_hits'] = (calls[todo] - hits[todo]).astype(int).astype(str)
+    df.loc[todo, 'charm_sign'] = CHARM_SIGN
+    tmp = path + '.tmp'
+    df.reindex(columns=SCORECARD_FIELDS).to_csv(tmp, index=False)
+    os.replace(tmp, path)
+    return int(todo.sum())
 
 
 def write_scorecard(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | None:

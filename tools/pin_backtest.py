@@ -90,8 +90,10 @@ def rebuild_greeks(wl: pd.DataFrame, spot: float, ts: datetime) -> pd.DataFrame:
         for _, r in g.iterrows():
             sign, oi = (1 if r['side'] == 'call' else -1), float(r['oi'])
             scale = oi * 100 * spot
+            # charm flow: bs.dealer_charm_flow (until 2026-10-29 cha * scale * sign, the opposite sign)
             rows.append((K, exp == ts.date(), r['side'], oi, gam * scale * sign,
-                         abs(cha) * scale, abs(van) * scale, cha * scale * sign, van * scale * sign))
+                         abs(cha) * scale, abs(van) * scale, bs.dealer_charm_flow(cha, oi, spot, r['side']),
+                         van * scale * sign))
     return pd.DataFrame(rows, columns=['K', 'is0', 'side', 'oi', 'gex', 'charm_abs',
                                        'vanna_abs', 'charm_s', 'vanna_s'])
 

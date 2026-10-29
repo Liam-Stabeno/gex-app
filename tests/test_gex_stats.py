@@ -148,6 +148,19 @@ def test_finished_day_cache_is_bounded(tmp_path, monkeypatch):
     assert sorted(k[0][-19:-9] for k in gs._hm_done) == ["2026-09-03", "2026-09-04", "2026-09-05"]
 
 
+def test_fix_charm_scores_once(tmp_path):
+    # rows scored on the backwards charm sign get calls - hits, once; marked rows stay
+    pd.DataFrame({"date": ["2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31"],
+                  "charm_hits": [0, 1, 2, ""], "charm_calls": [3, 2, 3, ""], "charm_sign": ["", "", "dealer", ""]}
+                 ).to_csv(tmp_path / "scorecard_SPX.csv", index=False)
+    assert gs.fix_charm_scores("SPX", data_dir=tmp_path) == 2
+    df = pd.read_csv(tmp_path / "scorecard_SPX.csv", dtype=str)
+    assert list(df["charm_hits"][:3]) == ["3", "1", "2"] and list(df["charm_sign"][:3]) == ["dealer"] * 3
+    assert pd.isna(df["charm_sign"][3])                    # no charm calls that day: left alone
+    assert gs.fix_charm_scores("SPX", data_dir=tmp_path) == 0
+    assert gs.heatmap_reliability("SPX", data_dir=tmp_path)["charm"] == {"hits": 6, "calls": 8}
+
+
 def test_heatmap_reliability_by_regime(tmp_path):
     pd.DataFrame({"date": ["2026-10-06", "2026-10-07", "2026-10-08"],
                   "speed_ratio_pos": [1.97, 1.47, ""], "speed_ratio_neg": ["", "", 0.93],

@@ -312,6 +312,7 @@ def daily_jobs_loop():
         try:
             for d in gex_stats.summary_days_missing('SPX'):
                 gex_stats.write_daily_summary(d, 'SPX')
+            gex_stats.fix_charm_scores('SPX')       # rows from before the charm sign fix (once each)
             for d in gex_stats.scorecard_days_missing('SPX'):
                 gex_stats.write_scorecard(d, 'SPX')
             if write_today:
@@ -1106,9 +1107,9 @@ def live_gex_loop():
                 # Charm and vanna: absolute value — both calls and puts drive
                 # rehedging flows toward the pinned strike regardless of sign.
                 charm_abs[k] = charm_abs.get(k, 0.0) + abs(c or 0.0) * oi * 100 * spot
-                # Dealers long calls / short puts: as time passes their option delta
-                # moves by -charm, so the hedge flow is +sign*charm (buy if > 0).
-                charm_flow  += (c or 0.0) * oi * 100 * spot * sign
+                # Dealers long calls / short puts (bs.dealer_charm_flow). Until 2026-10-29
+                # this was +sign*charm, the opposite sign: gex_stats.CHARM_FIXED_FROM.
+                charm_flow  += bs.dealer_charm_flow(c or 0.0, oi, spot, side)
                 vanna_abs[k] = vanna_abs.get(k, 0.0) + abs(v or 0.0) * oi * 100 * spot
 
         if not gex_0dte:
@@ -1174,9 +1175,10 @@ def live_gex_loop():
             'has_0dte':     True,
             'updated':      datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'live':         True,   # flag so dashboard knows 0DTE is BS-derived
-            # Hedge flow from charm alone, $ per hour of clock time. Backtest
-            # (tools/pin_backtest.py): its sign matched the move into the close
-            # on 71-76% of days at 13:00-15:00 (2026-06 to 10, ~22 days).
+            # Hedge flow from charm alone, $ per hour of clock time (+ = dealers buy).
+            # Whether its sign calls the move into the close is open: the 2026-06..10
+            # backtest (tools/pin_backtest.py) and the live record disagree (see the
+            # dashboard's tooltip).
             'charm_flow_per_hr': charm_flow / (365.0 * 24),
         }
         data.pop('last_session', None)  # live data is never the after-hours fallback

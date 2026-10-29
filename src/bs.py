@@ -78,7 +78,10 @@ def delta(S: float, K: float, T: float, r: float, v: float, flag: str) -> float:
 
 
 def _bs_charm(S: float, K: float, T: float, r: float, v: float) -> float:
-    """dDelta/dτ — delta change per unit time-to-expiry remaining (per year).
+    """dDelta/dt — delta change per unit of time PASSING (per year), i.e. minus
+    d(delta)/d(time to expiry): an OTM put's delta (-0.21) rises toward 0, so its charm is
+    positive. (This said dDelta/dτ until 2026-10-29, and the dealer charm flow was built on
+    that: its sign was backwards. See dealer_charm_flow.)
 
     Same formula for calls and puts (q=0, European).
     Grows in magnitude as τ→0 because of the 1/T factor, which naturally
@@ -137,6 +140,16 @@ def iv(mkt_price: float, S: float, K: float, T: float, r: float, flag: str,
         if hi / lo < 1 + 1e-9:
             break
     return math.sqrt(lo * hi)
+
+
+def dealer_charm_flow(charm: float, oi: float, spot: float, side: str) -> float:
+    """Dealers' hedge flow from charm, $ of delta per year (+ = dealers buy), assuming they
+    are long calls and short puts. charm is d(delta)/d(time passing): their option delta moves
+    by sign * charm and the hedge by the opposite. E.g. short an OTM put (delta -0.21 rising
+    toward 0): they're long the market and short futures against it, and buy those back as
+    the put decays, the drift up into the close on 2026-10-29."""
+    sign = 1 if side == 'call' else -1
+    return -charm * oi * 100 * spot * sign
 
 
 def greeks(S: float, K: float, T: float, r: float, v: float) -> tuple[float, float, float]:
