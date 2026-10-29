@@ -48,13 +48,14 @@ import time
 from bisect import bisect_right
 from datetime import date, datetime, time as dtime
 
+import charm_map
 import gex_stats
 from gex_stats import ET, day_file, open_text
 from price_history import load_candles
 
 DATA_DIR = gex_stats._DATA_DIR
 SAVE_FILE = os.path.join(DATA_DIR, 'predictions_SPX.jsonl')
-RULES_VERSION = 2                # 2: touch trades, SIZE every 7.5 min
+RULES_VERSION = 3                # 2: touch trades, SIZE every 7.5 min; 3: charm drift
 
 HORIZONS = (15, 30, 60)          # minutes
 FIRST_CHECK_MIN = 15             # 9:45: the first 15 min trade the open's orders, not gamma
@@ -74,6 +75,7 @@ LABEL_MEMORY_SEC = 900           # a strike named in the last 15 min still count
                                  # support / resist step aside within 7.5 pts of price
 PIN_TIMES = (270, 300, 330, 360)  # minutes after 9:30: 14:00, 14:30, 15:00, 15:30
 PIN_MIN_DIST = 3.0               # price already this close to the pin: nothing to predict
+CHARM_MIN_MOVE = 2.0             # a close within this of the checkpoint price: undecided
 
 NAMED = ('support', 'resistance', 'trapdoor', 'squeeze')
 
@@ -370,6 +372,43 @@ def predict_pin(day: str, bars: list, snaps: list, snaps0: list, now: float) -> 
     return rows
 
 
+_charm_cache: dict = {}          # (day, checkpoint) -> its flow and pull, once that minute has passed
+
+
+def predict_charm(day: str, bars: list, now: float, data_dir: str = DATA_DIR) -> list:
+    """At the PIN times: the dealers' 0DTE charm flow at price (charm_map.py, from that
+    minute's gex_watchlist snapshot, the vols backed out of its deltas) BUY → SPX closes
+    higher, SELL → lower; and its PULL, the level the decay drifts price toward."""
+    rows, t_open = [], _open_ts(day)
+    done = bars and bars[-1][0] >= t_open + 60 * (SESSION_MIN - 1)
+    close = bars[-1][4] if done else None
+    for m in PIN_TIMES:
+        t0 = t_open + 60 * m
+        if t0 > now:
+            break
+        before = _window(bars, t0 - 60, 1)
+        if not before:
+            continue
+        spot = before[0][4]
+        key = (day, t0)
+        got = _charm_cache.get(key)
+        if got is None:
+            snap = charm_map.watchlist_snapshot(day, t0, data_dir)
+            c = charm_map.watchlist_contracts(snap[0], spot, snap[1]) if snap else []   # (rows, its time)
+            m_ = charm_map.charm_map(c, spot) if c else None
+            got = (charm_map.flow_at(c, spot) if c else None, (m_['pull'] or [None])[0] if m_ else None)
+            if now - t0 > 120:                     # that minute's snapshot is complete
+                _charm_cache[key] = got
+        flow, pull = got
+        if flow is None:
+            continue
+        move = None if close is None else close - spot
+        rows.append({'kind': 'charm', 't': t0, 'spot': spot, 'flow': round(flow), 'pull': pull,
+                     'predict': ('up' if flow > 0 else 'down') if flow else None, 'close': close,
+                     'up': None if move is None or abs(move) < CHARM_MIN_MOVE else move > 0})
+    return rows
+
+
 _oq_today = {'path': None, 'offset': 0, 'tail': '', 'cols': None, 'q': {}}
 _oq_lock = threading.Lock()
 
@@ -539,6 +578,7 @@ def day_rows(day: str, by_day: dict | None = None, now: float | None = None,
     rows = (predict_size(day, bars, baselines(day, by_day), snaps, timeline, now)
             + predict_levels(day, bars, snaps, timeline)
             + predict_pin(day, bars, snaps, snaps0, now)
+            + predict_charm(day, bars, now, data_dir)
             + predict_trades(day, bars, trade_levels(day, bars, by_day, heat, timeline, snaps, snaps0),
                              option_quotes(day, data_dir), now))
     for r in rows:
@@ -563,6 +603,8 @@ def grade(r: dict, h: int | None = None):
         return r['first'] == r['predict']
     if k.startswith('pin'):
         return r.get('nearer')
+    if k == 'charm':
+        return None if r.get('up') is None else r['up'] == (r['predict'] == 'up')
     return None
 
 
@@ -586,6 +628,10 @@ def status(r: dict, now: float) -> str:
         if r.get('first'):
             return 'hit' if r['first'] == r['predict'] else 'miss'
         return 'pending' if r['until'] - r['t'] < 60 * (max(HORIZONS) - 1) and now - r['t'] < 3600 else 'undecided'
+    if k == 'charm':
+        if r.get('close') is None:
+            return 'pending'
+        return 'undecided' if r.get('up') is None else ('hit' if grade(r) else 'miss')
     return 'pending' if r.get('nearer') is None else ('hit' if r['nearer'] else 'miss')
 
 
@@ -682,6 +728,20 @@ def summarize(rows: list) -> list:
                       'detail': f'positive 0DTE gamma: the gap to the pin closed by a median '
                                 f'{statistics.median(move):+.1f} pts (n {len(move)})' if move else '',
                       'days': days(rs)})
+
+    # charm: the flow's sign at price vs always guessing the commoner direction
+    rs = [r for r in by('charm') if r.get('up') is not None]
+    hits = [r['up'] == (r['predict'] == 'up') for r in rs if r.get('predict')]
+    toward = [r['up'] == (r['pull'] > r['spot']) for r in rs if r.get('pull') is not None and abs(r['pull'] - r['spot']) >= 1]
+    cards.append({'key': 'charm', 'title': 'Charm · drift into the close',
+                  'says': "From 14:00, the dealers' 0DTE charm flow at price BUY → SPX closes higher, SELL → lower",
+                  'vs': 'always guess the commoner direction',
+                  'cols': [{'label': 'at the close', **_rate(sum(hits), len(hits)), 'base': _majority([r['up'] for r in rs])}],
+                  'detail': (f'toward the charm pull (the level the decay drifts price to, when one is within '
+                             f'{charm_map.SPAN_PTS} pts): {_rate(sum(toward), len(toward))["rate"]}% (n {len(toward)}) · '
+                             'experimental: the 2026-06..10 backtest was right in Oct, wrong Jun-Sep (tools/charm_map_test.py)')
+                            if toward else 'experimental (tools/charm_map_test.py)',
+                  'days': days(rs)})
 
     # touch trades: average P&L % (ask in, bid out) vs the same trade at no level
     rs = by('trade')

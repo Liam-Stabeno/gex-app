@@ -185,7 +185,7 @@
         body.panel-mode.panel-price > #price-grid.grid, body.panel-mode.panel-gex > #gex-grid.grid,
         body.panel-mode.panel-gex0 > #gex-grid.grid, body.panel-mode.panel-gexlater > #gex-grid.grid,
         body.panel-mode.panel-ddoi > #ddoi-grid.grid, body.panel-mode.panel-rolling > #rp-grid.grid,
-        body.panel-mode.panel-rp1 > #rp-grid.grid {
+        body.panel-mode.panel-rp1 > #rp-grid.grid, body.panel-mode.panel-charm > #gex-grid.grid {
             display: grid !important; grid-template-columns: 1fr; flex: 1; min-height: 0; }
         body.panel-mode .grid > .chart-div { height: 100% !important; min-height: 0; resize: none; }
         body.panel-mode .grid > .gex-chart-div { display: flex; flex-direction: column; }
@@ -278,6 +278,8 @@
         .gex-pair-ctl { height: 22px; flex-shrink: 0; display: flex; align-items: center; margin-bottom: 2px;
                         font-size: 0.6rem; color: #6f6f82; letter-spacing: 0.5px; white-space: nowrap; overflow: hidden; }
         .gex-pair-ctl .horizon-row { flex: 1; margin: 0; }
+        .charm-panel { height: 560px; display: flex; flex-direction: column; }   /* CHARM MAP */
+        .charm-panel .gex-chart-row { flex: 1; height: auto; min-height: 0; }
         .gex-pair-head { font-size: 0.62rem; color: #9a9aac; line-height: 1.5; min-height: 3em; margin-bottom: 2px;
                          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .gex-pair-head b { color: #e0e0ea; letter-spacing: 1px; }
@@ -997,6 +999,7 @@
                         <div class="total-gex" title="Both charts together: today's 0DTE plus the later expirations picked">GEX: <span id="gex-${id}">—</span></div>
                         <div class="total-gex" title="Typical distance from now to the 16:00 close on past days in the same GEX regime (median, and the 80th percentile). From saved history; see tools/pin_backtest.py.">Move to close: <span id="em-${symbol}">—</span></div>
                         <div class="total-gex" title="EXPERIMENTAL. Dealer hedge flow from charm alone (time decay of their option delta), assuming dealers long calls / short puts: BUY = dealers buying, e.g. short OTM puts below price decaying into the close. Until 2026-10-29 this showed the opposite sign (a sign error). Whether it calls the move is open: the 2026-06 to 10 backtest scored the flipped number 71-76%, so 24-29% for the dealer flow, while live (from 2026-10-07) the dealer flow matched 26 of 41. 'live' = how often its 13:00/14:00/15:00 sign matched the move into the close on recorded days (daily scorecard, scored on the dealer sign); treat it as unproven. Hidden after 15:30: charm explodes as 0DTE expiry nears (billions per hour), which says nothing about direction.">Charm flow <span id="cf-rec-${symbol}" style="color:#8a8a9c">(experimental)</span>: <span id="cf-${symbol}">—</span></div>
+                        <div class="total-gex" title="EXPERIMENTAL. The price the dealers' 0DTE charm flow drifts toward: buying just below it, selling just above (the CHARM MAP panel). Unproven: right in October, wrong June-September on 48 saved days; graded daily on the scoreboard.">Charm pull: <span id="cpull-${symbol}">—</span></div>
                     </div>
                 </div>
                 <div class="levels">
@@ -2944,6 +2947,128 @@
             show();
         }
 
+        // ── Charm map: the dealers' 0DTE charm flow at each price near spot (charm_map.py, live
+        // every 10 s): green BUY / red SELL, $ per hour. PULL = BUY just below, SELL just above,
+        // where the decay drifts price; SPLIT = the reverse, where it pushes price away.
+        // Experimental: the 2026-06..10 backtest was right in Oct and wrong Jun-Sep
+        // (tools/charm_map_test.py); the scoreboard grades it every day.
+        const fmtFlow = v => (v < 0 ? '−' : '') + '$' + (Math.abs(v) >= 1e9 ? (Math.abs(v) / 1e9).toFixed(1) + 'B'
+                                                          : (Math.abs(v) / 1e6).toFixed(0) + 'M');
+        const charmLevelsPlugin = {
+            id: 'charmLevels',
+            afterDraw(chart) {
+                const { ctx, scales } = chart, labels = (chart.data.labels || []).map(Number);
+                if (labels.length < 2) return;
+                const yAt = p => {
+                    const i = (p - labels[0]) / (labels[1] - labels[0]);
+                    if (i < 0 || i > labels.length - 1) return null;
+                    const a = Math.floor(i), b = Math.min(a + 1, labels.length - 1);
+                    return scales.y.getPixelForValue(a) + (i - a) * (scales.y.getPixelForValue(b) - scales.y.getPixelForValue(a));
+                };
+                for (const { price, color, text } of chart._charmLevels || []) {
+                    const y = yAt(price);
+                    if (y == null) continue;
+                    ctx.save();
+                    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([6, 3]);
+                    ctx.beginPath(); ctx.moveTo(scales.x.left, y); ctx.lineTo(scales.x.right, y); ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = color; ctx.font = 'bold 10px Courier New'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+                    ctx.fillText(`${text} ${price.toFixed(1)}`, scales.x.left + 4, y - 2);
+                    ctx.restore();
+                }
+            },
+        };
+
+        function createCharmDiv(symbol) {
+            const div = document.createElement('div');
+            div.className = 'chart-div gex-chart-div charm-panel';
+            div.id = `charm-div-${symbol}`;
+            div.innerHTML = `
+                <div class="chart-div-header">
+                    <div style="display:flex;align-items:center;gap:6px">
+                        <span class="gex-drag-handle" title="Drag to move">⠿</span>
+                        <div>
+                            <div class="chart-title" title="The dealers' hedge flow from 0DTE time decay alone, at each price near spot, assuming dealers long calls / short puts. Green: they'd be buying at that price, red: selling. PULL: buying just below, selling just above, so the decay drifts price toward it (late in the day it grows). SPLIT: the reverse, it pushes price away. EXPERIMENTAL: on 48 saved days it was right in October and wrong June-September; the scoreboard grades it daily.">CHARM MAP · 0DTE · experimental</div>
+                            <div class="symbol">${symbol}</div>
+                            <div class="spot" id="charm-sub-${symbol}" style="font-size:0.7rem">Waiting for the live 0DTE…</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="gex-chart-row"><div class="gex-canvas-wrap"><canvas id="charm-canvas-${symbol}"></canvas></div></div>`;
+            requestAnimationFrame(() => makeDraggable(div));
+            if (window.ResizeObserver) new ResizeObserver(() => charmCharts[symbol]?.resize()).observe(div.querySelector('.gex-canvas-wrap'));
+            return div;
+        }
+
+        const charmCharts = {};
+        function renderCharmMap(symbol, data) {
+            const m = data && !data.last_session ? data.charm_map : null;
+            updateCharmLine(symbol, m);
+            const pullEl = document.getElementById(`cpull-${symbol}`);
+            const sub = document.getElementById(`charm-sub-${symbol}`);
+            const at = m ? m.flow[Math.floor(m.flow.length / 2)] : null;
+            const drift = !m ? '' : m.pull.length ? `pull ${m.pull[0]}`
+                : `no pull within ±${Math.round((m.spots.at(-1) - m.spots[0]) / 2)} pts (${at >= 0 ? 'BUY: drift up' : 'SELL: drift down'})`;
+            if (pullEl) pullEl.textContent = m ? (m.pull.length ? `${m.pull[0]}` : '—') : '—';
+            if (!sub) return;
+            const canvas = document.getElementById(`charm-canvas-${symbol}`);
+            if (!m) {
+                sub.textContent = 'Waiting for the live 0DTE (from the open; today\'s expired at 16:00)';
+                if (charmCharts[symbol]) { charmCharts[symbol].destroy(); delete charmCharts[symbol]; }
+                return;
+            }
+            sub.innerHTML = `at price: dealers <b style="color:${at >= 0 ? '#00ff88' : '#ff4466'}">${at >= 0 ? 'BUY' : 'SELL'} ${fmtFlow(Math.abs(at))}/hr</b>`
+                + ` · ${drift}` + (m.split.length ? ` · split ${m.split[0]}` : '');
+            const labels = m.spots, colors = m.flow.map(f => f >= 0 ? 'rgba(0,255,136,0.7)' : 'rgba(255,68,68,0.7)');
+            let c = charmCharts[symbol];
+            if (c && c.canvas === canvas) {
+                c.data.labels = labels;
+                c.data.datasets[0].data = m.flow;
+                c.data.datasets[0].backgroundColor = colors;
+            } else {
+                if (c) c.destroy();
+                c = charmCharts[symbol] = new Chart(canvas.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels, datasets: [{ data: m.flow, backgroundColor: colors, borderWidth: 0, barPercentage: 1, categoryPercentage: 0.9 }] },
+                    options: {
+                        indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: { callbacks: { title: i => `SPX ${Number(i[0].label).toFixed(1)}`,
+                                                    label: x => `dealers ${x.raw >= 0 ? 'BUY' : 'SELL'} ${fmtFlow(Math.abs(x.raw))}/hr` } },
+                        },
+                        scales: {
+                            x: { grid: { color: '#1e1e2e' }, ticks: { color: '#a8a8b8', font: { size: 9 }, maxTicksLimit: 6, callback: v => fmtFlow(v) } },
+                            y: { reverse: true, grid: { color: '#1e1e2e' },
+                                 ticks: { color: '#888', font: { size: 9, family: 'Courier New' }, autoSkip: false,
+                                          callback: function (v, i) { return i % 5 === 0 ? Math.round(Number(this.getLabelForValue(v))) : ''; } } },
+                        },
+                    },
+                    plugins: [charmLevelsPlugin],
+                });
+            }
+            c._spotPrice = data.spot;
+            c._charmLevels = [...m.pull.slice(0, 2).map(p => ({ price: p, color: '#00d4ff', text: 'PULL' })),
+                              ...m.split.slice(0, 2).map(p => ({ price: p, color: '#ffb300', text: 'SPLIT' }))];
+            c.update('none');
+        }
+
+        // the nearest pull on the price chart (live only)
+        let _charmLine = null;
+        function updateCharmLine(symbol, m) {
+            const e = priceCharts[symbol];
+            if (!e) return;
+            const p = !_replayDate && m && m.pull.length ? m.pull[0] : null;
+            if (p == null) {
+                if (_charmLine) { try { e.candleSeries.removePriceLine(_charmLine); } catch (_) {} _charmLine = null; }
+                return;
+            }
+            const o = { price: p, color: '#00d4ff', lineWidth: 1, lineStyle: LWC.LineStyle.Dotted, axisLabelVisible: true,
+                        axisLabelColor: '#00d4ff', axisLabelTextColor: '#000', title: 'CHARM PULL' };
+            if (_charmLine) _charmLine.applyOptions(o);
+            else _charmLine = e.candleSeries.createPriceLine(o);
+        }
+
         // ── Key dates: dealer positioning into the next two red days ────────────
         // Open interest and GEX per strike of that one expiration at each recorded
         // session's close (today: the latest 15-min full-chain snapshot), against the
@@ -3243,7 +3368,8 @@
         // that doesn't use GEX, so the colour says whether GEX added anything.
         let _pred = null;
         const PRED_NAME = { size_regime: 'SIZE · regime', size_price: 'SIZE · GEX at price', level: 'LEVEL',
-                            run: 'BREAK', pin_true: 'PIN · True Pin', pin_0dte: 'PIN · 0DTE pin', trade: 'TOUCH TRADE' };
+                            run: 'BREAK', pin_true: 'PIN · True Pin', pin_0dte: 'PIN · 0DTE pin', trade: 'TOUCH TRADE',
+                            charm: 'CHARM' };
         const PRED_STATUS = { hit: 'right', miss: 'wrong', pending: 'pending', undecided: 'undecided', comparison: 'comparison' };
         const predMoney = v => { const a = Math.abs(v);
             return (v < 0 ? '-' : '+') + (a >= 1e9 ? (a / 1e9).toFixed(1) + 'B' : a >= 1e6 ? (a / 1e6).toFixed(0) + 'M' : (a / 1e3).toFixed(0) + 'K'); };
@@ -3304,6 +3430,10 @@
                     return `broke ${r.dir} through ${r.strike} (GEX ${predMoney(gexU(r.gex, r.strike))})`
                         + (r.predict ? ` → runs ${set.run} more pts` : ' · for comparison (positive GEX)')
                         + (r.first ? ` · ${r.first === 'run' ? 'ran' : 'reclaimed'} in ${r.min} min` : '');
+                case 'charm':
+                    return `dealers' 0DTE charm flow ${r.flow >= 0 ? 'BUY' : 'SELL'} ${predMoney(Math.abs(r.flow)).slice(1)}/hr at ${r.spot.toFixed(1)}`
+                        + ` → closes ${r.predict === 'up' ? 'higher' : 'lower'}` + (r.pull != null ? ` · pull ${r.pull}` : '')
+                        + (r.close != null ? ` · closed ${r.close.toFixed(1)}` : '');
                 default:
                     return `pin ${r.pin} with price ${r.spot.toFixed(1)}, 0DTE GEX ${predMoney(gexU(r.gex0, r.spot))}`
                         + (r.predict ? ' → the close lands nearer the pin' : ' · for comparison (0DTE gamma negative)')
@@ -3392,6 +3522,7 @@
             }
 
             renderGexPair(symbol);
+            renderCharmMap(symbol, data);
 
             // Charm flow (0DTE panel): sign is the backtested part; $/hr gives scale
             const cfEl = document.getElementById(`cf-${symbol}`);
@@ -4352,6 +4483,7 @@
         const priceGrid = document.getElementById('price-grid');
         GEX_SYMBOLS.forEach(s => {
             if (GEX_PANEL) gexGrid.appendChild(createGexPairDiv(s));
+            if (inPanel('charm')) gexGrid.appendChild(createCharmDiv(s));
             if (ddoiGrid && inPanel('ddoi')) ddoiGrid.appendChild(createDdoiDiv(s));
         });
         PRICE_SYMBOLS.forEach(s => {
@@ -4361,7 +4493,7 @@
 
         // Initial full load. The GEX feed also draws the price chart's levels and the dealer OI;
         // the rolling profile has its own (its script, below)
-        const GEX_FED = inPanel('price', 'gex', 'gex0', 'gexlater', 'ddoi');
+        const GEX_FED = inPanel('price', 'gex', 'gex0', 'gexlater', 'ddoi', 'charm');
         if (GEX_FED) fetchGexAll();
         if (inPanel('price')) fetchPriceAll();
         if (!PANEL) {

@@ -201,3 +201,26 @@ def test_size_predictions_every_7_5_minutes():
     times = sorted({(r["t"] - T0) // 60 for r in rows if r["kind"] == "size_regime"})
     assert times[:4] == [15, 23, 30, 38]
     assert all(r["prev"] for r in rows if r["kind"] == "size_regime"), "the no-GEX guess at every one (the 15 min before)"
+
+
+def test_charm_drift(tmp_path):
+    # 14:00: a big 0DTE put block below price (dealers short it, hedged with short futures):
+    # as it decays they buy those back, flow BUY at price → closes higher; it did
+    import bs
+    P._charm_cache.clear()
+    spot, k, sig = 7712.0, 7690.0, 0.15
+    T = 2 * 3600 / (365 * 24 * 3600)
+    lines = ["timestamp,symbol,strike,side,expiry_label,delta,oi"]
+    for side in ("put", "call"):
+        d = bs.delta(spot, k, T, 0.05, sig, side[0])
+        oi = 20000 if side == "put" else 0     # (equal call OI would cancel it: long call + short put has no charm)
+        lines.append(f"2026-10-21 10:59:40,SPXW  261021{side[0].upper()}0{int(k)}000,{k},{side},0DTE,{d:.4f},{oi}")
+    (tmp_path / f"gex_watchlist_SPX_{DAY}.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    closes = [spot] * 300 + [spot + 8.0 * i / 89 for i in range(1, 91)]     # 15:00 on, up 8 pts by the close
+    rows = P.predict_charm(DAY, bars_from(closes, wick=0), now=T0 + 86400, data_dir=str(tmp_path))
+    first = next(r for r in rows if r["t"] == T0 + 60 * 270)
+    assert first["flow"] > 0 and first["predict"] == "up" and first["up"] is True
+    assert P.grade(first) is True and P.status(first, T0 + 86400) == "hit"
+    assert [r["t"] for r in rows] == [T0 + 60 * 270], "the later checkpoints have no fresh snapshot"
+    card = next(c for c in P.summarize([dict(r, day=DAY) for r in rows]) if c["key"] == "charm")
+    assert card["cols"][0]["hits"] == 1 and card["cols"][0]["n"] == 1

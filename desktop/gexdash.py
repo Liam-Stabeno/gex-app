@@ -46,10 +46,11 @@ PANELS = {   # panel: (window title, default x, y, width, height); 'all' = the w
     'all':     ('GEX Dash · Dashboard',       200, 60, 1500, 900),
     'gex0':    ('GEX Dash · 0DTE GEX',        60, 100, 760, 820),
     'gexlater': ('GEX Dash · Later GEX',      120, 100, 760, 820),
+    'charm':   ('GEX Dash · Charm map',       180, 100, 620, 760),
 }
 LABELS = {'price': 'Price', 'gex': 'GEX', 'rolling': 'Rolling profile', 'ddoi': 'Dealer OI', 'all': 'Whole dashboard',
-          'gex0': '0DTE GEX', 'gexlater': 'Later GEX (date slider)'}
-SINGLES = ('gex0', 'gexlater')  # under SINGLE CHARTS in the panel; 'Open all' opens the first four
+          'gex0': '0DTE GEX', 'gexlater': 'Later GEX (date slider)', 'charm': 'Charm map'}
+SINGLES = ('gex0', 'gexlater', 'charm')  # under SINGLE CHARTS in the panel; 'Open all' opens the first four
 SOLO = 'rp1'                    # single rolling profile charts: windows 'rp1-1', 'rp1-2', ...
 SOLO_TITLE = 'GEX Dash · Rolling chart {n}'
 SOLO_PLACE = lambda n: (240 + 30 * (n - 1), 80 + 30 * (n - 1), 520, 760)
@@ -424,7 +425,7 @@ def selftest(app: App, out: str) -> None:
         win.events.loaded.wait(60)
     time.sleep(8)                                   # the pages' own data loads
     results = {'opened': sorted(n for n in app.windows if n != CONTROL)}
-    for name in [*PANELS, f'{SOLO}-1', f'{SOLO}-2']:
+    for name in [*PANELS, f'{SOLO}-1', f'{SOLO}-2']:   # (charm: its chart only once the live 0DTE runs)
         win = app.windows.get(name)
         if win is None:
             results[name] = 'not opened'

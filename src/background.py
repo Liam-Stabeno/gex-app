@@ -28,6 +28,7 @@ from gex import (get_access_token, fetch_option_chain, parse_gex, find_key_level
                  login_age_days, request_reauth)
 from price_history import fetch_candles, append_candles, append_new, replace_candles, CACHE_DAYS
 import bs
+import charm_map
 import delta_flow
 import flow_alerts
 import market_recorder
@@ -46,6 +47,8 @@ _last_true_pin: dict = {}   # display symbol -> latest TRUE PIN from the live lo
 _gex_by_exp: dict = {}      # display symbol -> gex_by_expiry() from the latest chain refresh
 _true_pin_pending: dict = {}  # challenger strike waiting out TRUE_PIN_CONFIRM_SEC
 _last_charm_flow: dict = {} # display symbol -> latest charm hedge flow, $/hr
+_charm_map: dict = {}       # display symbol -> (time, the 0DTE charm map: charm_map.charm_map)
+CHARM_MAP_EVERY_SEC = 10    # ~80 prices x the 0DTE contracts: not every 2 s loop
 _live_0dte: dict = {}       # display symbol -> (time.time(), {strike: net GEX}) from the live loop
 LIVE_FRESH_SEC = 15         # older than this (stream down, after the close): not live
 _level_state: dict = {}     # (display symbol, 'multi'|'0dte') -> last published levels (sticky)
@@ -1061,6 +1064,7 @@ def live_gex_loop():
         charm_abs = {}   # strike -> sum(|charm| * oi * 100 * spot)
         vanna_abs = {}   # strike -> sum(|vanna| * oi * 100 * spot)
         charm_flow = 0.0  # signed dealer charm exposure, $ of delta per year (+ = dealers buy)
+        map_contracts = []  # 0DTE (strike, side, oi, vol, T) for the charm map
         n_solved = n_fallback = 0
         T_by_exp = {}
 
@@ -1111,6 +1115,8 @@ def live_gex_loop():
                 # this was +sign*charm, the opposite sign: gex_stats.CHARM_FIXED_FROM.
                 charm_flow  += bs.dealer_charm_flow(c or 0.0, oi, spot, side)
                 vanna_abs[k] = vanna_abs.get(k, 0.0) + abs(v or 0.0) * oi * 100 * spot
+                if meta.get('is_0dte') and sigma is not None:
+                    map_contracts.append((k, side, oi, sigma, T))
 
         if not gex_0dte:
             continue
@@ -1160,6 +1166,11 @@ def live_gex_loop():
         if pin_enhanced is not None:
             _last_true_pin['SPX'] = float(pin_enhanced)
         _last_charm_flow['SPX'] = charm_flow / (365.0 * 24)
+        if map_contracts and time.time() - _charm_map.get('SPX', (0, None))[0] >= CHARM_MAP_EVERY_SEC:
+            try:
+                _charm_map['SPX'] = (time.time(), charm_map.charm_map(map_contracts, spot))
+            except Exception as e:
+                print(f'[charm map] {e}')
         total_gex = float(sum(multi_dict.get('net_gex') or [])) + float(df_0dte['net_gex'].sum())
 
         data = {
@@ -1180,6 +1191,8 @@ def live_gex_loop():
             # backtest (tools/pin_backtest.py) and the live record disagree (see the
             # dashboard's tooltip).
             'charm_flow_per_hr': charm_flow / (365.0 * 24),
+            # the 0DTE charm flow at each price near spot, and where it turns (charm_map.py)
+            'charm_map': _charm_map.get('SPX', (0, None))[1],
         }
         data.pop('last_session', None)  # live data is never the after-hours fallback
 
