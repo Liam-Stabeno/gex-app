@@ -178,6 +178,17 @@
         .chart-measure { position: absolute; z-index: 4; pointer-events: none; border: 1px solid; }
         .chart-measure span { position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap;
                               font: 11px 'Courier New', monospace; color: #fff; padding: 2px 6px; border-radius: 3px; }
+        /* ?panel=price | gex | rolling | ddoi: one panel filling the window (desktop/gexdash.py) */
+        body.panel-mode { padding: 6px; height: 100vh; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+        body.panel-mode > *:not(.unit-bar):not(#modal-overlay) { display: none !important; }
+        /* (.grid: outranks the rule above, whose :not(#modal-overlay) counts as an id) */
+        body.panel-mode.panel-price > #price-grid.grid, body.panel-mode.panel-gex > #gex-grid.grid,
+        body.panel-mode.panel-ddoi > #ddoi-grid.grid, body.panel-mode.panel-rolling > #rp-grid.grid {
+            display: grid !important; grid-template-columns: 1fr; flex: 1; min-height: 0; }
+        body.panel-mode .grid > .chart-div { height: 100% !important; min-height: 0; resize: none; }
+        body.panel-mode .grid > .gex-chart-div { display: flex; flex-direction: column; }
+        body.panel-mode .gex-chart-div > .gex-chart-row { flex: 1; height: auto; min-height: 0; }
+        body.panel-mode .gex-drag-handle { display: none; }
         .price-panel.fullscreen, .gex-pair.fullscreen {
             position: fixed; inset: 12px; z-index: 900;
             width: auto !important; height: auto !important; resize: none;
@@ -261,15 +272,16 @@
         .gex-pair .gex-chart-row { flex: 1; height: auto; min-height: 160px; }
         .gex-pair-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
         .gex-pair .gex-canvas-wrap { min-height: 0; }   /* let the chart shrink back (after full screen) */
+        /* a control line atop each column, the same height in both: the charts' rows line up */
+        .gex-pair-ctl { height: 22px; flex-shrink: 0; display: flex; align-items: center; margin-bottom: 2px;
+                        font-size: 0.6rem; color: #6f6f82; letter-spacing: 0.5px; white-space: nowrap; overflow: hidden; }
+        .gex-pair-ctl .horizon-row { flex: 1; margin: 0; }
         .gex-pair-head { font-size: 0.62rem; color: #9a9aac; line-height: 1.5; min-height: 3em; margin-bottom: 2px;
                          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .gex-pair-head b { color: #e0e0ea; letter-spacing: 1px; }
         .gex-pair-head span { color: #c8c8d4; }
         .horizon-row { display: flex; align-items: center; gap: 6px; font-size: 0.6rem; color: #9a9aac; margin: 2px 0 4px; }
         .horizon-row input { flex: 1; accent-color: #00d4ff; cursor: pointer; }
-        /* fixed width: a longer label (red-day tags) must not resize the slider under its ticks */
-        .horizon-label { color: #00d4ff; flex: 0 0 340px; text-align: right; white-space: nowrap;
-                         overflow: hidden; text-overflow: ellipsis; }
         .zone-regime { padding: 1px 6px; border-radius: 3px; }
         .zone-regime.pos { color: #b8f5d4; background: #0d2b1a; border: 1px solid #00ff8866; }
         .zone-regime.neg { color: #ffc4c4; background: #2b0d0d; border: 1px solid #ff444488; }
@@ -698,6 +710,15 @@
         const GEX_REFRESH_MS   = 30000;   // GEX: 30 s
         const PRICE_REFRESH_MS = 300000;  // Price: 5 min (streaming covers live updates)
 
+        // ?panel=price | gex | rolling | ddoi: that one panel filling the window, loading only
+        // what it needs (desktop/gexdash.py opens each in its own window). No panel: the whole page.
+        const PANEL = new URLSearchParams(location.search).get('panel');
+        const inPanel = (...names) => !PANEL || names.includes(PANEL);
+        if (PANEL) {
+            document.body.classList.add('panel-mode', `panel-${PANEL}`);
+            document.title = `GEX · ${PANEL}`;
+        }
+
         const gexCharts   = {};   // key (symbol-slot) -> { chart, series, chartData, spot }
         const priceCharts = {};   // symbol -> { chart, candleSeries, volumeSeries }
         const trailCharts = {};   // symbol -> { chart, candleSeries, pinSeries, truePinSeries }
@@ -922,11 +943,22 @@
             const div = document.createElement('div');
             div.className = 'chart-div gex-chart-div gex-pair';
             div.id = `gex-div-${id}`;
-            const col = slot => `
+            const col = (slot, ctl) => `
                     <div class="gex-pair-col">
                         <div class="gex-pair-head" id="head-${symbol}-${slot}">—</div>
+                        <div class="gex-pair-ctl">${ctl}</div>
                         <div class="gex-canvas-wrap" data-key="${symbol}-${slot}"><canvas id="gex-canvas-${symbol}-${slot}"></canvas></div>
                     </div>`;
+            // the date slider only picks the LATER chart's expirations: it sits over that chart
+            const zeroCtl = `<span title="Today's expiration only, from the live stream (every ~2 s). The date slider over the right chart never changes this one.">TODAY'S EXPIRATION ONLY · LIVE</span>`;
+            const laterCtl = `<div class="horizon-row" title="Which later expirations the right chart adds up: from the next one through the date picked (from the chain, every 60 s). Default: through this Friday. All the way right: every expiration in the next 30 days except today's.">
+                            <span>NEXT</span>
+                            <div class="horizon-track">
+                                <input type="range" id="horizon-${id}" min="1" max="1" step="1" value="1">
+                                <div class="horizon-marks" id="horizon-marks-${id}"></div>
+                            </div>
+                            <span>30 DAYS</span>
+                        </div>`;
             div.innerHTML = `
                 <div class="chart-div-header">
                     <div style="display:flex;align-items:center;gap:6px">
@@ -948,15 +980,6 @@
                     <div class="level-item" style="color:#00e5ff" title="Where today is most likely to settle: 90% gamma, 10% charm, live (today's 0DTE + next expiration)">True Pin: <span id="pin-enhanced-${id}">—</span></div>
                     <div class="level-item" style="color:#888;font-size:0.75em">Strikes: <span id="strikes-${id}">—</span></div>
                 </div>
-                <div class="horizon-row" title="Which later expirations the right chart adds up: from the next one through the date picked (from the chain, every 60 s). Default: through this Friday. All the way right: every expiration in the next 30 days except today's.">
-                    <span>NEXT</span>
-                    <div class="horizon-track">
-                        <input type="range" id="horizon-${id}" min="1" max="1" step="1" value="1">
-                        <div class="horizon-marks" id="horizon-marks-${id}"></div>
-                    </div>
-                    <span>30 DAYS</span>
-                    <span class="horizon-label" id="horizon-label-${id}">—</span>
-                </div>
                 <div class="gex-chart-row">
                     <div class="gex-strike-slider-wrap">
                         <span>MORE</span>
@@ -965,7 +988,7 @@
                                title="Strikes shown (both charts)">
                         <span>FEWER</span>
                         <span id="slider-val-${id}" style="color:#00d4ff;font-size:0.6rem">40</span>
-                    </div>${col('zero')}${col('later')}
+                    </div>${col('zero', zeroCtl)}${col('later', laterCtl)}
                 </div>
             `;
             // double-click: full screen in place, both charts (Esc or another double-click leaves)
@@ -977,6 +1000,7 @@
                 const n = parseInt(ss.value);
                 _gexStrikeCount[`${symbol}-zero`] = _gexStrikeCount[`${symbol}-later`] = n;
                 div.querySelector(`#slider-val-${id}`).textContent = n;
+                delete _gexPairView[symbol];       // that many strikes, all shown: no zoom left over
                 renderGexPair(symbol);
             });
             for (const el of [hz, ss]) el.addEventListener('dblclick', e => e.stopPropagation());
@@ -2793,7 +2817,7 @@
             const slider = document.getElementById(`horizon-${key}`);
             if (!data || !slider) return;
             const exps = _gexByExp?.exp || [];
-            const n = Math.min(exps.length, Math.max(1, horizonCount(exps)));   // at least the next one
+            const n = Math.min(exps.length, Math.max(1, horizonCount(exps)));   // at least the next one (0DTE: its own chart)
             slider.min = exps.length ? 1 : 0;
             slider.max = exps.length;
             slider.value = n;
@@ -2822,9 +2846,6 @@
             const endDay = n ? exps[n - 1] : null;
             const tags = endDay && _redDays[endDay], tagTxt = tags ? ' · ' + tags.join(' · ') : '';
             const through = `through <span class="${tags ? 'red-day' : ''}">${endDay ? fmtExpDay(endDay) : ''}${tagTxt}</span>`;
-            const hzLabel = document.getElementById(`horizon-label-${key}`);
-            hzLabel.innerHTML = n ? `${through} · ${n} expiration${n > 1 ? 's' : ''}` : 'no later expirations yet';
-            hzLabel.title = hzLabel.textContent;
             const marks = document.getElementById(`horizon-marks-${key}`);
             const sig = exps.join() + '|' + exps.map(e => (_redDays[e] || []).join('+')).join();
             if (marks && marks._sig !== sig) {
@@ -2844,7 +2865,7 @@
                 ? `<b>0DTE</b> · <span class="${t0 ? 'red-day' : ''}">${fmtOdteDate(data.odte_date)}${t0 ? ' · ' + t0.join(' · ') : ''}</span> · ${tot(zTotal)} · live<br>${lv(data.levels_0dte || {})}`
                 : "<b>0DTE</b> · none right now (today's expired at 16:00)";
             document.getElementById(`head-${symbol}-later`).innerHTML = n
-                ? `<b>LATER</b> · ${through} · ${tot(lTotal)}<br>${lv(keyLevels(strikes, lNet, spot))}`
+                ? `<b>LATER</b> · ${through} · ${n} expiration${n > 1 ? 's' : ''} · ${tot(lTotal)}<br>${lv(keyLevels(strikes, lNet, spot))}`
                 : '<b>LATER</b> · waiting for the chain';
 
             renderGexChart(symbol, 'zero', has0 ? { strikes, net_gex: zNet }
@@ -2854,26 +2875,46 @@
             fitGexPanel(key, _gexStrikeCount[`${symbol}-zero`] || 40);
         }
 
-        // The two GEX charts as one: the same x range (bar lengths compare across), zoom or
-        // pan one and the other follows, a double-click on either resets both
+        // The two GEX charts as one: the same x range (bar lengths compare across) and one
+        // zoom, kept as the strikes at its ends, put on both at every redraw (a zoom kept per
+        // chart as row numbers drifted apart: 7615-7770 beside 7615-7760). Zoom or pan either
+        // and both follow; a double-click on either, or the strikes slider, shows all again.
+        const _gexPairView = {};       // symbol -> [lowest, highest strike] zoomed to; none: all
         function pairGexCharts(symbol) {
             const charts = ['zero', 'later'].map(slot => gexCharts[`${symbol}-${slot}`]).filter(Boolean);
             const vals = charts.flatMap(c => c.data.datasets[0].data);
+            const show = () => charts.forEach(c => {
+                const v = _gexPairView[symbol], labels = c.data.labels;
+                const lo = v ? labels.indexOf(v[0]) : -1, hi = v ? labels.indexOf(v[1]) : -1;
+                if (lo >= 0 && hi > lo) {
+                    c.options.scales.y.min = lo;
+                    c.options.scales.y.max = hi;
+                } else {                           // all, or the zoom's strikes have left the window
+                    delete c.options.scales.y.min;
+                    delete c.options.scales.y.max;
+                }
+                c.update('none');
+            });
             for (const c of charts) {
+                // its box, as it is now: a chart that missed a resize (one drawn before the panel
+                // sized itself stayed 155 px tall in a 563 px box) would put its rows out of line
+                const box = c.canvas.parentElement;
+                if (box && (Math.abs(c.height - box.clientHeight) > 2 || Math.abs(c.width - box.clientWidth) > 2)) c.resize();
                 c.options.scales.x.suggestedMin = Math.min(0, ...vals);
                 c.options.scales.x.suggestedMax = Math.max(0, ...vals);
-                c._onView = from => charts.forEach(to => {
-                    if (to === from) return;
-                    to.options.scales.y.min = from.scales.y.min;
-                    to.options.scales.y.max = from.scales.y.max;
-                    to.update('none');
-                });
+                c._onView = from => {
+                    const labels = from.data.labels, y = from.scales.y;
+                    _gexPairView[symbol] = [labels[Math.round(y.min)], labels[Math.round(y.max)]];
+                    show();
+                };
                 c.canvas.ondblclick = e => {
                     e.stopPropagation();
-                    charts.forEach(x => { x.resetZoom('none'); delete x.options.scales.y.min; delete x.options.scales.y.max; x.update('none'); });
+                    delete _gexPairView[symbol];
+                    charts.forEach(x => x.resetZoom('none'));
+                    show();
                 };
-                c.update('none');
             }
+            show();
         }
 
         // ── Key dates: dealer positioning into the next two red days ────────────
@@ -3158,9 +3199,12 @@
         // after the rolling profile has put its section after the GEX grid, so this one
         // goes between them
         document.addEventListener('DOMContentLoaded', () => {
-            createKeyDatesSection();
-            fetchKeyDates();
-            setInterval(fetchKeyDates, 5 * 60000);   // full-chain snapshots come every 15 min
+            if (!PANEL) createKeyDatesSection();
+            if (inPanel('gex')) {                    // the GEX panel's red days come from here too
+                fetchKeyDates();
+                setInterval(fetchKeyDates, 5 * 60000);   // full-chain snapshots come every 15 min
+            }
+            if (PANEL) return;
             createPredictionsSection();
             fetchPredictions();
             setInterval(fetchPredictions, 60000);
@@ -3655,9 +3699,11 @@
             } catch (e) { /* silent */ }
         }
 
-        // Poll RTD status every 5 s so connected/quote_count stay fresh
-        fetchRtdStatus();
-        setInterval(fetchRtdStatus, 5000);
+        // Poll RTD status every 5 s so connected/quote_count stay fresh (its bar: the whole page only)
+        if (!PANEL) {
+            fetchRtdStatus();
+            setInterval(fetchRtdStatus, 5000);
+        }
 
         function updatePriceCandle(symbol, candle) {
             // candle: { symbol, time (sec), open, high, low, close, volume }
@@ -4278,19 +4324,23 @@
         const ddoiGrid  = document.getElementById('ddoi-grid');
         const priceGrid = document.getElementById('price-grid');
         GEX_SYMBOLS.forEach(s => {
-            gexGrid.appendChild(createGexPairDiv(s));
-            if (ddoiGrid) ddoiGrid.appendChild(createDdoiDiv(s));
+            if (inPanel('gex')) gexGrid.appendChild(createGexPairDiv(s));
+            if (ddoiGrid && inPanel('ddoi')) ddoiGrid.appendChild(createDdoiDiv(s));
         });
         PRICE_SYMBOLS.forEach(s => {
             selectedTF[s] = 1;   // default to 1m
-            priceGrid.appendChild(createPriceDiv(s));
+            if (inPanel('price')) priceGrid.appendChild(createPriceDiv(s));
         });
 
-        // Initial full load
-        fetchGexAll();
-        fetchPriceAll();
-        fetchDeltaFlow();
-        setInterval(fetchDeltaFlow, 60000);   // a backstop for the SSE pushes
+        // Initial full load. The GEX feed also draws the price chart's levels and the dealer OI;
+        // the rolling profile has its own (its script, below)
+        const GEX_FED = inPanel('price', 'gex', 'ddoi');
+        if (GEX_FED) fetchGexAll();
+        if (inPanel('price')) fetchPriceAll();
+        if (!PANEL) {
+            fetchDeltaFlow();
+            setInterval(fetchDeltaFlow, 60000);   // a backstop for the SSE pushes
+        }
 
         // Update "X ago" counters on all flow rows every second
         function fmtAgo(secs) {
@@ -4307,8 +4357,8 @@
             });
         }, 1000);
 
-        // Restore today's flow alerts on page load
-        (async () => {
+        // Restore today's flow alerts on page load (the feed, and the price chart's markers)
+        if (inPanel('price')) (async () => {
             try {
                 const res = await fetch('/api/flow_alerts');
                 if (!res.ok) return;
@@ -4330,17 +4380,19 @@
         })();
 
         // Trail history: load now, then re-sync each minute (the server logs levels once per refresh)
-        fetchLevelHistory();
-        setInterval(fetchLevelHistory, 60000);
-        fetchHeatmap();
-        setInterval(fetchHeatmap, 60000);
-        setInterval(() => { if (!_replayDate) fetchGammaLevels(); }, 2000);   // live 0DTE: moves every ~2 s
-        setInterval(fetchEsVolume, 15000);
-        loadReplayDays();
-        setInterval(loadReplayDays, 10 * 60000);
-        fetchHeatmapReliability();
-        setInterval(fetchHeatmapReliability, 30 * 60000);   // the scorecard gains a row after each close
-        setZoneMode(_zoneMode);
+        if (inPanel('price')) {
+            fetchLevelHistory();
+            setInterval(fetchLevelHistory, 60000);
+            fetchHeatmap();
+            setInterval(fetchHeatmap, 60000);
+            setInterval(() => { if (!_replayDate) fetchGammaLevels(); }, 2000);   // live 0DTE: moves every ~2 s
+            setInterval(fetchEsVolume, 15000);
+            loadReplayDays();
+            setInterval(loadReplayDays, 10 * 60000);
+            fetchHeatmapReliability();
+            setInterval(fetchHeatmapReliability, 30 * 60000);   // the scorecard gains a row after each close
+            setZoneMode(_zoneMode);
+        }
         document.getElementById('clock-btn').textContent = CLOCKS[_clock].name;
 
         // Expected move to the close for the current regime (server table rebuilt hourly)
@@ -4354,17 +4406,19 @@
                 el.title = em ? `${em.regime} GEX, from ${em.from} ET, ${em.n} past days` : 'Outside market hours or not enough history';
             } catch (_) { el.textContent = '—'; }
         }
-        fetchExpectedMove();
-        setInterval(fetchExpectedMove, 60000);
+        if (inPanel('gex')) {
+            fetchExpectedMove();
+            setInterval(fetchExpectedMove, 60000);
+            fetchGexByExpiry();
+            setInterval(fetchGexByExpiry, 60000);   // later expirations change with the 60 s chain refresh
+        }
 
         // GEX refreshes every 30 s; price every 5 min as streaming fallback
-        setInterval(fetchGexAll,   GEX_REFRESH_MS);
-        fetchGexByExpiry();
-        setInterval(fetchGexByExpiry, 60000);   // later expirations change with the 60 s chain refresh
-        setInterval(fetchPriceAll, PRICE_REFRESH_MS);
+        if (GEX_FED) setInterval(fetchGexAll, GEX_REFRESH_MS);
+        if (inPanel('price')) setInterval(fetchPriceAll, PRICE_REFRESH_MS);
 
-        // Connect SSE for real-time candle updates
-        connectSSE();
+        // Connect SSE for real-time candle and GEX updates
+        if (GEX_FED) connectSSE();
     </script>
 <!-- ROLLING PROFILE START (install_rolling_profile.py) -->
 <!-- ═══ ROLLING PROFILE ══════════════════════════════════════════════════
@@ -4770,8 +4824,10 @@
   }
 
   // ── Init: own section right after the GEX grid ─────────────────────
+  // (a dashboard ?panel= window for another panel skips it: the page's PANEL)
   const gexGrid = document.getElementById('gex-grid');
-  if (gexGrid) {
+  const wanted = typeof PANEL === 'undefined' || !PANEL || PANEL === 'rolling';
+  if (gexGrid && wanted) {
     const label = document.createElement('div');
     label.className = 'section-label';
     label.textContent = 'ROLLING PROFILE';
@@ -4783,7 +4839,7 @@
     gexGrid.parentNode.insertBefore(grid, label.nextSibling);
     fetchRollingProfile();
     setInterval(fetchRollingProfile, RP_POLL_MS);
-  } else {
+  } else if (!gexGrid) {
     console.warn('[rolling profile] #gex-grid not found');
   }
 })();

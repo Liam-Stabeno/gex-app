@@ -1,0 +1,4 @@
+# desktop launcher (desktop/gexdash.py) and its .exe build; separate from the server's
+# requirements: build.bat makes desktop\.venv from this
+pywebview==6.2.1
+pyinstaller==6.22.3

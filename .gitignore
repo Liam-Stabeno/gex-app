@@ -34,3 +34,8 @@ Thumbs.db
 ~$*
 .rp_backups/
 .venv_old/
+
+# desktop launcher build output (desktop/build.bat)
+desktop/build/
+desktop/dist/
+desktop/*.spec

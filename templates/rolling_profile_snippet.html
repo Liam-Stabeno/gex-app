@@ -401,8 +401,10 @@
   }
 
   // ── Init: own section right after the GEX grid ─────────────────────
+  // (a dashboard ?panel= window for another panel skips it: the page's PANEL)
   const gexGrid = document.getElementById('gex-grid');
-  if (gexGrid) {
+  const wanted = typeof PANEL === 'undefined' || !PANEL || PANEL === 'rolling';
+  if (gexGrid && wanted) {
     const label = document.createElement('div');
     label.className = 'section-label';
     label.textContent = 'ROLLING PROFILE';
@@ -414,7 +416,7 @@
     gexGrid.parentNode.insertBefore(grid, label.nextSibling);
     fetchRollingProfile();
     setInterval(fetchRollingProfile, RP_POLL_MS);
-  } else {
+  } else if (!gexGrid) {
     console.warn('[rolling profile] #gex-grid not found');
   }
 })();
