@@ -3,9 +3,11 @@ GEX Dash desktop: a control panel that pops the dashboard's panels out into thei
 Windows windows.
 
 GEXDash.exe opens the control panel only. Its buttons open a panel of the dashboard page
-(?panel=price | gex | rolling | ddoi, or the whole page) in its own window, or bring that
-window to the front when it's already open; ✕ closes one; closing the control panel closes
-them all. A second GEXDash.exe brings the open control panel forward instead of starting
+(?panel=price | gex | rolling | ddoi, or the whole page), or one chart (gex0: the 0DTE GEX,
+gexlater: the dated one with its slider) in its own window, or bring that window to the
+front when it's already open; ✕ closes one. '+ Rolling chart' opens one more single rolling
+profile chart every click (?panel=rp1&inst=N: its own time frame and Volume / Flow GEX,
+kept per number). Closing the control panel closes them all. A second GEXDash.exe brings the open control panel forward instead of starting
 another. Each window's place and size (and maximized) are remembered, per panel, in
 %APPDATA%\\GEXDash\\windows.json; a place on a monitor that's gone falls back to the default.
 
@@ -41,9 +43,16 @@ PANELS = {   # panel: (window title, default x, y, width, height); 'all' = the w
     'rolling': ('GEX Dash · Rolling profile', 120, 120, 1400, 760),
     'ddoi':    ('GEX Dash · Dealer OI',       160, 160, 1100, 760),
     'all':     ('GEX Dash · Dashboard',       200, 60, 1500, 900),
+    'gex0':    ('GEX Dash · 0DTE GEX',        60, 100, 760, 820),
+    'gexlater': ('GEX Dash · Later GEX',      120, 100, 760, 820),
 }
-LABELS = {'price': 'Price', 'gex': 'GEX', 'rolling': 'Rolling profile', 'ddoi': 'Dealer OI', 'all': 'Whole dashboard'}
-CONTROL_PLACE = (1500, 40, 300, 430)
+LABELS = {'price': 'Price', 'gex': 'GEX', 'rolling': 'Rolling profile', 'ddoi': 'Dealer OI', 'all': 'Whole dashboard',
+          'gex0': '0DTE GEX', 'gexlater': 'Later GEX (date slider)'}
+SINGLES = ('gex0', 'gexlater')  # under SINGLE CHARTS in the panel; 'Open all' opens the first four
+SOLO = 'rp1'                    # single rolling profile charts: windows 'rp1-1', 'rp1-2', ...
+SOLO_TITLE = 'GEX Dash · Rolling chart {n}'
+SOLO_PLACE = lambda n: (240 + 30 * (n - 1), 80 + 30 * (n - 1), 520, 760)
+CONTROL_PLACE = (1500, 40, 300, 560)
 HOME = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~'), 'GEXDash')
 STATE = os.path.join(HOME, 'windows.json')
 SAVE_EVERY_SEC = 1.0
@@ -83,13 +92,21 @@ PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
                 font: 12px 'Courier New', monospace; padding: 7px; cursor: pointer; }
   .all button:hover { border-color: #00d4ff; }
   .hint { color: #6f6f82; font-size: 10px; line-height: 1.5; margin-top: 12px; }
+  .sec { color: #6f6f82; font-size: 10px; letter-spacing: 2px; margin: 14px 0 6px; }
+  .spawn .open { color: #00d4ff; }
+  .count { color: #00ff88; margin-left: auto; font-size: 11px; }
 </style></head><body>
   <h1>GEX DASH</h1>
   <div class="srv">server <b id="srv">checking&hellip;</b></div>
   <div id="rows">%ROWS%</div>
   <div class="all"><button id="open-all">Open all</button><button id="close-all">Close all</button></div>
+  <div class="sec">SINGLE CHARTS</div>
+  <div id="singles">%SINGLES%</div>
+  <div class="row spawn" data-panel="rp1"><button class="open" id="spawn"><span class="dot"></span>+ Rolling chart
+    <span class="count" id="solo-count"></span></button><button class="x" id="close-solos" title="Close every rolling chart">&#10005;</button></div>
   <div class="hint">A button opens that chart in its own window, or brings it to the front.
-    &#10005; closes one. Closing this panel closes them all.</div>
+    + Rolling chart opens another every click, each with its own time frame and Volume / Flow GEX.
+    &#10005; closes. Closing this panel closes them all.</div>
 <script>
   const api = () => window.pywebview && window.pywebview.api;
   // a click before the Python side is connected waits for it instead of doing nothing
@@ -99,11 +116,15 @@ PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => call('close', b.dataset.close));
   document.getElementById('open-all').onclick = () => call('open_all');
   document.getElementById('close-all').onclick = () => call('close_all');
+  document.getElementById('spawn').onclick = () => call('spawn');
+  document.getElementById('close-solos').onclick = () => call('close_solos');
   async function refresh() {
     const x = api();
     if (!x) return;
     const s = await x.status();
-    document.querySelectorAll('.row').forEach(r => r.classList.toggle('on', s.open.includes(r.dataset.panel)));
+    const solos = s.open.filter(n => n.startsWith('rp1-')).length;
+    document.querySelectorAll('.row').forEach(r => r.classList.toggle('on', r.dataset.panel === 'rp1' ? solos > 0 : s.open.includes(r.dataset.panel)));
+    document.getElementById('solo-count').textContent = solos ? `${solos} open` : '';
     const srv = document.getElementById('srv');
     srv.textContent = s.server ? 'running' : 'not answering (starts 6:14 AM PT)';
     srv.className = s.server ? 'up' : '';
@@ -178,8 +199,8 @@ class App:
         saved = self.state.get(name) or {}
         if {'x', 'y', 'w', 'h'} <= saved.keys() and on_a_screen(saved['x'], saved['y'], saved['w'], saved['h']):
             x, y, w, h = saved['x'], saved['y'], saved['w'], saved['h']
-        if self.test:
-            x, y = -20000 - 1600 * self.opened, 0
+        if self.test:                     # rows of 6: Windows' coordinates stop near -32768
+            x, y = -20000 - 1600 * (self.opened % 6), 1000 * (self.opened // 6)
             self.opened += 1
         self.state[name] = dict(x=x, y=y, w=w, h=h, max=bool(saved.get('max')))
         return x, y, w, h, bool(saved.get('max'))
@@ -194,11 +215,12 @@ class App:
                 getattr(win.events, ev).__iadd__(lambda ev=ev: log.append(f'{ev} {time.time() - t0:.1f}s'))
 
     def control(self):
-        rows = ''.join(
-            f'<div class="row" data-panel="{p}"><button class="open" data-open="{p}"><span class="dot"></span>{LABELS[p]}</button>'
-            f'<button class="x" data-close="{p}" title="Close it">&#10005;</button></div>' for p in PANELS)
+        row = lambda p: (f'<div class="row" data-panel="{p}"><button class="open" data-open="{p}"><span class="dot"></span>{LABELS[p]}</button>'
+                         f'<button class="x" data-close="{p}" title="Close it">&#10005;</button></div>')
+        rows = ''.join(row(p) for p in PANELS if p not in SINGLES)
+        html = PANEL_HTML.replace('%ROWS%', rows).replace('%SINGLES%', ''.join(row(p) for p in SINGLES))
         x, y, w, h, mx = self.place(CONTROL, *CONTROL_PLACE)
-        win = webview.create_window(CONTROL_TITLE, html=PANEL_HTML.replace('%ROWS%', rows), js_api=Api(self),
+        win = webview.create_window(CONTROL_TITLE, html=html, js_api=Api(self),
                                     x=x, y=y, width=w, height=h, min_size=(260, 300), maximized=mx,
                                     background_color=BACKGROUND, focus=not self.test)
         self.track(CONTROL, win)
@@ -220,14 +242,35 @@ class App:
                     title, url=url if up else None, html=None if up else WAITING.format(server=SERVER, url=url),
                     x=x, y=y, width=w, height=h, min_size=(480, 320), maximized=mx,
                     background_color=BACKGROUND, focus=not self.test)
+                win.gexdash_url = url
                 self.track(name, win)
                 return
         to_front(win)
+
+    def spawn(self):
+        """one more single rolling profile chart: the lowest number not open, so its place and
+        settings (the page keeps them per number) come back with it"""
+        with self.lock:
+            n = next(i for i in range(1, 100) if f'{SOLO}-{i}' not in self.windows)
+            name = f'{SOLO}-{n}'
+            x, y, w, h, mx = self.place(name, *SOLO_PLACE(n))
+            url = f'{SERVER}/?panel={SOLO}&inst={n}'
+            up = server_up()
+            win = webview.create_window(
+                SOLO_TITLE.format(n=n), url=url if up else None, html=None if up else WAITING.format(server=SERVER, url=url),
+                x=x, y=y, width=w, height=h, min_size=(320, 320), maximized=mx,
+                background_color=BACKGROUND, focus=not self.test)
+            win.gexdash_url = url
+            self.track(name, win)
 
     def close(self, name):
         win = self.windows.get(name)
         if win is not None and name != CONTROL:
             win.destroy()
+
+    def close_solos(self):
+        for name in [n for n in self.windows if n.startswith(SOLO + '-')]:
+            self.close(name)
 
     def close_all(self):
         for name in [n for n in self.windows if n != CONTROL]:
@@ -278,8 +321,14 @@ class Api:
 
     def open_all(self):
         for name in PANELS:
-            if name != 'all':
+            if name != 'all' and name not in SINGLES:
                 self._app.open(name)
+
+    def spawn(self):
+        self._app.spawn()
+
+    def close_solos(self):
+        self._app.close_solos()
 
     def close_all(self):
         self._app.close_all()
@@ -314,24 +363,34 @@ def selftest(app: App, out: str) -> None:
     for name in PANELS:
         click(f'[data-open="{name}"]')
         time.sleep(0.5)
-    for name in PANELS:
-        if name in app.windows:
-            app.windows[name].events.loaded.wait(60)
+    for _ in range(2):                              # two single rolling charts
+        click('#spawn')
+        time.sleep(0.5)
+    for win in list(app.windows.values()):
+        win.events.loaded.wait(60)
     time.sleep(8)                                   # the pages' own data loads
     results = {'opened': sorted(n for n in app.windows if n != CONTROL)}
-    for name in PANELS:
+    for name in [*PANELS, f'{SOLO}-1', f'{SOLO}-2']:
         win = app.windows.get(name)
         if win is None:
             results[name] = 'not opened'
             continue
-        try:
-            results[name] = win.evaluate_js(
-                "(() => { const p = document.querySelector('.grid > .chart-div');"
-                " return {panel: typeof PANEL === 'undefined' ? null : PANEL, title: document.title,"
-                " size: p ? [p.offsetWidth, p.offsetHeight] : null,"
-                " canvases: [...document.querySelectorAll('canvas')].filter(c => c.offsetHeight > 50).length}; })()")
-        except Exception as e:
-            results[name] = {'error': repr(e)}
+        # (with nine windows loading at once, pywebview's own bridge into a page, which
+        # evaluate_js needs, can miss: the page shows, the read fails. Reload it once.)
+        for attempt in range(2):
+            try:
+                results[name] = win.evaluate_js(
+                    "(() => { const p = document.querySelector('.grid > .chart-div');"
+                    " return {panel: typeof PANEL === 'undefined' ? null : PANEL, title: document.title,"
+                    " size: p ? [p.offsetWidth, p.offsetHeight] : null,"
+                    " canvases: [...document.querySelectorAll('canvas')].filter(c => c.offsetHeight > 50).length}; })()")
+                break
+            except Exception as e:
+                results[name] = {'error': repr(e)}
+                if attempt == 0 and getattr(win, 'gexdash_url', None):
+                    win.load_url(win.gexdash_url)
+                    win.events.loaded.wait(60)
+                    time.sleep(6)
     click('[data-open="gex"]')                      # open already: no second window
     time.sleep(1)
     results['after_second_click'] = sorted(n for n in app.windows if n != CONTROL)
@@ -339,6 +398,10 @@ def selftest(app: App, out: str) -> None:
     time.sleep(2)
     results['after_close_ddoi'] = sorted(n for n in app.windows if n != CONTROL)
     results['dots_on'] = control.evaluate_js("[...document.querySelectorAll('.row.on')].map(r => r.dataset.panel)")
+    results['solo_count'] = control.evaluate_js("document.getElementById('solo-count').textContent")
+    click('#close-solos')
+    time.sleep(2)
+    results['after_close_solos'] = sorted(n for n in app.windows if n != CONTROL)
     results['events'] = app.events_log
     with open(out, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=1)

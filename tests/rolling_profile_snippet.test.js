@@ -231,5 +231,21 @@ const tick = () => new Promise(r => setTimeout(r, 20));
   assert(selectOf(html2, 1).includes('value="900" selected') && html2.includes('id="rp-mode-1-vol" class="active"'));
   assert(selectOf(html2, 3).includes('value="session" selected'));
   assert.strictEqual(responses[0], '/api/rolling_profile/SPX?windows=3600,900,1800,session');
+
+  // ?panel=rp1: one chart in its own window, its settings from the URL, saved under its own key
+  global.PANEL = 'rp1';
+  global.location = { search: '?panel=rp1&inst=2&w=900&m=gex' };
+  page.inserted.length = 0; responses.length = 0;
+  eval(SRC);
+  await tick();
+  const solo = page.inserted[1].children[0];
+  assert(solo.className.includes('rp-solo'), 'one chart');
+  assert(solo._html.includes('id="rp-win-0"') && !solo._html.includes('id="rp-win-1"'), 'just the one');
+  assert(selectOf(solo._html, 0).includes('value="900" selected') && solo._html.includes('id="rp-mode-0-gex" class="active"'));
+  assert.strictEqual(responses[0], '/api/rolling_profile/SPX?windows=900', 'asks for its window only');
+  el('rp-mode-0-vol').listeners.click();
+  assert.deepStrictEqual(JSON.parse(localStorage.getItem('rpCols-solo2')), [{ w: '900', m: 'vol' }], 'kept under its own key');
+  assert.strictEqual(JSON.parse(localStorage.getItem('rpCols'))[0].w, '3600', "the panel's choices untouched");
+  delete global.PANEL; delete global.location;
   console.log('JS HARNESS OK');
 })().catch(e => { console.error('FAIL', e.message); process.exit(1); });

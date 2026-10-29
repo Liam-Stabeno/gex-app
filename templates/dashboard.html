@@ -183,7 +183,9 @@
         body.panel-mode > *:not(.unit-bar):not(#modal-overlay) { display: none !important; }
         /* (.grid: outranks the rule above, whose :not(#modal-overlay) counts as an id) */
         body.panel-mode.panel-price > #price-grid.grid, body.panel-mode.panel-gex > #gex-grid.grid,
-        body.panel-mode.panel-ddoi > #ddoi-grid.grid, body.panel-mode.panel-rolling > #rp-grid.grid {
+        body.panel-mode.panel-gex0 > #gex-grid.grid, body.panel-mode.panel-gexlater > #gex-grid.grid,
+        body.panel-mode.panel-ddoi > #ddoi-grid.grid, body.panel-mode.panel-rolling > #rp-grid.grid,
+        body.panel-mode.panel-rp1 > #rp-grid.grid {
             display: grid !important; grid-template-columns: 1fr; flex: 1; min-height: 0; }
         body.panel-mode .grid > .chart-div { height: 100% !important; min-height: 0; resize: none; }
         body.panel-mode .grid > .gex-chart-div { display: flex; flex-direction: column; }
@@ -708,6 +710,7 @@
         // Non-streamed symbols (SPX) still depend on the 30s GEX poll for price.
         const STREAM_SYMBOLS = new Set([/* 'SPY', 'QQQ', 'ES' */]);  // streamed symbols that are charted
         const GEX_REFRESH_MS   = 30000;   // GEX: 30 s
+        const GEX_POLL_MS      = 2000;    // GEX in a window without the stream (live 0DTE: every ~2 s)
         const PRICE_REFRESH_MS = 300000;  // Price: 5 min (streaming covers live updates)
 
         // ?panel=price | gex | rolling | ddoi: that one panel filling the window, loading only
@@ -718,6 +721,9 @@
             document.body.classList.add('panel-mode', `panel-${PANEL}`);
             document.title = `GEX · ${PANEL}`;
         }
+        // the GEX panel's charts: both, or one alone (?panel=gex0: 0DTE, gexlater: the dated one)
+        const GEX_SLOTS = PANEL === 'gex0' ? ['zero'] : PANEL === 'gexlater' ? ['later'] : ['zero', 'later'];
+        const GEX_PANEL = inPanel('gex', 'gex0', 'gexlater');
 
         const gexCharts   = {};   // key (symbol-slot) -> { chart, series, chartData, spot }
         const priceCharts = {};   // symbol -> { chart, candleSeries, volumeSeries }
@@ -938,6 +944,9 @@
         // ~2 s) on the left, the later expirations through a picked date on the right (chain,
         // 60 s), so a 0DTE wall and what stands behind it read across one row. The date
         // slider all the way right = every expiration in the next 30 days but today's.
+        // (no '{' + '{' in this file: Jinja renders it, and reads that as its own)
+        const GEX_TITLES = { 'zero,later': "GEX · TODAY'S 0DTE │ LATER EXPIRATIONS · same strikes, same scale",
+                             zero: "GEX · TODAY'S 0DTE · live", later: 'GEX · LATER EXPIRATIONS · through the date picked' };
         function createGexPairDiv(symbol) {
             const id  = `${symbol}-pair`;
             const div = document.createElement('div');
@@ -964,7 +973,7 @@
                     <div style="display:flex;align-items:center;gap:6px">
                         <span class="gex-drag-handle" title="Drag to move">⠿</span>
                         <div>
-                            <div class="chart-title">GEX · TODAY'S 0DTE │ LATER EXPIRATIONS · same strikes, same scale</div>
+                            <div class="chart-title">${GEX_TITLES[GEX_SLOTS.join()]}</div>
                             <div class="symbol">${symbol}</div>
                             <div class="spot" id="spot-${id}">Loading...</div>
                         </div>
@@ -988,13 +997,13 @@
                                title="Strikes shown (both charts)">
                         <span>FEWER</span>
                         <span id="slider-val-${id}" style="color:#00d4ff;font-size:0.6rem">40</span>
-                    </div>${col('zero', zeroCtl)}${col('later', laterCtl)}
+                    </div>${GEX_SLOTS.map(slot => col(slot, slot === 'zero' ? zeroCtl : laterCtl)).join('')}
                 </div>
             `;
             // double-click: full screen in place, both charts (Esc or another double-click leaves)
             div.addEventListener('dblclick', () => togglePanelFullscreen(div));
-            const hz = div.querySelector(`#horizon-${id}`);
-            hz.addEventListener('input', () => { saveHorizon(Number(hz.value)); renderGexPair(symbol); });
+            const hz = div.querySelector(`#horizon-${id}`);   // with the LATER chart only
+            hz?.addEventListener('input', () => { saveHorizon(Number(hz.value)); renderGexPair(symbol); });
             const ss = div.querySelector(`#slider-${id}`);
             ss.addEventListener('input', () => {
                 const n = parseInt(ss.value);
@@ -1003,7 +1012,7 @@
                 delete _gexPairView[symbol];       // that many strikes, all shown: no zoom left over
                 renderGexPair(symbol);
             });
-            for (const el of [hz, ss]) el.addEventListener('dblclick', e => e.stopPropagation());
+            for (const el of [hz, ss]) el?.addEventListener('dblclick', e => e.stopPropagation());
             // each chart follows its own box (the panel's corner, full screen)
             if (window.ResizeObserver) {
                 div.querySelectorAll('.gex-canvas-wrap').forEach(w =>
@@ -2814,13 +2823,15 @@
 
         function renderGexPair(symbol = 'SPX') {
             const data = _lastGexData[symbol], key = `${symbol}-pair`;
-            const slider = document.getElementById(`horizon-${key}`);
-            if (!data || !slider) return;
+            const slider = document.getElementById(`horizon-${key}`);   // with the LATER chart only
+            if (!data || !document.getElementById(`gex-div-${key}`)) return;
             const exps = _gexByExp?.exp || [];
             const n = Math.min(exps.length, Math.max(1, horizonCount(exps)));   // at least the next one (0DTE: its own chart)
-            slider.min = exps.length ? 1 : 0;
-            slider.max = exps.length;
-            slider.value = n;
+            if (slider) {
+                slider.min = exps.length ? 1 : 0;
+                slider.max = exps.length;
+                slider.value = n;
+            }
             // today's 0DTE and the later expirations picked, on one strike list
             const has0 = !!data.has_0dte, spot = data.spot;
             const zero = new Map(), later = new Map();
@@ -2831,11 +2842,12 @@
             const strikes = nz.length ? all.filter(k => k >= nz[0] && k <= nz[nz.length - 1]) : [];
             const zNet = strikes.map(k => zero.get(k) || 0), lNet = strikes.map(k => later.get(k) || 0);
             const zTotal = zNet.reduce((a, b) => a + b, 0), lTotal = lNet.reduce((a, b) => a + b, 0);
-            const regime = zTotal + lTotal >= 0 ? 'POSITIVE' : 'NEGATIVE';
-
-            // the header: both charts together
+            // the header: the charts shown, together
+            const total = (GEX_SLOTS.includes('zero') ? zTotal : 0) + (GEX_SLOTS.includes('later') ? lTotal : 0);
+            const none = !(GEX_SLOTS.includes('zero') && has0) && !(GEX_SLOTS.includes('later') && n);   // e.g. 0DTE alone after 16:00
+            const regime = none ? '—' : total >= 0 ? 'POSITIVE' : 'NEGATIVE';
             document.getElementById(`spot-${key}`).textContent = fmt(spot);
-            document.getElementById(`gex-${key}`).textContent = fmtGex(gexU(zTotal + lTotal, spot));
+            document.getElementById(`gex-${key}`).textContent = none ? '—' : fmtGex(gexU(total, spot));
             const r = document.getElementById(`regime-${key}`);
             r.textContent = regime;
             r.className   = `regime ${regime}`;
@@ -2861,12 +2873,13 @@
             const lv  = L => `Flip <span>${fmt(L.flip_level)}</span> · Put Wall <span>${fmt(L.put_wall)}</span> · Call Wall <span>${fmt(L.call_wall)}</span> · Pin <span>${fmt(L.pin)}</span>`;
             const tot = g => `GEX <span style="color:${g >= 0 ? '#00ff88' : '#ff4466'}">${fmtGex(gexU(g, spot))}</span>`;
             const t0  = has0 && data.odte_date ? _redDays[data.odte_date] : null;
-            document.getElementById(`head-${symbol}-zero`).innerHTML = has0
+            const head = (slot, html) => { const el = document.getElementById(`head-${symbol}-${slot}`); if (el) el.innerHTML = html; };
+            head('zero', has0
                 ? `<b>0DTE</b> · <span class="${t0 ? 'red-day' : ''}">${fmtOdteDate(data.odte_date)}${t0 ? ' · ' + t0.join(' · ') : ''}</span> · ${tot(zTotal)} · live<br>${lv(data.levels_0dte || {})}`
-                : "<b>0DTE</b> · none right now (today's expired at 16:00)";
-            document.getElementById(`head-${symbol}-later`).innerHTML = n
+                : "<b>0DTE</b> · none right now (today's expired at 16:00)");
+            head('later', n
                 ? `<b>LATER</b> · ${through} · ${n} expiration${n > 1 ? 's' : ''} · ${tot(lTotal)}<br>${lv(keyLevels(strikes, lNet, spot))}`
-                : '<b>LATER</b> · waiting for the chain';
+                : '<b>LATER</b> · waiting for the chain');
 
             renderGexChart(symbol, 'zero', has0 ? { strikes, net_gex: zNet }
                 : { strikes: [], net_gex: [], emptyText: "No 0DTE expiration right now (today's expired at 16:00)" }, spot);
@@ -3200,7 +3213,7 @@
         // goes between them
         document.addEventListener('DOMContentLoaded', () => {
             if (!PANEL) createKeyDatesSection();
-            if (inPanel('gex')) {                    // the GEX panel's red days come from here too
+            if (GEX_PANEL) {                         // the GEX panel's red days come from here too
                 fetchKeyDates();
                 setInterval(fetchKeyDates, 5 * 60000);   // full-chain snapshots come every 15 min
             }
@@ -4324,7 +4337,7 @@
         const ddoiGrid  = document.getElementById('ddoi-grid');
         const priceGrid = document.getElementById('price-grid');
         GEX_SYMBOLS.forEach(s => {
-            if (inPanel('gex')) gexGrid.appendChild(createGexPairDiv(s));
+            if (GEX_PANEL) gexGrid.appendChild(createGexPairDiv(s));
             if (ddoiGrid && inPanel('ddoi')) ddoiGrid.appendChild(createDdoiDiv(s));
         });
         PRICE_SYMBOLS.forEach(s => {
@@ -4334,7 +4347,7 @@
 
         // Initial full load. The GEX feed also draws the price chart's levels and the dealer OI;
         // the rolling profile has its own (its script, below)
-        const GEX_FED = inPanel('price', 'gex', 'ddoi');
+        const GEX_FED = inPanel('price', 'gex', 'gex0', 'gexlater', 'ddoi');
         if (GEX_FED) fetchGexAll();
         if (inPanel('price')) fetchPriceAll();
         if (!PANEL) {
@@ -4406,19 +4419,25 @@
                 el.title = em ? `${em.regime} GEX, from ${em.from} ET, ${em.n} past days` : 'Outside market hours or not enough history';
             } catch (_) { el.textContent = '—'; }
         }
-        if (inPanel('gex')) {
+        if (GEX_PANEL) {
             fetchExpectedMove();
             setInterval(fetchExpectedMove, 60000);
+        }
+        if (GEX_PANEL && GEX_SLOTS.includes('later')) {
             fetchGexByExpiry();
             setInterval(fetchGexByExpiry, 60000);   // later expirations change with the 60 s chain refresh
         }
 
-        // GEX refreshes every 30 s; price every 5 min as streaming fallback
-        if (GEX_FED) setInterval(fetchGexAll, GEX_REFRESH_MS);
+        // GEX refreshes every 30 s behind the stream; price every 5 min as streaming fallback.
+        // The stream (candles, GEX, flow) only where candles come in: the whole page and the price
+        // window. Each stream holds one of the browser's 6 connections to the server for good, and
+        // the desktop app's windows share those 6 (with six streaming, a seventh window's page
+        // waited 3 minutes to load), so a GEX-only window polls the same live GEX instead (the
+        // server caches what it streams)
+        const STREAMED = inPanel('price');
+        if (GEX_FED) setInterval(fetchGexAll, STREAMED ? GEX_REFRESH_MS : GEX_POLL_MS);
         if (inPanel('price')) setInterval(fetchPriceAll, PRICE_REFRESH_MS);
-
-        // Connect SSE for real-time candle and GEX updates
-        if (GEX_FED) connectSSE();
+        if (STREAMED) connectSSE();
     </script>
 <!-- ROLLING PROFILE START (install_rolling_profile.py) -->
 <!-- ═══ ROLLING PROFILE ══════════════════════════════════════════════════
@@ -4480,6 +4499,7 @@
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: #8a8a9c; font-size: 12px; pointer-events: none; text-align: center;
   }
+  .rp-solo .rp-row { grid-template-columns: minmax(0, 1fr); }   /* one chart (?panel=rp1) */
   @media (max-width: 1100px) {
     .rp-panel { height: 1000px; }
     .rp-row { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); }
@@ -4499,7 +4519,13 @@
     ['60', '1 min'], ['120', '2 min'], ['180', '3 min'], ['300', '5 min'], ['600', '10 min'],
     ['900', '15 min'], ['1800', '30 min'], ['3600', '1 hr'], ['session', 'Session'],
   ];
-  const RP_COLS       = [['180', 'vol'], ['900', 'vol'], ['1800', 'vol'], ['session', 'vol']];   // defaults
+  // ?panel=rp1: one chart in its own window (desktop/gexdash.py opens as many as wanted), with its
+  // time frame, mode and range kept per window (&inst=N, defaults &w= &m=), apart from the panel's
+  const RP_SOLO       = typeof PANEL !== 'undefined' && PANEL === 'rp1';
+  const RP_ARGS       = new URLSearchParams(RP_SOLO && typeof location !== 'undefined' ? location.search : '');
+  const RP_KEY        = RP_SOLO ? `-solo${RP_ARGS.get('inst') || 1}` : '';   // its saved settings' key
+  const RP_COLS       = RP_SOLO ? [[RP_ARGS.get('w') || '180', RP_ARGS.get('m') === 'gex' ? 'gex' : 'vol']]
+                                : [['180', 'vol'], ['900', 'vol'], ['1800', 'vol'], ['session', 'vol']];   // defaults
   const RP_MODES      = [['vol', 'Volume'], ['gex', 'Flow GEX']];
 
   const load = (k, dflt) => { try { return localStorage.getItem(k) ?? dflt; } catch (_) { return dflt; } };
@@ -4508,14 +4534,14 @@
   // Each chart's own time frame and mode, remembered.
   function loadCols() {
     let saved = null;
-    try { saved = JSON.parse(load('rpCols', 'null')); } catch (_) {}
+    try { saved = JSON.parse(load('rpCols' + RP_KEY, 'null')); } catch (_) {}
     return RP_COLS.map(([w, m], i) => {
       const s = (Array.isArray(saved) && saved[i]) || {};
       return { w: RP_WINDOWS.some(([k]) => k === s.w) ? s.w : w, m: s.m === 'gex' || s.m === 'vol' ? s.m : m };
     });
   }
 
-  let rpRange  = Math.min(RP_RANGE_MAX, Math.max(RP_RANGE_MIN, Number(load('rpRange', RP_RANGE_PTS)) || RP_RANGE_PTS));
+  let rpRange  = Math.min(RP_RANGE_MAX, Math.max(RP_RANGE_MIN, Number(load('rpRange' + RP_KEY, RP_RANGE_PTS)) || RP_RANGE_PTS));
   let rpCols   = loadCols();
   let rpSpot   = null;
   let rpLast   = null;          // last API response, for re-render on slider / mode / reset
@@ -4544,7 +4570,7 @@
   // ── Panel ──────────────────────────────────────────────────────────
   function createRollingProfileDiv() {
     const div = document.createElement('div');
-    div.className = 'chart-div gex-chart-div rp-panel';
+    div.className = 'chart-div gex-chart-div rp-panel' + (RP_SOLO ? ' rp-solo' : '');
     div.id = `rp-div-${RP_SYMBOL}`;
     const cols = rpCols.map((c, i) => {
       const opts = RP_WINDOWS.map(([k, l]) => `<option value="${k}"${k === c.w ? ' selected' : ''}>${l}</option>`).join('');
@@ -4581,7 +4607,8 @@
           <span class="rp-range-val" id="rp-range-val">±${rpRange}</span>
         </label>
       </div>
-      <div class="rp-hint">same strikes in every chart · scroll to zoom · drag to pan · double-click a chart to reset · double-click beside a chart's controls to expand</div>
+      <div class="rp-hint">${RP_SOLO ? 'scroll to zoom · drag to pan · double-click the chart to reset'
+        : "same strikes in every chart · scroll to zoom · drag to pan · double-click a chart to reset · double-click beside a chart's controls to expand"}</div>
       <div class="rp-row">${cols}</div>`;
 
     const q = sel => div.querySelector(sel);
@@ -4598,7 +4625,7 @@
     });
     q('#rp-range').addEventListener('input', e => {
       rpRange = Number(e.target.value);
-      save('rpRange', rpRange);
+      save('rpRange' + RP_KEY, rpRange);
       q('#rp-range-val').textContent = `±${rpRange}`;
       resetView();
     });
@@ -4606,7 +4633,7 @@
     return div;
   }
 
-  const saveCols = () => save('rpCols', JSON.stringify(rpCols));
+  const saveCols = () => save('rpCols' + RP_KEY, JSON.stringify(rpCols));
 
   function setMode(i, m) {
     rpCols[i].m = m;
@@ -4826,7 +4853,7 @@
   // ── Init: own section right after the GEX grid ─────────────────────
   // (a dashboard ?panel= window for another panel skips it: the page's PANEL)
   const gexGrid = document.getElementById('gex-grid');
-  const wanted = typeof PANEL === 'undefined' || !PANEL || PANEL === 'rolling';
+  const wanted = typeof PANEL === 'undefined' || !PANEL || PANEL === 'rolling' || RP_SOLO;
   if (gexGrid && wanted) {
     const label = document.createElement('div');
     label.className = 'section-label';

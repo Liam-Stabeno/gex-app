@@ -57,6 +57,7 @@
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: #8a8a9c; font-size: 12px; pointer-events: none; text-align: center;
   }
+  .rp-solo .rp-row { grid-template-columns: minmax(0, 1fr); }   /* one chart (?panel=rp1) */
   @media (max-width: 1100px) {
     .rp-panel { height: 1000px; }
     .rp-row { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); }
@@ -76,7 +77,13 @@
     ['60', '1 min'], ['120', '2 min'], ['180', '3 min'], ['300', '5 min'], ['600', '10 min'],
     ['900', '15 min'], ['1800', '30 min'], ['3600', '1 hr'], ['session', 'Session'],
   ];
-  const RP_COLS       = [['180', 'vol'], ['900', 'vol'], ['1800', 'vol'], ['session', 'vol']];   // defaults
+  // ?panel=rp1: one chart in its own window (desktop/gexdash.py opens as many as wanted), with its
+  // time frame, mode and range kept per window (&inst=N, defaults &w= &m=), apart from the panel's
+  const RP_SOLO       = typeof PANEL !== 'undefined' && PANEL === 'rp1';
+  const RP_ARGS       = new URLSearchParams(RP_SOLO && typeof location !== 'undefined' ? location.search : '');
+  const RP_KEY        = RP_SOLO ? `-solo${RP_ARGS.get('inst') || 1}` : '';   // its saved settings' key
+  const RP_COLS       = RP_SOLO ? [[RP_ARGS.get('w') || '180', RP_ARGS.get('m') === 'gex' ? 'gex' : 'vol']]
+                                : [['180', 'vol'], ['900', 'vol'], ['1800', 'vol'], ['session', 'vol']];   // defaults
   const RP_MODES      = [['vol', 'Volume'], ['gex', 'Flow GEX']];
 
   const load = (k, dflt) => { try { return localStorage.getItem(k) ?? dflt; } catch (_) { return dflt; } };
@@ -85,14 +92,14 @@
   // Each chart's own time frame and mode, remembered.
   function loadCols() {
     let saved = null;
-    try { saved = JSON.parse(load('rpCols', 'null')); } catch (_) {}
+    try { saved = JSON.parse(load('rpCols' + RP_KEY, 'null')); } catch (_) {}
     return RP_COLS.map(([w, m], i) => {
       const s = (Array.isArray(saved) && saved[i]) || {};
       return { w: RP_WINDOWS.some(([k]) => k === s.w) ? s.w : w, m: s.m === 'gex' || s.m === 'vol' ? s.m : m };
     });
   }
 
-  let rpRange  = Math.min(RP_RANGE_MAX, Math.max(RP_RANGE_MIN, Number(load('rpRange', RP_RANGE_PTS)) || RP_RANGE_PTS));
+  let rpRange  = Math.min(RP_RANGE_MAX, Math.max(RP_RANGE_MIN, Number(load('rpRange' + RP_KEY, RP_RANGE_PTS)) || RP_RANGE_PTS));
   let rpCols   = loadCols();
   let rpSpot   = null;
   let rpLast   = null;          // last API response, for re-render on slider / mode / reset
@@ -121,7 +128,7 @@
   // ── Panel ──────────────────────────────────────────────────────────
   function createRollingProfileDiv() {
     const div = document.createElement('div');
-    div.className = 'chart-div gex-chart-div rp-panel';
+    div.className = 'chart-div gex-chart-div rp-panel' + (RP_SOLO ? ' rp-solo' : '');
     div.id = `rp-div-${RP_SYMBOL}`;
     const cols = rpCols.map((c, i) => {
       const opts = RP_WINDOWS.map(([k, l]) => `<option value="${k}"${k === c.w ? ' selected' : ''}>${l}</option>`).join('');
@@ -158,7 +165,8 @@
           <span class="rp-range-val" id="rp-range-val">±${rpRange}</span>
         </label>
       </div>
-      <div class="rp-hint">same strikes in every chart · scroll to zoom · drag to pan · double-click a chart to reset · double-click beside a chart's controls to expand</div>
+      <div class="rp-hint">${RP_SOLO ? 'scroll to zoom · drag to pan · double-click the chart to reset'
+        : "same strikes in every chart · scroll to zoom · drag to pan · double-click a chart to reset · double-click beside a chart's controls to expand"}</div>
       <div class="rp-row">${cols}</div>`;
 
     const q = sel => div.querySelector(sel);
@@ -175,7 +183,7 @@
     });
     q('#rp-range').addEventListener('input', e => {
       rpRange = Number(e.target.value);
-      save('rpRange', rpRange);
+      save('rpRange' + RP_KEY, rpRange);
       q('#rp-range-val').textContent = `±${rpRange}`;
       resetView();
     });
@@ -183,7 +191,7 @@
     return div;
   }
 
-  const saveCols = () => save('rpCols', JSON.stringify(rpCols));
+  const saveCols = () => save('rpCols' + RP_KEY, JSON.stringify(rpCols));
 
   function setMode(i, m) {
     rpCols[i].m = m;
@@ -403,7 +411,7 @@
   // ── Init: own section right after the GEX grid ─────────────────────
   // (a dashboard ?panel= window for another panel skips it: the page's PANEL)
   const gexGrid = document.getElementById('gex-grid');
-  const wanted = typeof PANEL === 'undefined' || !PANEL || PANEL === 'rolling';
+  const wanted = typeof PANEL === 'undefined' || !PANEL || PANEL === 'rolling' || RP_SOLO;
   if (gexGrid && wanted) {
     const label = document.createElement('div');
     label.className = 'section-label';
