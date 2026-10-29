@@ -7,7 +7,8 @@ GEXDash.exe opens the control panel only. Its buttons open a panel of the dashbo
 gexlater: the dated one with its slider) in its own window, or bring that window to the
 front when it's already open; ✕ closes one. '+ Rolling chart' opens one more single rolling
 profile chart every click (?panel=rp1&inst=N: its own time frame and Volume / Flow GEX,
-kept per number). Closing the control panel closes them all. A second GEXDash.exe brings the open control panel forward instead of starting
+kept per number). Closing the control panel closes them all. Each window (the control panel
+too) has a pin, KEEP ON TOP, that keeps it above every other window, remembered with its place. A second GEXDash.exe brings the open control panel forward instead of starting
 another. Each window's place and size (and maximized) are remembered, per panel, in
 %APPDATA%\\GEXDash\\windows.json; a place on a monitor that's gone falls back to the default.
 
@@ -74,7 +75,10 @@ setInterval(() => fetch('{server}/api/rtd/status', {{mode: 'no-cors'}})
 PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   body { background: #0a0a0f; color: #e0e0e0; font: 12px 'Courier New', monospace; margin: 0; padding: 14px;
          user-select: none; }
-  h1 { font-size: 15px; letter-spacing: 4px; color: #00d4ff; margin: 0 0 2px; }
+  h1 { font-size: 15px; letter-spacing: 4px; color: #00d4ff; margin: 0 0 2px; display: flex; align-items: center; }
+  #pin { margin-left: auto; background: #12121a; color: #6f6f82; border: 1px solid #2a2a3e; border-radius: 5px;
+         font: 11px 'Courier New', monospace; padding: 3px 7px; cursor: pointer; letter-spacing: 0; }
+  #pin.on { color: #00d4ff; border-color: #00d4ff; }
   .srv { font-size: 10px; color: #8a8a9c; margin-bottom: 12px; }
   .srv b { color: #ff4466; }  .srv b.up { color: #00ff88; }
   .row { display: flex; gap: 6px; margin-bottom: 7px; }
@@ -96,7 +100,7 @@ PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   .spawn .open { color: #00d4ff; }
   .count { color: #00ff88; margin-left: auto; font-size: 11px; }
 </style></head><body>
-  <h1>GEX DASH</h1>
+  <h1>GEX DASH<button id="pin" title="Keep this panel above every other window">&#128204; ON TOP</button></h1>
   <div class="srv">server <b id="srv">checking&hellip;</b></div>
   <div id="rows">%ROWS%</div>
   <div class="all"><button id="open-all">Open all</button><button id="close-all">Close all</button></div>
@@ -117,6 +121,10 @@ PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   document.getElementById('open-all').onclick = () => call('open_all');
   document.getElementById('close-all').onclick = () => call('close_all');
   document.getElementById('spawn').onclick = () => call('spawn');
+  const pin = document.getElementById('pin');
+  const showPin = on => pin.classList.toggle('on', !!on);
+  pin.onclick = () => ready.then(() => api().toggle_on_top()).then(showPin);
+  ready.then(() => api().on_top()).then(showPin);
   document.getElementById('close-solos').onclick = () => call('close_solos');
   async function refresh() {
     const x = api();
@@ -183,6 +191,15 @@ def to_front(win) -> None:
         pass
 
 
+def set_top(win, on: bool) -> None:
+    """TopMost on the window's own UI thread, without waiting for it. The pin's click calls in
+    here while that UI thread waits for the answer, and pywebview's on_top setter (TopMost
+    from this thread) needs the same UI thread: the window froze."""
+    from System import Action                      # pythonnet, loaded by pywebview's WinForms
+    form = win.native
+    form.BeginInvoke(Action(lambda: setattr(form, 'TopMost', on)))
+
+
 class App:
     """test: off-screen, never taking the keyboard focus, places not saved (the self-test
     runs while trading)"""
@@ -202,8 +219,8 @@ class App:
         if self.test:                     # rows of 6: Windows' coordinates stop near -32768
             x, y = -20000 - 1600 * (self.opened % 6), 1000 * (self.opened // 6)
             self.opened += 1
-        self.state[name] = dict(x=x, y=y, w=w, h=h, max=bool(saved.get('max')))
-        return x, y, w, h, bool(saved.get('max'))
+        self.state[name] = dict(x=x, y=y, w=w, h=h, max=bool(saved.get('max')), top=bool(saved.get('top')))
+        return x, y, w, h, bool(saved.get('max')), bool(saved.get('top'))
 
     def track(self, name, win):
         self.windows[name] = win
@@ -219,10 +236,10 @@ class App:
                          f'<button class="x" data-close="{p}" title="Close it">&#10005;</button></div>')
         rows = ''.join(row(p) for p in PANELS if p not in SINGLES)
         html = PANEL_HTML.replace('%ROWS%', rows).replace('%SINGLES%', ''.join(row(p) for p in SINGLES))
-        x, y, w, h, mx = self.place(CONTROL, *CONTROL_PLACE)
+        x, y, w, h, mx, top = self.place(CONTROL, *CONTROL_PLACE)
         win = webview.create_window(CONTROL_TITLE, html=html, js_api=Api(self),
                                     x=x, y=y, width=w, height=h, min_size=(260, 300), maximized=mx,
-                                    background_color=BACKGROUND, focus=not self.test)
+                                    background_color=BACKGROUND, focus=not self.test, on_top=top)
         self.track(CONTROL, win)
         win.events.closed += self.close_all       # no control panel: nothing to open more with
         return win
@@ -235,13 +252,13 @@ class App:
             win = self.windows.get(name)
             if win is None:
                 title, *place = PANELS[name]
-                x, y, w, h, mx = self.place(name, *place)
+                x, y, w, h, mx, top = self.place(name, *place)
                 url = SERVER + ('/' if name == 'all' else f'/?panel={name}')
                 up = server_up()
                 win = webview.create_window(
                     title, url=url if up else None, html=None if up else WAITING.format(server=SERVER, url=url),
                     x=x, y=y, width=w, height=h, min_size=(480, 320), maximized=mx,
-                    background_color=BACKGROUND, focus=not self.test)
+                    background_color=BACKGROUND, focus=not self.test, on_top=top, js_api=WindowApi(self, name))
                 win.gexdash_url = url
                 self.track(name, win)
                 return
@@ -253,15 +270,33 @@ class App:
         with self.lock:
             n = next(i for i in range(1, 100) if f'{SOLO}-{i}' not in self.windows)
             name = f'{SOLO}-{n}'
-            x, y, w, h, mx = self.place(name, *SOLO_PLACE(n))
+            x, y, w, h, mx, top = self.place(name, *SOLO_PLACE(n))
             url = f'{SERVER}/?panel={SOLO}&inst={n}'
             up = server_up()
             win = webview.create_window(
                 SOLO_TITLE.format(n=n), url=url if up else None, html=None if up else WAITING.format(server=SERVER, url=url),
                 x=x, y=y, width=w, height=h, min_size=(320, 320), maximized=mx,
-                background_color=BACKGROUND, focus=not self.test)
+                background_color=BACKGROUND, focus=not self.test, on_top=top, js_api=WindowApi(self, name))
             win.gexdash_url = url
             self.track(name, win)
+
+    def is_top(self, name) -> bool:
+        return name in self.windows and bool(self.state.get(name, {}).get('top'))
+
+    def toggle_top(self, name) -> bool:
+        """keep that window above every other one, or stop; remembered with its place"""
+        win = self.windows.get(name)
+        if win is None:
+            return False
+        on = not self.is_top(name)
+        self.state.setdefault(name, {})['top'] = on
+        set_top(win, on)
+        if not self.test:
+            try:
+                save_state(self.state)
+            except OSError:
+                pass
+        return on
 
     def close(self, name):
         win = self.windows.get(name)
@@ -333,8 +368,27 @@ class Api:
     def close_all(self):
         self._app.close_all()
 
+    def on_top(self):
+        return self._app.is_top(CONTROL)
+
+    def toggle_on_top(self):
+        return self._app.toggle_top(CONTROL)
+
     def status(self):
         return {'open': [n for n in self._app.windows if n != CONTROL], 'server': server_up()}
+
+
+class WindowApi:
+    """what a chart window's page calls (window.pywebview.api.*): its KEEP ON TOP pin"""
+
+    def __init__(self, app, name):
+        self._app, self._name = app, name
+
+    def on_top(self):
+        return self._app.is_top(self._name)
+
+    def toggle_on_top(self):
+        return self._app.toggle_top(self._name)
 
 
 def already_running() -> bool:
@@ -391,6 +445,14 @@ def selftest(app: App, out: str) -> None:
                     win.load_url(win.gexdash_url)
                     win.events.loaded.wait(60)
                     time.sleep(6)
+    gex = app.windows.get('gex')                    # the pin, clicked in the window's own page
+    if gex:
+        gex.evaluate_js("document.getElementById('pin-top').click()")
+        time.sleep(1)
+        results['pin'] = [bool(gex.native.TopMost), gex.evaluate_js("document.getElementById('pin-top').textContent")]
+        gex.evaluate_js("document.getElementById('pin-top').click()")
+        time.sleep(1)
+        results['pin'].append(bool(gex.native.TopMost))
     click('[data-open="gex"]')                      # open already: no second window
     time.sleep(1)
     results['after_second_click'] = sorted(n for n in app.windows if n != CONTROL)

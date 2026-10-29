@@ -608,6 +608,8 @@
 </head>
 <body>
     <div class="unit-bar" title="GEX = the $ of SPX dealers must buy or sell to stay hedged when SPX moves. Per 1 point: for a 1-point move. Per 1% move: for a 1% move (x SPX / 100, about 77x at 7700), the unit most GEX sites use (InsiderFinance's grid matched ours to within a few % in it). Every GEX number on the page follows this; the charm flow ($ per hour) doesn't.">
+        <!-- the desktop app (desktop/gexdash.py) only: keep this window above every other -->
+        <button class="tf-btn" id="pin-top" style="display:none;margin-right:auto" title="Keep this window above every other window (GEX Dash desktop app)">&#128204; KEEP ON TOP</button>
         <span>GEX IN $ PER</span>
         <button class="tf-btn" data-gexunit="point">1 POINT</button>
         <button class="tf-btn" data-gexunit="pct">1% MOVE</button>
@@ -721,6 +723,18 @@
             document.body.classList.add('panel-mode', `panel-${PANEL}`);
             document.title = `GEX · ${PANEL}`;
         }
+        // In the desktop app a window can stay above every other one: its pin (pywebview's api)
+        function wirePin() {
+            const api = window.pywebview && window.pywebview.api, b = document.getElementById('pin-top');
+            if (!api || !api.toggle_on_top || !b || b._wired) return;
+            b._wired = true;
+            const show = on => { b.classList.toggle('active', !!on); b.innerHTML = on ? '&#128204; ON TOP' : '&#128204; KEEP ON TOP'; };
+            b.style.display = '';
+            api.on_top().then(show);
+            b.onclick = () => api.toggle_on_top().then(show);
+        }
+        window.addEventListener('pywebviewready', wirePin);
+        wirePin();
         // the GEX panel's charts: both, or one alone (?panel=gex0: 0DTE, gexlater: the dated one)
         const GEX_SLOTS = PANEL === 'gex0' ? ['zero'] : PANEL === 'gexlater' ? ['later'] : ['zero', 'later'];
         const GEX_PANEL = inPanel('gex', 'gex0', 'gexlater');
