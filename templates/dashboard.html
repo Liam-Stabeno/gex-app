@@ -2800,6 +2800,7 @@
         let _gexByExp = null;            // /api/gex_by_expiry: later expirations per strike (60 s)
         let _redDays  = {};              // date -> tags (opex, month end, FOMC, CPI, jobs), /api/key_dates
         const _lastGexData = {};         // symbol -> latest GEX update (its live 0DTE part)
+        const _liveGexAt = {};           // symbol -> when the last live (2 s loop) payload came
         const isoAddDays = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
         const isoDaysBetween = (a, b) => Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 86400e3);
         const weekFriday = iso => isoAddDays(iso, (5 - new Date(iso + 'T12:00:00Z').getUTCDay() + 7) % 7);
@@ -3482,6 +3483,7 @@
 
         function updateGexDiv(symbol, data) {
             _lastGexData[symbol] = data;
+            if (data.live) _liveGexAt[symbol] = Date.now();
             // Store levels for price chart overlay (include spot for ES basis calc)
             gexLevels[symbol] = { ...data.levels_multi, spot: data.spot };
             applyGexLevels(symbol);
@@ -4452,7 +4454,12 @@
                 const res = await fetch(`/api/gex/${symbol}`);
                 if (!res.ok) return;
                 const data = await res.json();
-                if (!data.error) updateGexDiv(symbol, data);
+                if (data.error) return;
+                // The 60 s chain refresh leaves its own payload (chain 0DTE GEX, no charm map)
+                // in the server cache until the next live push, up to 2 s: while the live loop
+                // runs, skip it, as the stream does (it flashed the charm map out every minute)
+                if (!data.live && Date.now() - (_liveGexAt[symbol] || 0) < 15000) return;
+                updateGexDiv(symbol, data);
             } catch (e) { console.error(`GEX ${symbol}:`, e); }
         }
 
