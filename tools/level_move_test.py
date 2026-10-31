@@ -41,6 +41,20 @@ FAKES = 3
 SNAP = ('put_wall', 'call_wall', 'pin', 'true_pin', 'flip_level')
 
 
+def named_levels(tl, tt, t):
+    """({name: price}, {strike: GEX}) of the predictions.level_timeline snapshot in force at t"""
+    lv, by_k = {}, {}
+    j = bisect_right(tt, t) - 1
+    if j >= 0 and t - tt[j] <= FRESH_SEC:
+        names, by_k = tl[j][1], tl[j][2]
+        for k, ns in names.items():
+            for nm in ns:
+                lv.setdefault(nm, k) if nm != 'wall' else lv.setdefault(f'wall_{k}', k)
+        if by_k:
+            lv['gold'] = max(by_k, key=lambda x: abs(by_k[x]))
+    return lv, by_k
+
+
 def levels_by_bar(day, bars, by_day, days):
     """[{name: price}] for each bar, as known at its open"""
     snaps = P.snapshots(day)
@@ -69,15 +83,8 @@ def levels_by_bar(day, bars, by_day, days):
             for k in ('put_wall', 'call_wall'):
                 if r.get(k) not in (None, ''):
                     lv['0dte_' + k] = float(r[k])
-        by_k = {}
-        j = bisect_right(tt, t) - 1
-        if j >= 0 and t - tt[j] <= FRESH_SEC:
-            names, by_k = tl[j][1], tl[j][2]
-            for k, ns in names.items():
-                for nm in ns:
-                    lv.setdefault(nm, k) if nm != 'wall' else lv.setdefault(f'wall_{k}', k)
-            if by_k:
-                lv['gold'] = max(by_k, key=lambda x: abs(by_k[x]))
+        named, by_k = named_levels(tl, tt, t)
+        lv.update(named)
         if i >= 5:
             lv['open'] = bars[0][1]
         if prev:

@@ -49,6 +49,7 @@ TOOLS = [
     ('charm_map_test', VENV),
     ('charm_signal_test', VENV),
     ('level_move_test', VENV),
+    ('signed_gex_test', VENV),
     ('build_move_panel', VENV),
     ('move_model_test', SYSTEM),
     ('turning_point_test', SYSTEM),
@@ -58,8 +59,8 @@ TOOLS = [
 
 # Each of these ends with a RESULT line: tests run, how many pass by chance, what passed.
 # Their numbers drift every week; a pass appearing or going is what's worth reading.
-TESTS = ('flow_alert_test', 'tick_flow_test', 'charm_signal_test', 'level_move_test', 'move_model_test',
-         'turning_point_test', 'odte_edge_test')
+TESTS = ('flow_alert_test', 'tick_flow_test', 'charm_signal_test', 'level_move_test', 'signed_gex_test',
+         'move_model_test', 'turning_point_test', 'odte_edge_test')
 RESULT = re.compile(r'^RESULT: (\d+) tests; about ([\d.]+) by chance; passed: (.*)$', re.M)
 
 # The lines of each tool's output worth seeing in the report; the rest is in its .txt.
@@ -73,6 +74,8 @@ HEADLINES = {
     'charm_map_test': (r'^\s+(Jun-Sep|Oct on)\s', r'0DTE pull within'),
     'charm_signal_test': (r'checkpoints, \d+ days', r'^flow BUY at'),
     'level_move_test': (r'real approaches', r'every fake level'),
+    'signed_gex_test': (r'^\d+ days ', r'^\s+min\s+n\s', r'^\s+(15|30|60)\s+\d+\s+\d+% \|', r'net sold gamma', r'opposite sign to oi',
+                        r'BUY at:'),
     'move_model_test': (r'^== Part [12]:', r'^target ', r'^\s*(big_15|up_15|up_60)\s+\d+\.\d%'),
     'turning_point_test': (r'new-extreme events', r'^holds \d', r'^(holds|turn): walk', r'edge over clock',
                            r'most confident 10%', r'within \d+ pts of any level'),

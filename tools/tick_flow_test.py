@@ -19,15 +19,18 @@ import pandas as pd
 ROOT = r'C:\Productivity\TradingApp'
 sys.path.insert(0, ROOT + r'\src')
 os.chdir(ROOT)
+import gex_stats  # noqa: E402
 import predictions as P  # noqa: E402
 
 OUT = os.path.join(tempfile.gettempdir(), 'tick_flow_minutes.csv')   # per-minute cache; delete to rebuild
 TODAY = pd.Timestamp.now(tz='America/New_York').date().isoformat()
 
 
-def day_minutes(day: str) -> pd.DataFrame:
-    """per minute: customer delta bought ($) by variant, plus classification counts"""
-    t = pd.read_csv(f'data/option_ticks_SPX_{day}.csv.gz', dtype={'symbol': str})
+def trades(day: str) -> pd.DataFrame:
+    """One row per trade in the day's ticks: s +1 bought / -1 sold / 0 unclassified (the quote
+    before it), dv contracts, outside (a far-off print, skip it), and the contract's delta,
+    gamma and SPX from its minute bar at or before the trade."""
+    t = pd.read_csv(gex_stats.day_file(f'option_ticks_SPX_{day}.csv'), dtype={'symbol': str})
     t = t.sort_values(['symbol', 'ts_ms'], kind='stable')
     g = t.groupby('symbol', sort=False)
     for c in ('volume', 'bid', 'ask', 'last'):
@@ -60,15 +63,21 @@ def day_minutes(day: str) -> pd.DataFrame:
     tr['odte'] = ('20' + sym.str[6:8] + '-' + sym.str[8:10] + '-' + sym.str[10:12]) == day
 
     # each contract's delta and SPX from its minute bar (the one at or before the trade)
-    bars = pd.read_csv(f'data/option_bars_SPX_{day}.csv.gz', usecols=['time', 'symbol', 'delta', 'gamma', 'spot'],
+    bars = pd.read_csv(gex_stats.day_file(f'option_bars_SPX_{day}.csv'), usecols=['time', 'symbol', 'delta', 'gamma', 'spot'],
                        dtype={'symbol': str})
     bars['ts_ms'] = bars['time'] * 1000
     tr = tr.sort_values('ts_ms')
     tr = pd.merge_asof(tr, bars.sort_values('ts_ms')[['ts_ms', 'symbol', 'delta', 'gamma', 'spot']],
                        on='ts_ms', by='symbol', direction='backward')
     tr = tr.dropna(subset=['delta', 'spot'])
-    unit = tr['dv'] * tr['delta'] * 100 * tr['spot']          # delta $ of the contracts traded (put delta < 0)
     tr['minute'] = (tr['ts_ms'] // 60000) * 60
+    return tr
+
+
+def day_minutes(day: str) -> pd.DataFrame:
+    """per minute: customer delta bought ($) by variant, plus classification counts"""
+    tr = trades(day)
+    unit = tr['dv'] * tr['delta'] * 100 * tr['spot']          # delta $ of the contracts traded (put delta < 0)
     near = tr['delta'].abs().between(0.10, 0.90)
     v = {
         'all':        tr['s'] * unit,
