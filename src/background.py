@@ -29,6 +29,7 @@ from gex import (get_access_token, fetch_option_chain, parse_gex, find_key_level
 from price_history import fetch_candles, append_candles, append_new, replace_candles, CACHE_DAYS
 import bs
 import charm_map
+import research
 import delta_flow
 import flow_alerts
 import market_recorder
@@ -357,6 +358,11 @@ def daily_jobs_loop():
         if now.weekday() < 5 and now.time() >= dtime(16, 20) and written_for != now.date():
             run(write_today=True)
             written_for = now.date()
+        try:
+            if research.due(now):           # weekly, in its own process: see research.py
+                print(f'[research] weekly rerun started, week ending {research.start(now)}')
+        except Exception as e:  # never kill the thread
+            print(f'[research] failed to start: {e}')
 
 
 # ── Futures buy/sell volume (tick rule, from the streamer) ────────────────────

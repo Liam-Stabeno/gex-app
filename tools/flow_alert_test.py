@@ -161,6 +161,7 @@ def main():
     ]
 
     lab = [r for r in rows if r['s']]
+    tests, passed = 0, []
     for title, pick in (('EVERY ALERT', lambda r: True), ('EVENTS (bursts counted once)', lambda r: r['event'])):
         print(f'\n{title}: SPX {MOVE:g} pts the signal\'s way first (vs the same day\'s rate), and drift in pts')
         print(f'  {"group":26s} {"n":>5s}  {"30m first":>17s} {"base":>5s}  {"60m first":>17s} {"base":>5s}   '
@@ -175,12 +176,17 @@ def main():
                 p = sum(r[f'f{h}'] for r in k) / len(k) if k else float('nan')
                 b = statistics.fmean(r[f'b{h}'] for r in k) if k else float('nan')
                 cells.append(f'{100 * p:5.1f}% ±{100 * ci(p, len(k)):4.1f} n{len(k):<4d} {100 * b:4.1f}%')
+                if title == 'EVERY ALERT' and k:
+                    tests += 1
+                    if abs(p - b) > ci(p, len(k)):
+                        passed.append(f'{name} {h}m ({"better" if p > b else "worse"} than the same days)')
             drift = []
             for h in DRIFT:
                 mu, t, n = mean_t([r[f'd{h}'] for r in sub])
                 drift.append(f'{mu:+6.2f} t{t:+5.1f}')
             print(f'  {name:26s} {len(sub):5d}  {cells[0]}  {cells[1]}   ' + '  '.join(drift))
 
+    print(f'\nRESULT: {tests} tests; about {0.05 * tests:.1f} by chance; passed: ' + (' | '.join(passed) or 'none'))
     print('\nSIZE: |SPX move| over the next 15 min, after an alert vs the same day within 30 min of it')
     for name, g in (('every alert', lambda r: True), ('labelled', lambda r: r['s']), ('unlabelled', lambda r: not r['s']),
                     ('0DTE', lambda r: r['a'].get('is_0dte')), ('later expiries', lambda r: not r['a'].get('is_0dte'))):

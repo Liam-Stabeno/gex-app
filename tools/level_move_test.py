@@ -161,6 +161,15 @@ def ci(df, col):
     return g.mean(), 1.96 * g.std(ddof=1) / len(g) ** 0.5 if len(g) > 1 else float('nan')
 
 
+def vs_fake(s, fake):
+    """The level's mean through move at 30 min less its fakes', and the 95% bar over days."""
+    a, _ = ci(s, 'thru_30')
+    b, _ = ci(fake, 'thru_30')
+    j = pd.concat([s.groupby('day')['thru_30'].mean(), -fake.groupby('day')['thru_30'].mean()], axis=1).dropna()
+    d = j.sum(axis=1)
+    return a - b, 1.96 * d.std(ddof=1) / max(len(d), 1) ** 0.5
+
+
 def line(tag, s, fake=None):
     if len(s) < 12:
         return f'  {tag:26s} n {len(s):4d} too few'
@@ -171,11 +180,8 @@ def line(tag, s, fake=None):
            + f' | typ dist {s["abs_30"].median():4.1f} | reach thru {s["reach_thru"].median():4.1f} back {s["reach_back"].median():4.1f}'
            + f' | thru first {100 * th / max(th + bk, 1):3.0f}%')
     if fake is not None and len(fake) >= 12:
-        a, _ = ci(s, 'thru_30')
-        b, _ = ci(fake, 'thru_30')
-        j = pd.concat([s.groupby('day')['thru_30'].mean(), -fake.groupby('day')['thru_30'].mean()], axis=1).dropna()
-        d = j.sum(axis=1)
-        txt += f' | vs fake 30m {a - b:+.1f} ±{1.96 * d.std(ddof=1) / max(len(d), 1) ** 0.5:.1f}'
+        edge, bar = vs_fake(s, fake)
+        txt += f' | vs fake 30m {edge:+.1f} ±{bar:.1f}'
         fth, fbk = (fake['first'] == 'through').sum(), (fake['first'] == 'back').sum()
         txt += f' (fake thru first {100 * fth / max(fth + fbk, 1):.0f}%)'
     return txt
@@ -214,6 +220,10 @@ def main():
     for lv in order:
         print(line(lv, real[real['level'] == lv], fake[fake['level'] == lv]))
     print(line('every fake level', fake))
+    tests = [(lv, *vs_fake(real[real['level'] == lv], fake[fake['level'] == lv])) for lv in order
+             if (real['level'] == lv).sum() >= 12 and (fake['level'] == lv).sum() >= 12]
+    passed = [f'{lv} ({"more through" if e > 0 else "more bounce"} than its fakes)' for lv, e, bar in tests if abs(e) > bar]
+    print(f'RESULT: {len(tests)} tests; about {0.05 * len(tests):.1f} by chance; passed: ' + (' | '.join(passed) or 'none'))
     g = real[real['level'] != 'round 25']
     print('\n== every real level, by what else was known')
     splits = [('from above (downward)', g['frm'] == 'above'), ('from below (upward)', g['frm'] == 'below'),

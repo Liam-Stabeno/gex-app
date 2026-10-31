@@ -89,10 +89,10 @@ def heat_levels(day, idx, spot):
 def asof_series(frame, col, idx):
     if frame is None or frame.empty or col not in frame:
         return np.full(len(idx), np.nan)
-    f = frame[['t', col]].dropna().sort_values('t')
+    f = frame[['t', col]].dropna().sort_values('t').astype({'t': 'int64'})
     if f.empty:
         return np.full(len(idx), np.nan)
-    m = pd.merge_asof(pd.DataFrame({'t': idx}), f, on='t', direction='backward', tolerance=600)
+    m = pd.merge_asof(pd.DataFrame({'t': np.asarray(idx, dtype='int64')}), f, on='t', direction='backward', tolerance=600)
     return pd.to_numeric(m[col], errors='coerce').values
 
 

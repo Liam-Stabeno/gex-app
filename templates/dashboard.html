@@ -3380,7 +3380,8 @@
             if (!priceGrid || document.getElementById('pred-panel')) return;
             const label = document.createElement('div');
             label.className = 'section-label';
-            label.innerHTML = 'PREDICTION SCOREBOARD · DOES GEX CALL THE MOVE?<span class="kd-compare" id="pred-meta"></span>';
+            label.innerHTML = 'PREDICTION SCOREBOARD · DOES GEX CALL THE MOVE?<span class="kd-compare" id="pred-meta"></span>'
+                + '<span class="kd-compare"><a href="/research" target="_blank" style="color:inherit" title="Every research tool rerun on all the data each week, and what changed since the last week">weekly research report</a></span>';
             const panel = document.createElement('div');
             panel.className = 'chart-div pred-panel';
             panel.id = 'pred-panel';

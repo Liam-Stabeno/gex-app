@@ -151,6 +151,7 @@ def part1(e):
     for lo_, hi_ in ((30, 120), (120, 240), (240, 330), (330, 361)):
         s = e[(e['m'] >= lo_) & (e['m'] < hi_)]
         print(f'  {lo_ / 60 + 9.5:5.1f}h-{hi_ / 60 + 9.5:5.1f}h  n {len(s):5d}  holds {100 * s["holds"].mean():4.0f}%  turn {100 * s["turn"].mean():4.0f}%')
+    passed = []
     for t in ('holds', 'turn'):
         a = walk_forward(e, t, PRICE_FEATURES)
         b = walk_forward(e, t, CLOCK)
@@ -159,7 +160,8 @@ def part1(e):
         print(f'  AUC price + volume {auc(j[t], j["p"]):.3f}   clock alone {auc(j[t], j["clock"]):.3f}')
         by_day = [auc(g[t], g['p']) - auc(g[t], g['clock']) for _, g in j.groupby('day') if g[t].nunique() > 1 and len(g) >= 4]
         by_day = [x for x in by_day if x == x]
-        print(f'  edge over clock per day {np.mean(by_day):+.3f} ± {1.96 * np.std(by_day, ddof=1) / len(by_day) ** 0.5:.3f} ({len(by_day)} days)')
+        edge, bar = np.mean(by_day), 1.96 * np.std(by_day, ddof=1) / len(by_day) ** 0.5
+        print(f'  edge over clock per day {edge:+.3f} ± {bar:.3f} ({len(by_day)} days)')
         j['bin'] = pd.qcut(j['p'], 10, labels=False, duplicates='drop')
         top = j[j['bin'] == j['bin'].max()]
         same = j.loc[j['bin'] != j['bin'].max()]
@@ -169,10 +171,13 @@ def part1(e):
         days = sorted(j['day'].unique())
         late = j[j['day'] >= days[len(days) // 2]]
         print(f'  later half alone: AUC {auc(late[t], late["p"]):.3f} vs clock {auc(late[t], late["clock"]):.3f}')
+        if edge > bar and auc(late[t], late['p']) > auc(late[t], late['clock']):
+            passed.append(f'{t}: price + volume beat the clock')
         if t == 'turn':
             print('  by side: ' + ', '.join(f'{"tops" if s else "bottoms"} {auc(g[t], g["p"]):.3f}' for s, g in j.groupby('side_up')))
             imp = j[PRICE_FEATURES + [t]].corr(method='spearman')[t].drop(t).sort_values(key=abs, ascending=False).head(6)
             print('  strongest single inputs (rank corr):', {k: round(v, 3) for k, v in imp.items()})
+    print('RESULT: 2 tests; about 0.1 by chance; passed: ' + (' | '.join(passed) or 'none'))
     return e
 
 

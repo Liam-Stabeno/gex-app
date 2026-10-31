@@ -149,6 +149,8 @@ def main():
                 passed.append((y, x, round(r1, 3), round(t1, 1), round(r2, 3), round(t2, 1)))
     print(f'\n{tested} tests; by chance about {tested * 0.0025:.1f} pass both halves')
     print('passed:', passed or 'none')
+    print(f'RESULT: {tested} tests; about {tested * 0.0025:.1f} by chance; passed: '
+          + (' | '.join(f'{x} on {y}' for y, x, *_ in passed) or 'none'))
     # does a pass add anything to the recent range, which needs no options data?
     for y, x, *_ in passed:
         if y.startswith('size'):

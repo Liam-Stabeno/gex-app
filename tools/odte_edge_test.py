@@ -381,6 +381,9 @@ def main():
                          'direction right %': np.nan, 'avg bps': np.nanmean(pick), 'days+': '', 't': np.nan, 'n': len(o)})
     show(f'F. ALL SIGNALS TOGETHER (LightGBM; each day predicted by a model trained only on earlier days, '
          f'{s5.day.nunique() - 30} days out of sample)', rows)
+    tests = [r for r in rows if r['t'] == r['t']]               # (the option rows have no t)
+    passed = [f'{r["rule"]} {r["hold"]}m' for r in tests if abs(r['t']) > 2]
+    print(f'\nRESULT: {len(tests)} tests; about {0.05 * len(tests):.1f} by chance; passed: ' + (' | '.join(passed) or 'none'))
 
 
 def bid_ask_check():

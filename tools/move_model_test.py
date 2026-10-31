@@ -192,6 +192,8 @@ def part2():
             if good:
                 found.append((name, y, round(mean, 3), round(se, 3), n))
     print(f'\n{tests} tests; about {tests * 0.01:.1f} would pass by chance; passed:', found or 'none')
+    print(f'RESULT: {tests} tests; about {tests * 0.01:.1f} by chance; passed: '
+          + (' | '.join(f'{x[0]} on {x[1]}' for x in found) or 'none'))
 
 
 def part3(e):

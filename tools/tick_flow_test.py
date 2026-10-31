@@ -144,6 +144,7 @@ def main():
         return f[col].rolling(h).sum()
 
     print('variant      same-min corr | flow last N min -> SPX next N min: corr, direction right (non-overlapping), n')
+    tests, passed = 0, []
     for col in variants:
         same = corr(df[col], df['ret'])
         parts = [f'{col:<12} {same:+.2f}         |']
@@ -162,7 +163,11 @@ def main():
             rate = 100 * sum(hits) / n
             ci = 196 * math.sqrt(0.25 / n)
             parts.append(f' {h}m: {corr(xs, ys):+.2f}, {rate:.0f}% ±{ci:.0f} (n {n})')
+            tests += 1
+            if abs(rate - 50) > ci:
+                passed.append(f'{col} next {h}m ({"with" if rate > 50 else "against"} the flow)')
         print(''.join(parts))
+    print(f'RESULT: {tests} tests; about {0.05 * tests:.1f} by chance; passed: ' + (' | '.join(passed) or 'none'))
 
     # baseline: the last N min of price itself
     base = []

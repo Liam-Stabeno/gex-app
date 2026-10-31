@@ -50,6 +50,16 @@ def register(app):
         import gex_stats
         return jsonify(gex_stats.history_days('SPX'))
 
+    @app.route('/research')
+    def research_report():
+        """The latest weekly research report (research.py), or ?date=<its Friday>."""
+        import research
+        try:
+            text = research.report_text(_req_day())
+        except ValueError:
+            return 'date must be YYYY-MM-DD', 400
+        return Response(text or 'No weekly research report yet.', mimetype='text/plain')
+
     @app.route('/api/charm_map/<symbol>')
     def api_charm_map(symbol):
         """A saved day's charm maps (default today): per minute the flow at price, the nearest
