@@ -13,7 +13,8 @@ another. Each window's place and size (and maximized) are remembered, per panel,
 %APPDATA%\\GEXDash\\windows.json; a place on a monitor that's gone falls back to the default.
 
 The windows show the dashboard server that is already running (Task Scheduler starts it at
-6:14 AM PT): closing them stops nothing, and page changes show on a refresh (F5).
+6:14 AM PT): closing them stops nothing, and page changes show on a refresh (F5). When it
+isn't running the control panel shows Start server, which runs that same scheduled task.
 
   GEXDash.exe               the control panel
   GEXDash.exe price gex     the control panel, and those opened
@@ -28,6 +29,7 @@ From source:    desktop\\.venv\\Scripts\\python.exe desktop\\gexdash.py
 import ctypes
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -60,8 +62,10 @@ STATE = os.path.join(HOME, 'windows.json')
 SAVE_EVERY_SEC = 1.0
 BACKGROUND = '#0a0a0f'          # the page's own, so a window never flashes white
 MUTEX = 'Local\\GEXDashControlPanel'
+START_TASK = 'GEXDashboard'     # the 6:14 scheduled task (start.bat runs it too)
+START_WAIT_SEC = 60             # Start server waits this long for the server to answer
 user32 = ctypes.windll.user32
-_mutex = None                   # held while the control panel is open (already_running)
+_mutex = None                  # held while the control panel is open (already_running)
 
 # shown while the server isn't up yet (before 6:14 AM, or mid-restart); loads the panel
 # as soon as it answers
@@ -80,7 +84,7 @@ PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   #pin { margin-left: auto; background: #12121a; color: #6f6f82; border: 1px solid #2a2a3e; border-radius: 5px;
          font: 11px 'Courier New', monospace; padding: 3px 7px; cursor: pointer; letter-spacing: 0; }
   #pin.on { color: #00d4ff; border-color: #00d4ff; }
-  .srv { font-size: 10px; color: #8a8a9c; margin-bottom: 12px; }
+  .srv { font-size: 10px; color: #8a8a9c; margin-bottom: 12px; overflow-wrap: anywhere; }
   .srv b { color: #ff4466; }  .srv b.up { color: #00ff88; }
   .row { display: flex; gap: 6px; margin-bottom: 7px; }
   .open { flex: 1; text-align: left; background: #12121a; color: #d8d8e4; border: 1px solid #2a2a3e; border-radius: 5px;
@@ -96,6 +100,10 @@ PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   .all button { flex: 1; background: #0d1b24; color: #00d4ff; border: 1px solid #00d4ff66; border-radius: 5px;
                 font: 12px 'Courier New', monospace; padding: 7px; cursor: pointer; }
   .all button:hover { border-color: #00d4ff; }
+  #start { display: none; width: 100%; background: #0d2418; color: #00ff88; border: 1px solid #00ff8866; border-radius: 5px;
+           font: 12px 'Courier New', monospace; padding: 7px; cursor: pointer; margin: -4px 0 12px; }
+  #start.show { display: block; }  #start:hover:enabled { border-color: #00ff88; }
+  #start:disabled { color: #6f6f82; border-color: #2a2a3e; background: #12121a; cursor: default; }
   .hint { color: #6f6f82; font-size: 10px; line-height: 1.5; margin-top: 12px; }
   .sec { color: #6f6f82; font-size: 10px; letter-spacing: 2px; margin: 14px 0 6px; }
   .spawn .open { color: #00d4ff; }
@@ -103,6 +111,7 @@ PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
 </style></head><body>
   <h1>GEX DASH<button id="pin" title="Keep this panel above every other window">&#128204; ON TOP</button></h1>
   <div class="srv">server <b id="srv">checking&hellip;</b></div>
+  <button id="start">&#9654; Start server</button>
   <div id="rows">%ROWS%</div>
   <div class="all"><button id="open-all">Open all</button><button id="close-all">Close all</button></div>
   <div class="sec">SINGLE CHARTS</div>
@@ -127,6 +136,9 @@ PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   pin.onclick = () => ready.then(() => api().toggle_on_top()).then(showPin);
   ready.then(() => api().on_top()).then(showPin);
   document.getElementById('close-solos').onclick = () => call('close_solos');
+  const start = document.getElementById('start');
+  const showStarting = () => { start.disabled = true; start.textContent = 'Starting…'; };
+  start.onclick = () => { showStarting(); call('start_server'); };
   async function refresh() {
     const x = api();
     if (!x) return;
@@ -135,8 +147,11 @@ PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
     document.querySelectorAll('.row').forEach(r => r.classList.toggle('on', r.dataset.panel === 'rp1' ? solos > 0 : s.open.includes(r.dataset.panel)));
     document.getElementById('solo-count').textContent = solos ? `${solos} open` : '';
     const srv = document.getElementById('srv');
-    srv.textContent = s.server ? 'running' : 'not answering (starts 6:14 AM PT)';
+    srv.textContent = s.server ? 'running' : s.starting ? 'starting…' : s.start_error || 'not answering (starts 6:14 AM PT)';
     srv.className = s.server ? 'up' : '';
+    start.classList.toggle('show', !s.server);
+    if (s.starting) showStarting();
+    else { start.disabled = false; start.textContent = '▶ Start server'; }
   }
   window.addEventListener('pywebviewready', refresh);
   setInterval(refresh, 2000);
@@ -212,6 +227,8 @@ class App:
         self.lock = threading.Lock()
         self.opened = 0                   # for the self-test's off-screen places
         self.events_log = {}              # self-test: name -> its window's events
+        self.start_at = 0                 # when Start server last ran its task
+        self.start_error = ''
 
     def place(self, name, x, y, w, h):
         saved = self.state.get(name) or {}
@@ -280,6 +297,32 @@ class App:
                 background_color=BACKGROUND, focus=not self.test, on_top=top, js_api=WindowApi(self, name))
             win.gexdash_url = url
             self.track(name, win)
+
+    def start_server(self):
+        """run the scheduled task, hidden like the 6:14 run; a click while one is starting does
+        nothing (the task itself also ignores a second run, and the server a second copy)"""
+        with self.lock:
+            if time.time() - self.start_at < START_WAIT_SEC:
+                return
+            self.start_at, self.start_error = time.time(), ''
+            try:
+                r = subprocess.run(['schtasks', '/Run', '/TN', START_TASK], capture_output=True, text=True,
+                                   timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+                failed = r.returncode != 0 and (r.stderr or r.stdout).strip()
+            except (OSError, subprocess.SubprocessError) as e:
+                failed = str(e)
+            if failed:
+                self.start_at, self.start_error = 0, f'could not start: {failed}'
+
+    def server_status(self) -> dict:
+        """server: it answers; starting: Start server is waiting for that; start_error: why it
+        failed, or that it never answered"""
+        up = server_up()
+        if up:
+            self.start_at, self.start_error = 0, ''
+        elif self.start_at and time.time() - self.start_at >= START_WAIT_SEC:
+            self.start_at, self.start_error = 0, f'no answer in {START_WAIT_SEC}s: see logs folder'
+        return {'server': up, 'starting': not up and bool(self.start_at), 'start_error': self.start_error}
 
     def is_top(self, name) -> bool:
         return name in self.windows and bool(self.state.get(name, {}).get('top'))
@@ -369,6 +412,9 @@ class Api:
     def close_all(self):
         self._app.close_all()
 
+    def start_server(self):
+        self._app.start_server()
+
     def on_top(self):
         return self._app.is_top(CONTROL)
 
@@ -376,7 +422,7 @@ class Api:
         return self._app.toggle_top(CONTROL)
 
     def status(self):
-        return {'open': [n for n in self._app.windows if n != CONTROL], 'server': server_up()}
+        return {'open': [n for n in self._app.windows if n != CONTROL], **self._app.server_status()}
 
 
 class WindowApi:
@@ -425,6 +471,9 @@ def selftest(app: App, out: str) -> None:
         win.events.loaded.wait(60)
     time.sleep(8)                                   # the pages' own data loads
     results = {'opened': sorted(n for n in app.windows if n != CONTROL)}
+    # (shown only while the server is down; never clicked here, a test must not start it)
+    results['start_button'] = {'server': server_up(), 'shown': control.evaluate_js(
+        "document.getElementById('start').offsetHeight > 0")}
     for name in [*PANELS, f'{SOLO}-1', f'{SOLO}-2']:   # (charm: its chart only once the live 0DTE runs)
         win = app.windows.get(name)
         if win is None:
