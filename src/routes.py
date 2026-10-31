@@ -50,6 +50,22 @@ def register(app):
         import gex_stats
         return jsonify(gex_stats.history_days('SPX'))
 
+    @app.route('/api/charm_map/<symbol>')
+    def api_charm_map(symbol):
+        """A saved day's charm maps (default today): per minute the flow at price, the nearest
+        pull and split, and with &full=1 the whole map and its 0DTE book."""
+        import charm_map
+        try:
+            day = _req_day() or datetime.now(ET).date()
+        except ValueError:
+            return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+        lines = charm_map.load_day(day.isoformat(), symbol.upper().replace('$', ''))
+        if request.args.get('full'):
+            return jsonify(lines)
+        at = lambda x: x['flow'][len(x['flow']) // 2] if x.get('flow') else None
+        return jsonify([{'ts': x['ts'], 'src': x.get('src'), 'spot': x['spot'], 'flow': at(x),
+                         'pull': (x['pull'] or [None])[0], 'split': (x['split'] or [None])[0]} for x in lines])
+
     @app.route('/api/heatmap_reliability/<symbol>')
     def api_heatmap_reliability(symbol):
         """How the heatmap's bright bands did per gamma regime, from the scorecard."""

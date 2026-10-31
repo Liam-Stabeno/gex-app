@@ -55,3 +55,29 @@ def test_watchlist_contracts_recover_the_vol_from_delta():
     assert len(got) == 4
     assert got[(7690.0, 'put')] == pytest.approx(0.14, abs=0.002) and got[(7720.0, 'call')] == pytest.approx(0.11, abs=0.002)
     assert len(cm.watchlist_contracts(rows, 7705.0, ts, zero_dte_only=False)) == 5
+
+
+def _saved_line():
+    contracts = [(7690.0, 'put', 5000, 0.14, HR), (7720.0, 'call', 3000, 0.12, HR)]
+    ts = datetime(2026, 11, 2, 14, 0, tzinfo=ET)
+    return contracts, cm.record_line(ts, 7705.0, cm.charm_map(contracts, 7705.0), contracts, flow_all=-1234.6)
+
+
+def test_a_saved_line_keeps_the_map_and_the_book():
+    contracts, line = _saved_line()
+    assert line['flow_all'] == -1235 and line['s0'] == 7665.0 and line['step'] == 1.0
+    assert line['book'][0] == [7690.0, 'p', 5000, 0.14]
+    assert cm.book_contracts(line) == contracts
+
+
+def test_load_day_reads_either_form_in_order_and_skips_a_cut_off_line(tmp_path):
+    import gzip
+    import json
+    _, a = _saved_line()
+    b = dict(a, ts='2026-11-02T13:00:00-05:00')
+    (tmp_path / 'charm_map_SPX_2026-11-02.jsonl').write_text(json.dumps(a) + '\n' + json.dumps(b) + '\n{"ts":"2026')
+    assert [x['ts'] for x in cm.load_day('2026-11-02', data_dir=str(tmp_path))] == [b['ts'], a['ts']]
+    with gzip.open(tmp_path / 'charm_map_SPX_2026-11-03.jsonl.gz', 'wt') as f:
+        f.write(json.dumps(a) + '\n')
+    assert len(cm.load_day('2026-11-03', data_dir=str(tmp_path))) == 1
+    assert cm.load_day('2026-11-04', data_dir=str(tmp_path)) == []

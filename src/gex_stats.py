@@ -534,6 +534,7 @@ def current_gamma_levels(spot: float | None, mode: str = 'all', sym: str = 'SPX'
 # (daily_summary_<sym>.csv) is the quick way to track things day to day.
 ARCHIVE_PATTERNS = ('gex_grid_{sym}_*.jsonl', 'rolling_profile_{sym}_*.jsonl', 'gex_watchlist_{sym}_*.csv',
                     'gex_grid_rebuilt_{sym}_*.jsonl',  # tools/rebuild_gex_grid.py
+                    'charm_map_{sym}_*.jsonl',         # charm_map.py
                     'gex_full_{sym}_*.jsonl',          # full chain, every expiration (market_recorder)
                     # market_recorder (model-training data)
                     'option_ticks_{sym}_*.csv', 'option_bars_{sym}_*.csv', 'option_chain_{sym}_*.csv',
@@ -728,6 +729,8 @@ def heatmap_reliability(sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict:
 # bands really slow price, and whether charm flow called the move into the close.
 TOUCH_PTS = 3.0     # a wall is "touched" when price comes within this many points
 BREAK_PTS = 2.0     # ...and "broken" when a 1-min close goes this far through it
+LEVEL_FRESH_SEC = 900   # a level older than this isn't "in force" (as predictions.STALE_SEC)
+LEVEL_AHEAD_SEC = 1200  # walls are graded 15 min before the extreme: an extreme at the open needs this
 
 SCORECARD_FIELDS = [
     'date', 'close', 'high', 'low', 'regime_close',
@@ -770,14 +773,25 @@ def _speed_ratio(q: pd.DataFrame, min_rows: int = 60):
     return round(float(dim / bright), 2) if bright else None
 
 
-def _level_at(df: pd.DataFrame, col: str, when) -> float | None:
-    """Value of a level column in force at time `when` (last row at or before it)."""
+def _level_at(df: pd.DataFrame, col: str, when, ahead: bool = False) -> float | None:
+    """Value of a level column in force at time `when`: the last value at or before it. None
+    when the last row of any kind is over LEVEL_FRESH_SEC old (the app wasn't running then:
+    partial days must not grade a level from hours away, or the day's final pin, which sits
+    on the close by construction); a blank value in a fresh row keeps the one before it.
+    ahead: with no row yet, the day's first value if it's within LEVEL_AHEAD_SEC (a wall
+    tested just after the open: no earlier session row exists)."""
     if df is None or df.empty or col not in df:
         return None
-    prior = df[df['et'] <= when][col].dropna()
+    prior = df[df['et'] <= when]
     if prior.empty:
-        prior = df[col].dropna()
-    return float(prior.iloc[-1]) if not prior.empty else None
+        rows = df.dropna(subset=[col])
+        if ahead and not rows.empty and (rows['et'].iloc[0] - when).total_seconds() <= LEVEL_AHEAD_SEC:
+            return float(rows[col].iloc[0])
+        return None
+    if (when - prior['et'].iloc[-1]).total_seconds() > LEVEL_FRESH_SEC:
+        return None
+    vals = prior[col].dropna()
+    return float(vals.iloc[-1]) if not vals.empty else None
 
 
 def build_scorecard(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | None:
@@ -815,7 +829,7 @@ def build_scorecard(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | 
                regime_close='POSITIVE' if s['total_gex'].iloc[-1] > 0 else 'NEGATIVE')
 
     # chain walls (ex-0DTE): the level in force when price got closest to it
-    cw, pw = _level_at(s, 'call_wall', t_hi), _level_at(s, 'put_wall', t_lo)
+    cw, pw = _level_at(s, 'call_wall', t_hi, ahead=True), _level_at(s, 'put_wall', t_lo, ahead=True)
     r = wall_reaction(px, cw, 'up')
     row.update(call_wall=cw, call_wall_touch=r['touch'], call_wall_break=r['break'])
     r = wall_reaction(px, pw, 'down')
@@ -826,7 +840,8 @@ def build_scorecard(day, sym: str = 'SPX', data_dir: str = _DATA_DIR) -> dict | 
     if L and L.get('history'):
         H = pd.DataFrame(L['history'])
         H['et'] = pd.to_datetime(H['time'], unit='s', utc=True).dt.tz_convert(ET)
-        res, sup, trap = _level_at(H, 'resistance', t_hi), _level_at(H, 'support', t_lo), _level_at(H, 'trapdoor', t_lo)
+        res, sup, trap = (_level_at(H, 'resistance', t_hi, ahead=True), _level_at(H, 'support', t_lo, ahead=True),
+                          _level_at(H, 'trapdoor', t_lo, ahead=True))
         r = wall_reaction(px, res, 'up')
         row.update(resist=res, resist_touch=r['touch'], resist_break=r['break'], resist_gap_at_high=r['gap'])
         r = wall_reaction(px, sup, 'down')

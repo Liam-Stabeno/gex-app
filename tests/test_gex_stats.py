@@ -185,3 +185,36 @@ def test_readers_follow_a_file_archived_after_lookup(tmp_path):
     assert gs.archived(str(plain)) == str(plain) + ".gz"
     assert len(gs._hm_rebuilt(str(plain), "2026-10-26")) == 1
     assert len(gs._hm_snapshots(str(plain), "2026-10-26")) == 1
+
+
+def _level_rows():
+    et = lambda h, m: datetime(2026, 9, 17, h, m, tzinfo=ET)
+    return et, pd.DataFrame({'et': [et(12, 0), et(12, 30), et(15, 0)], 'pin': [7000.0, None, 7100.0]})
+
+
+def test_level_at_takes_the_last_value_in_force():
+    et, df = _level_rows()
+    assert gs._level_at(df, 'pin', et(12, 10)) == 7000.0
+    assert gs._level_at(df, 'pin', et(15, 10)) == 7100.0
+
+
+def test_level_at_blank_in_a_fresh_row_keeps_the_last_value():
+    et, df = _level_rows()
+    assert gs._level_at(df, 'pin', et(12, 40)) == 7000.0
+
+
+def test_level_at_never_grades_across_a_gap_in_the_rows():
+    et, df = _level_rows()
+    assert gs._level_at(df, 'pin', et(14, 0)) is None
+    assert gs._level_at(df, 'pin', et(15, 59)) is None
+
+
+def test_level_at_never_looks_ahead_to_the_final_pin():
+    et, df = _level_rows()
+    assert gs._level_at(df, 'pin', et(11, 0)) is None
+
+
+def test_level_at_ahead_only_reaches_a_row_just_after():
+    et, df = _level_rows()
+    assert gs._level_at(df, 'pin', et(11, 45), ahead=True) == 7000.0
+    assert gs._level_at(df, 'pin', et(11, 0), ahead=True) is None

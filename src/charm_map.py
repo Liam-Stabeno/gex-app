@@ -11,8 +11,14 @@ its own vol at every price (sticky strike). The flow is $ of SPX per hour of clo
 
 contracts: [(strike, side, oi, sigma, T years)] — the live loop builds them from its solved
 vols, watchlist_contracts() from a saved gex_watchlist snapshot (vol backed out of delta).
+
+Saved per day in data/charm_map_<sym>_<date>.jsonl, a line a minute of the session: the map
+as shown plus the 0DTE book it came from, so any other dealer-position assumption can be
+recomputed later. Days before the recording: tools/rebuild_charm_map.py, from the watchlist.
 """
+import json
 import math
+import os
 from datetime import date, datetime, time as dtime
 from statistics import NormalDist
 from zoneinfo import ZoneInfo
@@ -73,6 +79,39 @@ def charm_map(contracts, spot: float, span: float = SPAN_PTS, step: float = STEP
     near = lambda xs: sorted(xs, key=lambda x: abs(x - spot))
     return {'spots': [round(float(s), 2) for s in spots], 'flow': [round(float(f)) for f in flow],
             'pull': near(pull), 'split': near(split)}
+
+
+# ── Saved per day ────────────────────────────────────────────────────────────────────────
+def record_line(ts: datetime, spot: float, cmap: dict, contracts: list, flow_all: float | None = None,
+                src: str = 'live') -> dict:
+    """One line of the day file. flow_all: every watched contract's charm flow at price;
+    book: [strike, 'c' | 'p', oi, vol]; T: years to the close, the same for the whole book."""
+    book = [[k, side[0], int(oi), round(v, 4)] for k, side, oi, v, _ in contracts]
+    return {'ts': ts.isoformat(timespec='seconds'), 'src': src, 'spot': round(float(spot), 2),
+            'flow_all': None if flow_all is None else round(flow_all), 'T': contracts[0][4] if contracts else None,
+            's0': cmap['spots'][0], 'step': round(cmap['spots'][1] - cmap['spots'][0], 4),
+            'flow': cmap['flow'], 'pull': cmap['pull'], 'split': cmap['split'], 'book': book}
+
+
+def book_contracts(line: dict) -> list:
+    """contracts back from a saved line"""
+    return [(k, 'call' if s == 'c' else 'put', oi, v, line['T']) for k, s, oi, v in line['book']]
+
+
+def load_day(day: str, sym: str = 'SPX', data_dir: str | None = None) -> list:
+    """The day's saved lines, in time order ([] if none)."""
+    from gex_stats import _DATA_DIR, day_file, open_text
+    path = day_file(f'charm_map_{sym}_{day}.jsonl', data_dir or _DATA_DIR)
+    if not path:
+        return []
+    lines = []
+    with open_text(path) as f:
+        for text in f:
+            try:
+                lines.append(json.loads(text))
+            except ValueError:                        # a line cut off by a stop mid-write
+                continue
+    return sorted(lines, key=lambda x: x['ts'])
 
 
 # ── From a saved gex_watchlist snapshot (delta + open interest per contract) ─────────────

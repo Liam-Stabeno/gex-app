@@ -49,6 +49,8 @@ _true_pin_pending: dict = {}  # challenger strike waiting out TRUE_PIN_CONFIRM_S
 _last_charm_flow: dict = {} # display symbol -> latest charm hedge flow, $/hr
 _charm_map: dict = {}       # display symbol -> (time, the 0DTE charm map: charm_map.charm_map)
 CHARM_MAP_EVERY_SEC = 10    # ~80 prices x the 0DTE contracts: not every 2 s loop
+CHARM_RECORD_EVERY_SEC = 60 # the map and its book, saved per day (charm_map.py)
+_charm_recorded: dict = {}  # display symbol -> time.time() of the last saved line
 _live_0dte: dict = {}       # display symbol -> (time.time(), {strike: net GEX}) from the live loop
 LIVE_FRESH_SEC = 15         # older than this (stream down, after the close): not live
 _level_state: dict = {}     # (display symbol, 'multi'|'0dte') -> last published levels (sticky)
@@ -115,6 +117,22 @@ def live_0dte(sym: str = 'SPX') -> dict | None:
     quotes, every ~2 s), or None when it's older than LIVE_FRESH_SEC."""
     hit = _live_0dte.get(sym)
     return dict(hit[1]) if hit and time.time() - hit[0] <= LIVE_FRESH_SEC else None
+
+
+def _record_charm(sym: str, spot: float, cmap: dict, contracts: list, flow_all: float):
+    """A line a minute of the session in data/charm_map_<sym>_<date>.jsonl."""
+    now = time.time()
+    et = datetime.now(_ET)
+    if (now - _charm_recorded.get(sym, 0) < CHARM_RECORD_EVERY_SEC or et.weekday() >= 5
+            or not (dtime(9, 30) <= et.time() < dtime(16, 0))):
+        return
+    _charm_recorded[sym] = now
+    path = os.path.join(_DATA_DIR, f'charm_map_{sym}_{et.date().isoformat()}.jsonl')
+    try:
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(charm_map.record_line(et, spot, cmap, contracts, flow_all), separators=(',', ':')) + '\n')
+    except OSError as e:
+        print(f'[charm map] {sym}: write failed: {e}')
 
 
 def _record_gex_grid(sym: str, raw_df, spot: float):
@@ -1169,6 +1187,7 @@ def live_gex_loop():
         if map_contracts and time.time() - _charm_map.get('SPX', (0, None))[0] >= CHARM_MAP_EVERY_SEC:
             try:
                 _charm_map['SPX'] = (time.time(), charm_map.charm_map(map_contracts, spot))
+                _record_charm('SPX', spot, _charm_map['SPX'][1], map_contracts, charm_flow / (365.0 * 24))
             except Exception as e:
                 print(f'[charm map] {e}')
         total_gex = float(sum(multi_dict.get('net_gex') or [])) + float(df_0dte['net_gex'].sum())
